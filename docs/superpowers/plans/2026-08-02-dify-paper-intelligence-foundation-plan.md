@@ -108,7 +108,7 @@ Expected: collection fails with `ModuleNotFoundError: No module named 'paper_par
 
 - [ ] **Step 3: Create the package metadata and settings implementation**
 
-`pyproject.toml` must define Python `>=3.12,<3.13` and package source directory `src`. Core dependencies are `fastapi==0.141.1`, `uvicorn[standard]==0.52.1`, `pydantic-settings==2.14.2`, and `python-multipart==0.0.32`. The `parse` optional dependency contains `docling==2.117.0`, `paddleocr==3.7.0`, and CPU runtime `paddlepaddle==3.3.1`; it is installed only in the Linux parser image because the Windows install repeatedly exceeded ten minutes and accumulated more than 3.5 GB of cache. The `test` optional dependency contains `pytest==9.1.1`, `pytest-asyncio==1.4.0`, and `httpx==0.28.1`. Generate `requirements-core.lock` from core plus test dependencies during Task 1; generate the parser lock during the container task.
+`pyproject.toml` must define Python `>=3.12,<3.13` and package source directory `src`. Core dependencies are `fastapi==0.141.1`, `uvicorn[standard]==0.52.1`, `pydantic-settings==2.14.2`, `python-multipart==0.0.32`, and `pypdf==6.14.2`. The `parse` optional dependency contains `docling==2.117.0`, `paddleocr==3.7.0`, and CPU runtime `paddlepaddle==3.3.1`; it is installed only in the Linux parser image because the Windows install repeatedly exceeded ten minutes and accumulated more than 3.5 GB of cache. The `test` optional dependency contains `pytest==9.1.1`, `pytest-asyncio==1.4.0`, and `httpx==0.28.1`. Generate `requirements-core.lock` from core plus test dependencies during Task 1; generate the parser lock during the container task.
 
 `config.py`:
 
