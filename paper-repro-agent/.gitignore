@@ -5,4 +5,4 @@ __pycache__/
 .cache/
 data/jobs/
 model-cache/
-
+*.egg-info/
