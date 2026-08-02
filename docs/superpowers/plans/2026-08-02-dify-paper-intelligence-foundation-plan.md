@@ -108,7 +108,7 @@ Expected: collection fails with `ModuleNotFoundError: No module named 'paper_par
 
 - [ ] **Step 3: Create the package metadata and settings implementation**
 
-`pyproject.toml` must define Python `>=3.12,<3.13`, package source directory `src`, and these exact direct dependencies: `fastapi==0.141.1`, `uvicorn[standard]==0.52.1`, `pydantic-settings==2.14.2`, `python-multipart==0.0.32`, `docling==2.117.0`, `paddleocr==3.7.0`, and CPU runtime `paddlepaddle==3.3.1`. The `test` optional dependency must contain `pytest==9.1.1`, `pytest-asyncio==1.4.0`, and `httpx==0.28.1`. Generate a lock file and commit both `pyproject.toml` and the lock file.
+`pyproject.toml` must define Python `>=3.12,<3.13` and package source directory `src`. Core dependencies are `fastapi==0.141.1`, `uvicorn[standard]==0.52.1`, `pydantic-settings==2.14.2`, and `python-multipart==0.0.32`. The `parse` optional dependency contains `docling==2.117.0`, `paddleocr==3.7.0`, and CPU runtime `paddlepaddle==3.3.1`; it is installed only in the Linux parser image because the Windows install repeatedly exceeded ten minutes and accumulated more than 3.5 GB of cache. The `test` optional dependency contains `pytest==9.1.1`, `pytest-asyncio==1.4.0`, and `httpx==0.28.1`. Generate `requirements-core.lock` from core plus test dependencies during Task 1; generate the parser lock during the container task.
 
 `config.py`:
 
@@ -525,7 +525,7 @@ volumes:
   parser-model-cache:
 ```
 
-The Dockerfile must use a Python 3.12 slim base and three stages: `base` installs the locked runtime dependencies and required system libraries; `test` adds the locked test extras and source/tests; `runtime` creates a non-root `app` user, copies only application source, owns `/home/app/.cache` and `/data/jobs`, and uses `paper_parser.api:app` as the entry point.
+The Dockerfile must use a Python 3.12 slim base and three stages: `base` installs the locked core and `parse` dependencies plus required system libraries; `test` adds the locked test extras and source/tests; `runtime` creates a non-root `app` user, copies only application source, owns `/home/app/.cache` and `/data/jobs`, and uses `paper_parser.api:app` as the entry point. Generate and commit the parser dependency lock in this task, inside Linux, without installing the parser stack into the Windows virtual environment.
 
 - [ ] **Step 4: Generate the parser token and create local `.env`**
 
