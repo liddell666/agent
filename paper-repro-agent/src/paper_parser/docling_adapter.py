@@ -65,9 +65,18 @@ def normalize_item(item: Any, document: Any | None = None) -> PaperElement:
 
 @lru_cache(maxsize=1)
 def _converter():
-    from docling.document_converter import DocumentConverter
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    return DocumentConverter()
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = False
+    pipeline_options.do_table_structure = False
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        }
+    )
 
 
 def parse_pdf_path(path: Path, max_pages: int) -> AdapterResult:

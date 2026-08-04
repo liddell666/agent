@@ -15,3 +15,12 @@ def test_short_token_is_rejected():
 
     with pytest.raises(ValidationError):
         Settings(parser_api_token="short")
+
+
+def test_parser_token_loads_from_documented_environment_name(monkeypatch):
+    token = "environment-token-that-is-32-chars"
+    monkeypatch.setenv("PAPER_PARSER_API_TOKEN", token)
+
+    settings = Settings()
+
+    assert settings.parser_api_token == token
