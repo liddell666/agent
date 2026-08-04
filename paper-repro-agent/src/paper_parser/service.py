@@ -70,6 +70,7 @@ def parse_pdf(content: bytes, file_name: str, settings: Settings) -> ParsedPaper
 
     work_dir = Path(settings.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
+    warnings = []
     with TemporaryDirectory(dir=work_dir) as request_dir:
         pdf_path = Path(request_dir) / "input.pdf"
         pdf_path.write_bytes(content)
@@ -80,10 +81,14 @@ def parse_pdf(content: bytes, file_name: str, settings: Settings) -> ParsedPaper
             if _text_length(primary.elements, page) < 20
         ]
         limited_pages = fallback_pages[:20]
-        fallback = paddle_adapter.parse_pages(pdf_path, limited_pages)
+        try:
+            fallback = paddle_adapter.parse_pages(pdf_path, limited_pages)
+        except (ImportError, RuntimeError) as exc:
+            fallback = []
+            warnings.append(f"ocr_fallback_unavailable:{type(exc).__name__}")
 
     elements, replaced = _merge_fallback(primary.elements, fallback, limited_pages)
-    warnings = list(primary.warnings)
+    warnings = list(primary.warnings) + warnings
     for page in limited_pages:
         if page not in replaced:
             warnings.append(f"low_confidence_page:{page}")

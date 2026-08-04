@@ -86,3 +86,26 @@ def test_low_text_page_uses_better_fallback(monkeypatch, tmp_path):
     assert requested_pages == [2]
     assert any("Recovered AUC" in element.text for element in result.elements)
     assert not any(element.text == "tiny" for element in result.elements)
+
+
+def test_unavailable_ocr_fallback_keeps_primary_parse(monkeypatch, tmp_path):
+    primary = SimpleNamespace(
+        page_count=2,
+        markdown="primary",
+        elements=[
+            PaperElement(kind="text", page=1, text="Enough primary text for page one."),
+            PaperElement(kind="text", page=2, text="tiny"),
+        ],
+        warnings=[],
+    )
+    monkeypatch.setattr(service.docling_adapter, "parse_pdf_path", lambda *_args, **_kwargs: primary)
+
+    def unavailable_ocr(_path, _pages):
+        raise RuntimeError("PaddleX OCR extra is unavailable")
+
+    monkeypatch.setattr(service.paddle_adapter, "parse_pages", unavailable_ocr)
+
+    result = service.parse_pdf(fixture_bytes(), "paper.pdf", settings(tmp_path))
+
+    assert result.markdown == "primary"
+    assert any(warning.startswith("ocr_fallback_unavailable:") for warning in result.warnings)

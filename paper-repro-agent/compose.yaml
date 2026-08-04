@@ -8,6 +8,7 @@ services:
     env_file: .env
     command: ["uvicorn", "paper_parser.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
     volumes:
+      - ./src:/app/src:ro
       - ./data/jobs:/data/jobs
       - parser-model-cache:/home/app/.cache
     networks:
