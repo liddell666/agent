@@ -141,6 +141,43 @@ docker compose -f .\compose.yaml stop paper-parser
 
 不要删除 Dify 的数据库、Redis、Weaviate 或存储卷。
 
+## 6. V2 表格实验服务（repro-runner）
+
+`repro-runner` 是独立于论文 PDF 解析器的实验服务：它接收 CSV、校验数据并训练固定配置的随机森林基线。它不会把 CSV 行发送到大模型，也不保存原始 CSV。
+
+在项目目录启动或重建服务：
+
+```powershell
+docker compose up -d repro-runner
+docker compose up -d --build repro-runner
+```
+
+检查服务是否可用：
+
+```powershell
+Invoke-RestMethod http://localhost:8001/healthz
+docker inspect repro-runner --format '{{.State.Health.Status}}'
+docker compose ps repro-runner
+```
+
+用提供的训练样本执行一次端到端冒烟测试：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_experiment.ps1
+```
+
+预期数据校验结果为：15180 行、16 个特征、0 个缺失值、66 个重复行；训练响应包含非空 `experiment_id`，且 `status` 为 `succeeded`。结果的 `reproducibility_status=baseline_only` 表示独立基线实验，不能将其表述为论文的精确复现。
+
+在 Dify 中，请按 [repro-experiment-workflow.md](../dify/repro-experiment-workflow.md) 新建“表格实验复现”工作流。不要修改已经发布的“论文复现档案”工作流。
+
+首次从 Dify 调用前，确认 Dify 的 `.env` 中 `SSRF_PROXY_ALLOW_PRIVATE_DOMAINS` 同时包含 `paper-parser,repro-runner`，然后只重建无状态服务：
+
+```powershell
+docker compose -f E:\Docker\Projects\dify\docker\docker-compose.yaml up -d --force-recreate api worker worker_beat ssrf_proxy nginx
+```
+
+不要删除 Dify 的数据库、Redis、Weaviate 或存储卷。
+
 ## 官方参考
 
 - Dify 模型供应商：https://docs.dify.ai/zh-hans/guides/model-configuration/readme
