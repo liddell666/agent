@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
-from functools import lru_cache
-from threading import BoundedSemaphore
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -28,7 +27,12 @@ from repro_runner.schemas import (
     ValidationErrorItem,
     ValidationResponse,
 )
-from repro_runner.storage import ResultNotFoundError, load_result, save_result
+from repro_runner.storage import (
+    ResultFormatError,
+    ResultNotFoundError,
+    load_result,
+    save_result,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,39 @@ class ComparisonRequest(BaseModel):
 
     experiment_id: str
     reported_metrics: list[ReportedMetricInput] = Field(default_factory=list)
+
+
+class ExperimentAdmissionLimiter:
+    """App-owned event-loop limiters with immediate saturation rejection."""
+
+    def __init__(self) -> None:
+        self._limiters: dict[asyncio.AbstractEventLoop, dict[int, asyncio.Semaphore]] = {}
+
+    def _semaphore(self, max_concurrent_experiments: int) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        per_loop = self._limiters.setdefault(loop, {})
+        return per_loop.setdefault(
+            max(1, max_concurrent_experiments),
+            asyncio.Semaphore(max(1, max_concurrent_experiments)),
+        )
+
+    async def try_acquire(self, max_concurrent_experiments: int) -> bool:
+        semaphore = self._semaphore(max_concurrent_experiments)
+        if semaphore.locked():
+            return False
+        await semaphore.acquire()
+        return True
+
+    def release(self, max_concurrent_experiments: int) -> None:
+        self._semaphore(max_concurrent_experiments).release()
+
+    def is_saturated(self, max_concurrent_experiments: int) -> bool:
+        capacity = max(1, max_concurrent_experiments)
+        return any(
+            semaphore.locked()
+            for per_loop in self._limiters.values()
+            if (semaphore := per_loop.get(capacity)) is not None
+        )
 
 
 @app.exception_handler(RequestValidationError)
@@ -133,6 +170,8 @@ async def get_experiment(
         return await run_in_threadpool(load_result, experiment_id, settings)
     except ResultNotFoundError:
         raise _not_found_error() from None
+    except ResultFormatError:
+        raise _result_format_error() from None
     except Exception:
         request_id = _request_id()
         logger.exception("experiment retrieval failed request_id=%s", request_id)
@@ -147,6 +186,8 @@ async def compare_result(
         result = await run_in_threadpool(load_result, request.experiment_id, settings)
     except ResultNotFoundError:
         raise _not_found_error() from None
+    except ResultFormatError:
+        raise _result_format_error() from None
     except Exception:
         request_id = _request_id()
         logger.exception("experiment comparison lookup failed request_id=%s", request_id)
@@ -183,21 +224,31 @@ def _dataset_error(exc: DatasetError) -> HTTPException:
     )
 
 
-@lru_cache(maxsize=16)
-def _experiment_gate(max_concurrent_experiments: int) -> BoundedSemaphore:
-    """Keep CPU-bound model fitting within the configured per-process limit."""
-    return BoundedSemaphore(max(1, max_concurrent_experiments))
+def _get_experiment_limiter() -> ExperimentAdmissionLimiter:
+    limiter = getattr(app.state, "experiment_limiter", None)
+    if limiter is None:
+        limiter = ExperimentAdmissionLimiter()
+        app.state.experiment_limiter = limiter
+    return limiter
 
 
 @asynccontextmanager
 async def _admit_experiment(settings: Settings):
     """Serialize the entire read, parse, train, and save lifecycle per process."""
-    gate = _experiment_gate(settings.max_concurrent_experiments)
-    await run_in_threadpool(gate.acquire)
+    limiter = _get_experiment_limiter()
+    if not await limiter.try_acquire(settings.max_concurrent_experiments):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "experiment_capacity_reached",
+                "message": "the experiment service is at its configured capacity",
+                "request_id": _request_id(),
+            },
+        )
     try:
         yield
     finally:
-        gate.release()
+        limiter.release(settings.max_concurrent_experiments)
 
 
 def _execute_experiment(bundle: object, config: object, settings: Settings) -> ExperimentResult:
@@ -214,6 +265,18 @@ def _not_found_error() -> HTTPException:
         detail={
             "code": "experiment_not_found",
             "message": "experiment result was not found",
+            "request_id": request_id,
+        },
+    )
+
+
+def _result_format_error() -> HTTPException:
+    request_id = _request_id()
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "experiment_result_incompatible",
+            "message": "experiment result uses an unsupported or corrupted format",
             "request_id": request_id,
         },
     )

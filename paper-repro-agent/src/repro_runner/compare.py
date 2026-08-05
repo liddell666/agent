@@ -98,6 +98,8 @@ def _comparison_reason(
         return "metric name is not supported"
     if paper_value is None:
         return "reported value is not numeric"
+    if result.split_provenance is None:
+        return "independent experiment is a legacy artifact without split provenance"
     if metric.dataset is None or metric.split is None:
         return "paper metric is missing dataset or split qualifiers"
     if metric.dataset_id is None:

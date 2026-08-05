@@ -13,7 +13,13 @@ from repro_runner.schemas import (
     SplitProvenance,
 )
 import repro_runner.storage as storage
-from repro_runner.storage import ResultNotFoundError, create_experiment_id, load_result, save_result
+from repro_runner.storage import (
+    ResultFormatError,
+    ResultNotFoundError,
+    create_experiment_id,
+    load_result,
+    save_result,
+)
 
 
 DATASET_ID = "sha256:" + "a" * 64
@@ -219,6 +225,47 @@ def test_storage_failure_does_not_publish_a_partial_experiment(tmp_path):
     assert not (tmp_path / result.experiment_id).exists()
     with pytest.raises(ResultNotFoundError):
         load_result(result.experiment_id, settings)
+
+
+def test_old_result_without_split_provenance_loads_as_legacy_and_incomparable(tmp_path):
+    result = make_result()
+    payload = storage._result_payload(result)
+    payload.pop("split_provenance")
+    directory = tmp_path / result.experiment_id
+    directory.mkdir()
+    (directory / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_result(result.experiment_id, Settings(storage_dir=tmp_path))
+    comparison = compare_metrics(
+        loaded,
+        [{
+            "name": "roc_auc",
+            "reported_value": 0.91,
+            "dataset": "test",
+            "split": "test",
+            "dataset_id": DATASET_ID,
+            "test_size": 0.2,
+            "random_state": 42,
+            "train_rows": 8,
+            "test_rows": 2,
+            "test_digest": "sha256:" + "c" * 64,
+        }],
+    )
+
+    assert loaded.split_provenance is None
+    assert loaded.reproducibility_status == "legacy_incomparable"
+    assert comparison.items[0].comparable is False
+    assert "legacy" in comparison.items[0].reason
+
+
+def test_incompatible_result_is_not_misreported_as_missing(tmp_path):
+    experiment_id = "exp-20260805T010203Z-deadbeef"
+    directory = tmp_path / experiment_id
+    directory.mkdir()
+    (directory / "result.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ResultFormatError):
+        load_result(experiment_id, Settings(storage_dir=tmp_path))
 
 
 @pytest.mark.parametrize("experiment_id", ["../outside", "exp-2026/../../outside", "", "not-an-experiment"])

@@ -84,12 +84,60 @@ The ELSE branch must first run a dedicated Code node named
 three End values (`validation_json`, `experiment_json`, and `markdown_summary`), with
 `experiment_json` set to `{}`. Its summary must say that validation rejected the CSV.
 
+Configure the node exactly as follows:
+
+```text
+Input: validation_json = {{#parse_validation_response.validation_json#}}
+Outputs: validation_json (String), experiment_json (String), markdown_summary (String)
+```
+
+```python
+import json
+
+
+def main(validation_json):
+    try:
+        validation = json.loads(validation_json) if isinstance(validation_json, str) else validation_json
+    except (TypeError, json.JSONDecodeError):
+        validation = {"valid": False, "errors": [{"code": "invalid_validation_response", "message": "Validation response could not be read."}]}
+    if not isinstance(validation, dict):
+        validation = {"valid": False, "errors": [{"code": "invalid_validation_response", "message": "Validation response must be an object."}]}
+    validation["valid"] = False
+    return {
+        "validation_json": json.dumps(validation, ensure_ascii=False),
+        "experiment_json": "{}",
+        "markdown_summary": "数据校验未通过；请根据 validation_json 中的错误修正 CSV。",
+    }
+```
+
 The `validate_dataset` HTTP node's error-handling branch must instead run a separate
 Code node named `normalize_validation_http_failure`. Give it **no input from
 `validate_dataset`**: return a static structured validation error, `{}` for
 `experiment_json`, and a network/service failure summary. This is important because a
 failed HTTP node has no usable `body`, and `parse_validation_response` did not run.
 Do not retry through a model.
+
+Configure `normalize_validation_http_failure` with no inputs and these outputs:
+
+```text
+Outputs: validation_json (String), experiment_json (String), markdown_summary (String)
+```
+
+```python
+import json
+
+
+def main():
+    validation = {
+        "valid": False,
+        "errors": [{"code": "validation_service_unavailable", "message": "The validation service request failed."}],
+    }
+    return {
+        "validation_json": json.dumps(validation, ensure_ascii=False),
+        "experiment_json": "{}",
+        "markdown_summary": "数据校验服务暂时不可用；请稍后重试。",
+    }
+```
 
 ## 3. Run experiment node
 
@@ -123,6 +171,92 @@ normalizes `{{#run_experiment.body#}}` into `experiment_ok` (Boolean),
   `run_experiment.body` or `parse_experiment_response`.
 
 No LLM node is needed for the V2 experiment workflow.
+
+Configure `parse_experiment_response` exactly as follows:
+
+```text
+Input: body = {{#run_experiment.body#}}
+Outputs: experiment_ok (Boolean), experiment_json (String), experiment_errors (String)
+```
+
+```python
+import json
+
+
+def main(body):
+    try:
+        experiment = json.loads(body) if isinstance(body, str) else body
+    except (TypeError, json.JSONDecodeError):
+        experiment = {"status": "rejected", "errors": [{"code": "invalid_experiment_response", "message": "Experiment response could not be read."}]}
+    if not isinstance(experiment, dict):
+        experiment = {"status": "rejected", "errors": [{"code": "invalid_experiment_response", "message": "Experiment response must be an object."}]}
+    errors = experiment.get("errors", [])
+    if not isinstance(errors, list):
+        errors = [{"code": "invalid_experiment_response", "message": "Experiment error list is invalid."}]
+    ok = experiment.get("status") == "succeeded" and bool(experiment.get("experiment_id"))
+    if not ok and not errors:
+        errors = [{"code": "experiment_rejected", "message": "The experiment did not return a successful result."}]
+    normalized = {**experiment, "errors": errors}
+    return {
+        "experiment_ok": ok,
+        "experiment_json": json.dumps(normalized, ensure_ascii=False),
+        "experiment_errors": json.dumps(errors, ensure_ascii=False),
+    }
+```
+
+Configure `format_experiment_rejection` exactly as follows:
+
+```text
+Inputs: validation_json = {{#parse_validation_response.validation_json#}}, experiment_json = {{#parse_experiment_response.experiment_json#}}
+Outputs: validation_json (String), experiment_json (String), markdown_summary (String)
+```
+
+```python
+import json
+
+
+def main(validation_json, experiment_json):
+    try:
+        validation = json.loads(validation_json) if isinstance(validation_json, str) else validation_json
+    except (TypeError, json.JSONDecodeError):
+        validation = {"valid": True}
+    try:
+        experiment = json.loads(experiment_json) if isinstance(experiment_json, str) else experiment_json
+    except (TypeError, json.JSONDecodeError):
+        experiment = {"status": "rejected", "errors": [{"code": "invalid_experiment_response", "message": "Experiment response could not be read."}]}
+    return {
+        "validation_json": json.dumps(validation if isinstance(validation, dict) else {"valid": True}, ensure_ascii=False),
+        "experiment_json": json.dumps(experiment if isinstance(experiment, dict) else {"status": "rejected"}, ensure_ascii=False),
+        "markdown_summary": "实验未完成；请查看 experiment_json 中的错误详情。",
+    }
+```
+
+Configure `normalize_experiment_http_failure` exactly as follows:
+
+```text
+Input: validation_json = {{#parse_validation_response.validation_json#}}
+Outputs: validation_json (String), experiment_json (String), markdown_summary (String)
+```
+
+```python
+import json
+
+
+def main(validation_json):
+    try:
+        validation = json.loads(validation_json) if isinstance(validation_json, str) else validation_json
+    except (TypeError, json.JSONDecodeError):
+        validation = {"valid": True}
+    experiment = {
+        "status": "rejected",
+        "errors": [{"code": "experiment_service_unavailable", "message": "The experiment service request failed."}],
+    }
+    return {
+        "validation_json": json.dumps(validation if isinstance(validation, dict) else {"valid": True}, ensure_ascii=False),
+        "experiment_json": json.dumps(experiment, ensure_ascii=False),
+        "markdown_summary": "实验服务暂时不可用；请稍后重试。",
+    }
+```
 
 ## 4. Report formatter code node
 

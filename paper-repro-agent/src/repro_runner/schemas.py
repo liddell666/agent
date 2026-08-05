@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DatasetOptions(BaseModel):
@@ -94,8 +94,17 @@ class ExperimentResult(BaseModel):
     dataset: DatasetProfile
     metrics: ExperimentMetrics
     feature_importance: list[FeatureImportance]
-    split_provenance: SplitProvenance
-    reproducibility_status: Literal["baseline_only"] = "baseline_only"
+    split_provenance: SplitProvenance | None = None
+    reproducibility_status: Literal["baseline_only", "legacy_incomparable"] = (
+        "baseline_only"
+    )
+
+    @model_validator(mode="after")
+    def mark_missing_provenance_as_legacy(self) -> "ExperimentResult":
+        """Keep V2 artifacts created before split provenance safely readable."""
+        if self.split_provenance is None:
+            self.reproducibility_status = "legacy_incomparable"
+        return self
 
 
 class ReportedMetricInput(BaseModel):

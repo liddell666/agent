@@ -9,6 +9,8 @@ import re
 import secrets
 import shutil
 
+from pydantic import ValidationError
+
 from repro_runner.config import Settings
 from repro_runner.schemas import ExperimentResult
 from repro_runner import __version__
@@ -19,6 +21,10 @@ _EXPERIMENT_ID = re.compile(r"exp-[A-Za-z0-9-]+\Z")
 
 class ResultNotFoundError(LookupError):
     """Raised when a requested persisted experiment is unavailable."""
+
+
+class ResultFormatError(ValueError):
+    """Raised when a stored result exists but cannot match a supported contract."""
 
 
 def create_experiment_id() -> str:
@@ -56,9 +62,14 @@ def load_result(experiment_id: str, settings: Settings) -> ExperimentResult:
     try:
         directory = _experiment_directory(_validate_experiment_id(experiment_id), settings)
         payload = json.loads((directory / "result.json").read_text(encoding="utf-8"))
-        return ExperimentResult.model_validate(payload)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ResultNotFoundError("experiment result was not found") from exc
+    try:
+        return ExperimentResult.model_validate(payload)
+    except ValidationError as exc:
+        raise ResultFormatError(
+            "experiment result uses an unsupported or corrupted result format"
+        ) from exc
 
 
 def _validate_experiment_id(experiment_id: str) -> str:

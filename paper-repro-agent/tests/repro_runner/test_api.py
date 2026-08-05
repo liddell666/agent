@@ -1,4 +1,7 @@
+import asyncio
+
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from repro_runner import api
@@ -239,22 +242,22 @@ def test_run_experiment_admits_request_before_reading_or_parsing(
     original_load = api.load_dataset
 
     async def observed_read(file, settings):
-        gate = api._experiment_gate(settings.max_concurrent_experiments)
-        assert gate.acquire(blocking=False) is False
+        assert api._get_experiment_limiter().is_saturated(
+            settings.max_concurrent_experiments
+        )
         states.append("read")
         return await original_read(file, settings)
 
     def observed_load(*args, **kwargs):
         settings = args[-1]
-        gate = api._experiment_gate(settings.max_concurrent_experiments)
-        assert gate.acquire(blocking=False) is False
+        assert api._get_experiment_limiter().is_saturated(
+            settings.max_concurrent_experiments
+        )
         states.append("parse")
         return original_load(*args, **kwargs)
 
     monkeypatch.setattr(api, "_read_upload", observed_read)
     monkeypatch.setattr(api, "load_dataset", observed_load)
-    api._experiment_gate.cache_clear()
-
     response = client.post(
         "/v1/run-experiment",
         files={"file": ("data.csv", _csv(), "text/csv")},
@@ -262,3 +265,33 @@ def test_run_experiment_admits_request_before_reading_or_parsing(
 
     assert response.status_code == 200
     assert states == ["read", "parse"]
+
+
+def test_async_admission_rejects_saturation_and_recovers_after_cancellation():
+    async def scenario():
+        settings = Settings(max_concurrent_experiments=1)
+        api.app.state.experiment_limiter = api.ExperimentAdmissionLimiter()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_slot():
+            async with api._admit_experiment(settings):
+                entered.set()
+                await release.wait()
+
+        holder = asyncio.create_task(hold_slot())
+        await entered.wait()
+        with pytest.raises(HTTPException) as error:
+            async with api._admit_experiment(settings):
+                pass
+        assert error.value.status_code == 429
+        assert error.value.detail["code"] == "experiment_capacity_reached"
+
+        holder.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await holder
+
+        async with api._admit_experiment(settings):
+            pass
+
+    asyncio.run(scenario())

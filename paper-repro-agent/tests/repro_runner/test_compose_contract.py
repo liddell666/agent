@@ -71,3 +71,34 @@ def test_dify_error_branches_only_use_outputs_they_create():
     ):
         assert node in workflow
     assert "Every error branch ends using only variables created on that branch" in workflow
+
+
+def test_dify_response_and_error_code_nodes_have_copyable_contracts():
+    workflow = Path("dify/repro-experiment-workflow.md").read_text(encoding="utf-8")
+
+    expected_contracts = {
+        "parse_experiment_response": (
+            "Outputs: experiment_ok (Boolean), experiment_json (String), experiment_errors (String)",
+            "def main(body):",
+        ),
+        "normalize_validation_http_failure": (
+            "Outputs: validation_json (String), experiment_json (String), markdown_summary (String)",
+            "def main():",
+        ),
+        "format_validation_rejection": (
+            "Outputs: validation_json (String), experiment_json (String), markdown_summary (String)",
+            "def main(validation_json):",
+        ),
+        "normalize_experiment_http_failure": (
+            "Outputs: validation_json (String), experiment_json (String), markdown_summary (String)",
+            "def main(validation_json):",
+        ),
+        "format_experiment_rejection": (
+            "Outputs: validation_json (String), experiment_json (String), markdown_summary (String)",
+            "def main(validation_json, experiment_json):",
+        ),
+    }
+    for node, snippets in expected_contracts.items():
+        section = workflow.split(f"`{node}`", maxsplit=1)[1]
+        for snippet in snippets:
+            assert snippet in section
