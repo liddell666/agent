@@ -108,6 +108,29 @@ def test_missing_experiment_has_not_found_code_and_request_id(client: TestClient
     assert detail["request_id"]
 
 
+@pytest.mark.parametrize("entrypoint", ["get", "compare"])
+def test_corrupt_stored_result_returns_409_not_not_found(
+    client: TestClient, tmp_path, entrypoint: str
+):
+    experiment_id = "exp-20260805T010203Z-deadbeef"
+    directory = tmp_path / experiment_id
+    directory.mkdir()
+    (directory / "result.json").write_bytes(b"{not-json")
+
+    if entrypoint == "get":
+        response = client.get(f"/v1/experiments/{experiment_id}")
+    else:
+        response = client.post(
+            "/v1/compare-result",
+            json={"experiment_id": experiment_id, "reported_metrics": []},
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "experiment_result_incompatible"
+    assert detail["request_id"]
+
+
 def test_compare_result_uses_persisted_experiment(client: TestClient):
     result = client.post(
         "/v1/run-experiment",

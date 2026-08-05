@@ -268,6 +268,17 @@ def test_incompatible_result_is_not_misreported_as_missing(tmp_path):
         load_result(experiment_id, Settings(storage_dir=tmp_path))
 
 
+@pytest.mark.parametrize("content", [b"{not-json", b"\xff\xfe\x00"])
+def test_corrupt_result_content_is_not_misreported_as_missing(tmp_path, content):
+    experiment_id = "exp-20260805T010203Z-deadbeef"
+    directory = tmp_path / experiment_id
+    directory.mkdir()
+    (directory / "result.json").write_bytes(content)
+
+    with pytest.raises(ResultFormatError):
+        load_result(experiment_id, Settings(storage_dir=tmp_path))
+
+
 @pytest.mark.parametrize("experiment_id", ["../outside", "exp-2026/../../outside", "", "not-an-experiment"])
 def test_load_result_rejects_invalid_or_missing_experiment_ids(tmp_path, experiment_id):
     with pytest.raises(ResultNotFoundError):

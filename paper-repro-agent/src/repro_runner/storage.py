@@ -61,9 +61,21 @@ def load_result(experiment_id: str, settings: Settings) -> ExperimentResult:
     """Load a persisted result without permitting paths outside the result root."""
     try:
         directory = _experiment_directory(_validate_experiment_id(experiment_id), settings)
-        payload = json.loads((directory / "result.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        content = (directory / "result.json").read_text(encoding="utf-8")
+    except ResultNotFoundError:
+        raise
+    except OSError as exc:
         raise ResultNotFoundError("experiment result was not found") from exc
+    except UnicodeDecodeError as exc:
+        raise ResultFormatError(
+            "experiment result uses an unsupported or corrupted result format"
+        ) from exc
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ResultFormatError(
+            "experiment result uses an unsupported or corrupted result format"
+        ) from exc
     try:
         return ExperimentResult.model_validate(payload)
     except ValidationError as exc:
