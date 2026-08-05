@@ -36,8 +36,9 @@ services:
     env_file: .env
     environment:
       REPRO_RUNNER_STORAGE_DIR: /data/experiments
+      REPRO_RUNNER_MAX_CONCURRENT_EXPERIMENTS: "1"
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     volumes:
       - ./src:/app/src:ro
       - ./data/experiments:/data/experiments
@@ -45,6 +46,8 @@ services:
       dify:
         aliases: [repro-runner]
     init: true
+    mem_limit: 4g
+    cpus: 4
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import math
 from dataclasses import dataclass, field
@@ -65,8 +66,18 @@ def load_dataset(
     _validate_target_classes(frame[target_column])
 
     warnings: list[str] = []
-    profile = profile_dataset(frame, target_column, warnings)
-    prepared_frame = frame.drop_duplicates().reset_index(drop=True) if options.drop_duplicates else frame
+    prepared_frame = (
+        frame.drop_duplicates().reset_index(drop=True)
+        if options.drop_duplicates
+        else frame
+    )
+    profile = profile_dataset(
+        frame,
+        target_column,
+        warnings,
+        effective_rows=len(prepared_frame),
+        dataset_id=_dataset_id(content),
+    )
 
     return DatasetBundle(
         frame=prepared_frame,
@@ -78,7 +89,12 @@ def load_dataset(
 
 
 def profile_dataset(
-    frame: pd.DataFrame, target_column: str, warnings: list[str]
+    frame: pd.DataFrame,
+    target_column: str,
+    warnings: list[str],
+    *,
+    effective_rows: int | None = None,
+    dataset_id: str = "",
 ) -> DatasetProfile:
     """Return aggregate metadata only; never include source rows in the profile."""
     feature_columns = [column for column in frame.columns if column != target_column]
@@ -90,6 +106,7 @@ def profile_dataset(
 
     return DatasetProfile(
         rows=rows,
+        effective_rows=rows if effective_rows is None else effective_rows,
         features=len(feature_columns),
         target=target_column,
         missing_values=_missing_value_count(frame, target_column),
@@ -102,6 +119,7 @@ def profile_dataset(
             str(column): (float(frame[column].min()), float(frame[column].max()))
             for column in feature_columns
         },
+        dataset_id=dataset_id,
     )
 
 
@@ -217,3 +235,8 @@ def _is_non_finite_token(value: object) -> bool:
 
 def _is_missing_target_token(value: object) -> bool:
     return isinstance(value, str) and value.strip().casefold() in {"nan", "na", "n/a"}
+
+
+def _dataset_id(content: bytes) -> str:
+    """Return a one-way content fingerprint without retaining source rows."""
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"

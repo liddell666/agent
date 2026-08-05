@@ -138,3 +138,17 @@ def test_uses_sorted_second_label_as_positive_class_and_half_threshold():
     assert result.metrics.recall == 0.0
     assert result.metrics.f1 == 0.0
     assert result.metrics.confusion_matrix == [[2, 0], [2, 0]]
+
+
+def test_result_records_effective_rows_after_duplicate_removal():
+    content = b"x,Y_cls\n1,0\n1,0\n2,0\n3,1\n3,1\n4,1\n"
+    bundle = load_dataset(
+        content, DatasetOptions(drop_duplicates=True), Settings()
+    )
+
+    result = run_random_forest(
+        bundle, ExperimentConfig(drop_duplicates=True, test_size=0.5)
+    )
+
+    assert result.dataset.rows == 6
+    assert result.dataset.effective_rows == 4

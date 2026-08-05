@@ -16,9 +16,8 @@ Create a Workflow application named `表格实验复现` and add these start var
 | `random_state` | Number | No | `42` | Non-negative deterministic seed. |
 | `drop_duplicates` | Boolean | No | `false` | Whether training removes duplicate rows. |
 
-Do **not** connect `training_csv` to an LLM node, knowledge base, template, or prompt.
-The uploaded CSV goes only to `repro-runner`; its raw rows must never be put in an LLM
-context or workflow output.
+The uploaded CSV goes only to `repro-runner`; its raw rows must never be put in a
+model context, knowledge base, template, prompt, or workflow output.
 
 ## 2. Validate dataset node
 
@@ -32,20 +31,61 @@ Add an **HTTP Request** node named `validate_dataset`.
 | Field `file` | `{{#start.training_csv#}}` (File) |
 | Field `target_column` | `{{#start.target_column#}}` (Text) |
 
-Add an IF/ELSE node named `validation_ok` after it. Its successful condition is:
+Immediately after that HTTP node, add a **Code** node named
+`parse_validation_response`. It converts Dify's HTTP `body` string to safe, normalized
+values before any branch reads it. Configure one input and three outputs:
 
 ```text
-{{#validate_dataset.body.valid#}} equals true
+Input:  body = {{#validate_dataset.body#}}
+Outputs: validation_ok (Boolean), validation_json (String), validation_errors (String)
+```
+
+Use this code:
+
+```python
+import json
+
+
+def main(body):
+    try:
+        response = json.loads(body) if isinstance(body, str) else body
+    except (TypeError, json.JSONDecodeError):
+        response = {
+            "valid": False,
+            "errors": [{"code": "invalid_validation_response", "message": "The validation service returned invalid JSON."}],
+        }
+
+    if not isinstance(response, dict):
+        response = {
+            "valid": False,
+            "errors": [{"code": "invalid_validation_response", "message": "The validation service response must be an object."}],
+        }
+
+    errors = response.get("errors", [])
+    if not isinstance(errors, list):
+        errors = [{"code": "invalid_validation_response", "message": "The validation error list is invalid."}]
+    normalized = {**response, "errors": errors, "valid": response.get("valid") is True}
+    return {
+        "validation_ok": normalized["valid"],
+        "validation_json": json.dumps(normalized, ensure_ascii=False),
+        "validation_errors": json.dumps(errors, ensure_ascii=False),
+    }
+```
+
+Add an IF/ELSE node named `validation_ok` after the Code node. Its successful condition is:
+
+```text
+{{#parse_validation_response.validation_ok#}} equals true
 ```
 
 The ELSE branch goes straight to the End node and returns:
 
-- `validation_json`: `{{#validate_dataset.body#}}`
+- `validation_json`: `{{#parse_validation_response.validation_json#}}`
 - `experiment_json`: `{}`
 - `markdown_summary`: `数据校验失败。请检查标签列、数值特征、缺失值和错误详情。`
 
 If the HTTP node itself fails (network, 4xx, or 5xx), use its error-handling branch to
-the same End node. Do not retry by sending the file to a model.
+the same End node. Do not retry through a model.
 
 ## 3. Run experiment node
 
@@ -133,8 +173,13 @@ Expose exactly these three outputs:
 | Output name | Value |
 | --- | --- |
 | `experiment_json` | `{{#run_experiment.body#}}` |
-| `validation_json` | `{{#validate_dataset.body#}}` |
+| `validation_json` | `{{#parse_validation_response.validation_json#}}` |
 | `markdown_summary` | `{{#format_experiment_report.markdown_summary#}}` |
 
-The Start variable `training_csv` is deliberately absent from End outputs. The service
-stores result metadata only and does not store a copy of the uploaded CSV.
+The Start file is deliberately absent from End outputs. The service stores result
+metadata only and does not store a copy of the uploaded CSV.
+
+## LLM safety
+
+No LLM node is used in this V2 workflow. The CSV is posted only as multipart form data
+to `repro-runner`; neither raw file content nor individual rows are sent to a model.

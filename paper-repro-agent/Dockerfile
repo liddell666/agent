@@ -26,8 +26,17 @@ COPY requirements-test.lock /tmp/requirements-test.lock
 RUN python -m pip install \
         --extra-index-url https://download.pytorch.org/whl/cpu \
         --requirement /tmp/requirements-test.lock
+# The parser test lock already pins FastAPI, NumPy, pandas, and SciPy.  Add only
+# the V2-only packages so its independently pinned PyYAML version is not replaced.
+RUN python -m pip install --no-deps \
+        joblib==1.5.3 \
+        narwhals==2.24.0 \
+        scikit-learn==1.9.0 \
+        threadpoolctl==3.6.0
 COPY pyproject.toml ./
+COPY compose.yaml Dockerfile.repro requirements-repro.in requirements-repro.lock ./
 COPY src ./src
+COPY dify ./dify
 COPY tests ./tests
 ENV PYTHONPATH=/app/src
 CMD ["python", "-m", "pytest", "-v"]

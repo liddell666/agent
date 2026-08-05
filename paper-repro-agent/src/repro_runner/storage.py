@@ -11,6 +11,7 @@ import shutil
 
 from repro_runner.config import Settings
 from repro_runner.schemas import ExperimentResult
+from repro_runner import __version__
 
 
 _EXPERIMENT_ID = re.compile(r"exp-[A-Za-z0-9-]+\Z")
@@ -39,7 +40,7 @@ def save_result(result: ExperimentResult, settings: Settings) -> str:
     temporary.mkdir()
     try:
         _write_json_atomic(temporary / "result.json", _result_payload(result))
-        _write_json_atomic(temporary / "config.json", _config_payload(result))
+        _write_json_atomic(temporary / "config.json", _stored_config_payload(result))
         _write_json_atomic(
             temporary / "dataset_profile.json", _dataset_profile_payload(result)
         )
@@ -120,10 +121,16 @@ def _config_payload(result: ExperimentResult) -> dict[str, object]:
     }
 
 
+def _stored_config_payload(result: ExperimentResult) -> dict[str, object]:
+    """Persist the execution settings together with the runner release."""
+    return {**_config_payload(result), "service_version": __version__}
+
+
 def _dataset_profile_payload(result: ExperimentResult) -> dict[str, object]:
     dataset = result.dataset
     return {
         "rows": dataset.rows,
+        "effective_rows": dataset.effective_rows,
         "features": dataset.features,
         "target": dataset.target,
         "missing_values": dataset.missing_values,
@@ -133,4 +140,5 @@ def _dataset_profile_payload(result: ExperimentResult) -> dict[str, object]:
         "column_names": dataset.column_names,
         "column_types": dataset.column_types,
         "numeric_ranges": dataset.numeric_ranges,
+        "dataset_id": dataset.dataset_id,
     }

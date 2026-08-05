@@ -25,9 +25,9 @@ def compare_metrics(
 ) -> ComparisonResponse:
     """Compare named paper metrics to the experiment's held-out-test metrics.
 
-    An arithmetic difference is useful context even when the paper did not
-    identify a compatible dataset and split, but such a pair is never marked
-    comparable.
+    An arithmetic difference is useful context even when paper provenance is
+    incomplete, but a pair is comparable only if it identifies the same input
+    dataset and the held-out test split used by this service.
     """
     independent = _metric_values(result)
     items = []
@@ -36,12 +36,18 @@ def compare_metrics(
         metric_key = _normalize_metric_name(metric.name)
         paper_value = _parse_number(metric.reported_value)
         independent_value = independent.get(metric_key)
-        reason = _comparison_reason(metric, metric_key, paper_value, independent_value)
+        reason = _comparison_reason(
+            metric,
+            metric_key,
+            paper_value,
+            independent_value,
+            result.dataset.dataset_id,
+        )
         comparable = reason is None
         absolute_difference = None
         relative_difference = None
         if paper_value is not None and independent_value is not None:
-            absolute_difference = _round_public(independent_value - paper_value)
+            absolute_difference = _round_public(abs(independent_value - paper_value))
             if paper_value != 0:
                 relative_difference = _round_public(
                     (independent_value - paper_value) / abs(paper_value)
@@ -86,6 +92,7 @@ def _comparison_reason(
     metric_key: str,
     paper_value: float | None,
     independent_value: float | None,
+    result_dataset_id: str,
 ) -> str | None:
     if metric_key not in _METRIC_ALIASES.values() and independent_value is None:
         return "metric name is not supported"
@@ -93,6 +100,10 @@ def _comparison_reason(
         return "reported value is not numeric"
     if metric.dataset is None or metric.split is None:
         return "paper metric is missing dataset or split qualifiers"
+    if metric.dataset_id is None:
+        return "paper metric is missing dataset identity"
+    if metric.dataset_id != result_dataset_id:
+        return "paper metric dataset identity differs from the independent dataset"
     if _normalized_qualifier(metric.dataset) != _INDEPENDENT_DATASET:
         return "paper metric dataset differs from the independent test dataset"
     if _normalized_qualifier(metric.split) != _INDEPENDENT_SPLIT:

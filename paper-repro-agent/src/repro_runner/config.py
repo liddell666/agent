@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     max_columns: int = 256
     default_target_column: str = "Y_cls"
     storage_dir: Path = Path("/data/experiments")
+    max_concurrent_experiments: int = Field(default=1, ge=1)
 
 
 @lru_cache(maxsize=1)

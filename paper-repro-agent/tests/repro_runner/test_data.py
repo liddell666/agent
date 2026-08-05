@@ -16,6 +16,7 @@ def test_defaults_match_v2_contract():
 
     assert settings.max_upload_mb == 100
     assert settings.max_columns == 256
+    assert settings.max_concurrent_experiments == 1
     assert config.model == "random_forest"
     assert config.test_size == 0.2
     assert config.random_state == 42
@@ -32,6 +33,8 @@ def test_supplied_dataset_profile():
     assert bundle.profile.missing_values == 0
     assert bundle.profile.duplicate_rows == 66
     assert bundle.profile.class_counts == {"0": 13800, "1": 1380}
+    assert bundle.profile.effective_rows == 15180
+    assert bundle.profile.dataset_id.startswith("sha256:")
 
 
 def test_missing_target_is_rejected():
@@ -66,6 +69,7 @@ def test_duplicate_rows_add_warning_before_optional_cleanup():
 
     assert bundle.profile.rows == 6
     assert bundle.profile.duplicate_rows == 2
+    assert bundle.profile.effective_rows == 4
     assert bundle.warnings == ["dataset contains duplicate rows"]
     assert len(bundle.frame) == 4
 
@@ -132,3 +136,17 @@ def test_conventional_missing_target_values_are_rejected(value):
         load_dataset(content, DatasetOptions(), Settings())
 
     assert raised.value.code == "missing_values"
+
+
+def test_dataset_identity_is_a_stable_content_digest():
+    content = b"x,Y_cls\n1,0\n2,0\n3,1\n4,1\n"
+
+    first = load_dataset(content, DatasetOptions(), Settings())
+    second = load_dataset(content, DatasetOptions(), Settings())
+    changed = load_dataset(
+        b"x,Y_cls\n1,0\n2,0\n3,1\n5,1\n", DatasetOptions(), Settings()
+    )
+
+    assert first.profile.dataset_id == second.profile.dataset_id
+    assert first.profile.dataset_id != changed.profile.dataset_id
+    assert len(first.profile.dataset_id.removeprefix("sha256:")) == 64

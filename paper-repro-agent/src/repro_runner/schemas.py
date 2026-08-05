@@ -23,6 +23,7 @@ class DatasetProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rows: int = Field(ge=0)
+    effective_rows: int = Field(ge=0)
     features: int = Field(ge=0)
     target: str
     missing_values: int = Field(ge=0)
@@ -32,6 +33,16 @@ class DatasetProfile(BaseModel):
     column_names: list[str] = Field(default_factory=list)
     column_types: dict[str, str] = Field(default_factory=dict)
     numeric_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    dataset_id: str
+
+
+class ValidationErrorItem(BaseModel):
+    """A safe, structured reason that a CSV cannot be used for V2 training."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
 
 
 class ValidationResponse(BaseModel):
@@ -40,7 +51,7 @@ class ValidationResponse(BaseModel):
     valid: bool
     dataset: DatasetProfile | None = None
     warnings: list[str] = Field(default_factory=list)
-    errors: list[str] = Field(default_factory=list)
+    errors: list[ValidationErrorItem] = Field(default_factory=list)
 
 
 class ExperimentMetrics(BaseModel):
@@ -81,6 +92,7 @@ class ReportedMetricInput(BaseModel):
     reported_value: float | str | None = None
     dataset: str | None = None
     split: str | None = None
+    dataset_id: str | None = None
 
 
 class ComparisonItem(BaseModel):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
+from threading import BoundedSemaphore
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -22,13 +24,14 @@ from repro_runner.schemas import (
     ExperimentConfig,
     ExperimentResult,
     ReportedMetricInput,
+    ValidationErrorItem,
     ValidationResponse,
 )
 from repro_runner.storage import ResultNotFoundError, load_result, save_result
 
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="Reproduction Runner", version="0.1.0")
+app = FastAPI(title="Reproduction Runner", version="0.2.0")
 
 
 class ComparisonRequest(BaseModel):
@@ -66,7 +69,10 @@ async def validate_dataset(
     try:
         bundle = await run_in_threadpool(load_dataset, content, options, settings)
     except DatasetError as exc:
-        raise _dataset_error(exc) from None
+        return ValidationResponse(
+            valid=False,
+            errors=[ValidationErrorItem(code=exc.code, message=exc.message)],
+        )
     except Exception:
         request_id = _request_id()
         logger.exception("dataset validation failed request_id=%s", request_id)
@@ -105,8 +111,7 @@ async def run_experiment(
         raise _internal_error("experiment_failed", request_id) from None
 
     try:
-        result = await run_in_threadpool(run_random_forest, bundle, config)
-        await run_in_threadpool(save_result, result, settings)
+        result = await run_in_threadpool(_execute_experiment, bundle, config, settings)
     except Exception:
         request_id = _request_id()
         logger.exception("experiment execution failed request_id=%s", request_id)
@@ -170,6 +175,20 @@ def _dataset_error(exc: DatasetError) -> HTTPException:
         status_code=422,
         detail={"code": exc.code, "message": exc.message, "request_id": _request_id()},
     )
+
+
+@lru_cache(maxsize=16)
+def _experiment_gate(max_concurrent_experiments: int) -> BoundedSemaphore:
+    """Keep CPU-bound model fitting within the configured per-process limit."""
+    return BoundedSemaphore(max(1, max_concurrent_experiments))
+
+
+def _execute_experiment(bundle: object, config: object, settings: Settings) -> ExperimentResult:
+    """Run one training job under the shared CPU-work semaphore."""
+    with _experiment_gate(settings.max_concurrent_experiments):
+        result = run_random_forest(bundle, config)  # type: ignore[arg-type]
+    save_result(result, settings)
+    return result
 
 
 def _not_found_error() -> HTTPException:

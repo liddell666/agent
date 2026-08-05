@@ -15,6 +15,9 @@ import repro_runner.storage as storage
 from repro_runner.storage import ResultNotFoundError, create_experiment_id, load_result, save_result
 
 
+DATASET_ID = "sha256:" + "a" * 64
+
+
 def make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test"):
     del dataset, split  # V2 reports metrics for its fixed held-out test split.
     metrics = {
@@ -31,7 +34,15 @@ def make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test")
         experiment_id="exp-20260805T010203Z-deadbeef",
         status="succeeded",
         config=ExperimentConfig(),
-        dataset=DatasetProfile(rows=10, features=2, target="Y_cls", missing_values=0, duplicate_rows=0),
+        dataset=DatasetProfile(
+            rows=10,
+            effective_rows=10,
+            features=2,
+            target="Y_cls",
+            missing_values=0,
+            duplicate_rows=0,
+            dataset_id=DATASET_ID,
+        ),
         metrics=ExperimentMetrics(**metrics),
         feature_importance=[],
     )
@@ -42,12 +53,18 @@ def test_comparison_reports_absolute_and_relative_difference():
 
     response = compare_metrics(
         result,
-        [{"name": "AUC", "reported_value": 0.91, "dataset": "test", "split": "test"}],
+        [{
+            "name": "AUC",
+            "reported_value": 0.91,
+            "dataset": "test",
+            "split": "test",
+            "dataset_id": DATASET_ID,
+        }],
     )
 
     item = response.items[0]
     assert item.comparable is True
-    assert item.absolute_difference == -0.01
+    assert item.absolute_difference == 0.01
     assert item.relative_difference == pytest.approx(-0.010989)
     assert item.paper_value == 0.91
     assert item.independent_value == 0.9
@@ -60,13 +77,59 @@ def test_comparison_requires_matching_dataset_and_split_qualifiers():
         result,
         [
             {"name": "roc_auc", "reported_value": "0.91", "dataset": None, "split": "test"},
-            {"name": "roc_auc", "reported_value": "0.91", "dataset": "validation", "split": "test"},
-            {"name": "roc_auc", "reported_value": "0.91", "dataset": "test", "split": None},
+            {
+                "name": "roc_auc",
+                "reported_value": "0.91",
+                "dataset": "validation",
+                "split": "test",
+                "dataset_id": DATASET_ID,
+            },
+            {
+                "name": "roc_auc",
+                "reported_value": "0.91",
+                "dataset": "test",
+                "split": None,
+                "dataset_id": DATASET_ID,
+            },
         ],
     )
 
     assert [item.comparable for item in response.items] == [False, False, False]
-    assert all(item.absolute_difference == -0.01 for item in response.items)
+    assert all(item.absolute_difference == 0.01 for item in response.items)
+
+
+def test_comparison_requires_matching_dataset_identity():
+    result = make_result()
+
+    response = compare_metrics(
+        result,
+        [
+            {
+                "name": "roc_auc",
+                "reported_value": 0.91,
+                "dataset": "test",
+                "split": "test",
+            },
+            {
+                "name": "roc_auc",
+                "reported_value": 0.91,
+                "dataset": "test",
+                "split": "test",
+                "dataset_id": "sha256:" + "b" * 64,
+            },
+            {
+                "name": "roc_auc",
+                "reported_value": 0.91,
+                "dataset": "test",
+                "split": "test",
+                "dataset_id": DATASET_ID,
+            },
+        ],
+    )
+
+    assert [item.comparable for item in response.items] == [False, False, True]
+    assert "identity" in response.items[0].reason
+    assert "identity" in response.items[1].reason
 
 
 def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
@@ -84,7 +147,8 @@ def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
     assert {path.name for path in stored.iterdir()} == {"result.json", "config.json", "dataset_profile.json"}
     loaded = load_result(experiment_id, settings)
     assert loaded.experiment_id == result.experiment_id
-    assert json.loads((stored / "config.json").read_text(encoding="utf-8")) == result.config.model_dump(mode="json")
+    stored_config = json.loads((stored / "config.json").read_text(encoding="utf-8"))
+    assert {**result.config.model_dump(mode="json"), "service_version": "0.2.0"} == stored_config
     expected_top_level_fields = {
         "experiment_id", "status", "config", "dataset", "metrics", "feature_importance", "reproducibility_status"
     }
@@ -93,11 +157,11 @@ def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
         assert sentinel not in payload
     assert set(json.loads((stored / "result.json").read_text(encoding="utf-8"))) == expected_top_level_fields
     assert set(json.loads((stored / "config.json").read_text(encoding="utf-8"))) == {
-        "model", "test_size", "random_state", "drop_duplicates"
+        "model", "test_size", "random_state", "drop_duplicates", "service_version"
     }
     assert set(json.loads((stored / "dataset_profile.json").read_text(encoding="utf-8"))) == {
         "rows", "features", "target", "missing_values", "duplicate_rows", "class_counts", "class_ratios",
-        "column_names", "column_types", "numeric_ranges"
+        "column_names", "column_types", "numeric_ranges", "effective_rows", "dataset_id"
     }
 
 

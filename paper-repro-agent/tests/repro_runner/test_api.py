@@ -1,3 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -57,17 +61,43 @@ def test_run_experiment_returns_id_and_metrics_and_persists_it(client: TestClien
     assert fetched.json() == result
 
 
-def test_dataset_errors_have_stable_code_and_request_id(client: TestClient):
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        (b"x1\n1\n", "missing_target_column"),
+        (b"x1,Y_cls\n1,0\n2,0\n", "invalid_target_classes"),
+        (b"x1,Y_cls\n1,0\n,1\n", "missing_values"),
+        (b"x1,Y_cls\na,0\n2,1\n", "non_numeric_feature"),
+        (b"x1,Y_cls\nNaN,0\n2,1\n", "non_finite_numeric_feature"),
+        (b"x1,Y_cls\n1,0,extra\n2,1\n", "invalid_csv"),
+    ],
+)
+def test_validate_dataset_returns_200_with_structured_errors(
+    client: TestClient, content: bytes, code: str
+):
     response = client.post(
         "/v1/validate-dataset",
+        files={"file": ("data.csv", content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["dataset"] is None
+    assert body["errors"] == [
+        {"code": code, "message": pytest.ANY if hasattr(pytest, "ANY") else body["errors"][0]["message"]}
+    ]
+    assert body["errors"][0]["message"]
+
+
+def test_run_experiment_keeps_dataset_failures_as_422(client: TestClient):
+    response = client.post(
+        "/v1/run-experiment",
         files={"file": ("data.csv", b"x1\n1\n", "text/csv")},
     )
 
     assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert detail["code"] == "missing_target_column"
-    assert detail["message"]
-    assert detail["request_id"]
+    assert response.json()["detail"]["code"] == "missing_target_column"
 
 
 def test_missing_experiment_has_not_found_code_and_request_id(client: TestClient):
@@ -94,6 +124,7 @@ def test_compare_result_uses_persisted_experiment(client: TestClient):
                     "reported_value": 0.91,
                     "dataset": "test",
                     "split": "test",
+                    "dataset_id": result["dataset"]["dataset_id"],
                 }
             ],
         },
@@ -180,3 +211,37 @@ def test_requested_experiment_configuration_is_returned(client: TestClient):
     assert body["dataset"]["target"] == "label"
     assert body["config"]["random_state"] == 7
     assert body["config"]["drop_duplicates"] is True
+    assert body["dataset"]["effective_rows"] == 80
+
+
+def test_experiment_execution_is_serialized_by_default(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    sentinel = object()
+
+    def slow_training(_bundle, _config):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.08)
+        with lock:
+            active -= 1
+        return sentinel
+
+    monkeypatch.setattr(api, "run_random_forest", slow_training)
+    monkeypatch.setattr(api, "save_result", lambda *_args: None)
+    api._experiment_gate.cache_clear()
+    settings = Settings(storage_dir=tmp_path)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(api._execute_experiment, object(), object(), settings)
+            for _ in range(3)
+        ]
+        assert [future.result() for future in futures] == [sentinel] * 3
+
+    assert peak == 1
