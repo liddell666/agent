@@ -1,5 +1,13 @@
+from pathlib import Path
+
+import pytest
+
 from repro_runner.config import Settings
-from repro_runner.schemas import ExperimentConfig
+from repro_runner.data import DatasetError, load_dataset
+from repro_runner.schemas import DatasetOptions, ExperimentConfig
+
+
+CSV = Path(r"E:\论文复现\成果\2training_samples_15180.csv")
 
 
 def test_defaults_match_v2_contract():
@@ -11,3 +19,52 @@ def test_defaults_match_v2_contract():
     assert config.model == "random_forest"
     assert config.test_size == 0.2
     assert config.random_state == 42
+
+
+def test_supplied_dataset_profile():
+    if not CSV.exists():
+        pytest.skip("supplied CSV is only available on the local Windows host")
+
+    bundle = load_dataset(CSV.read_bytes(), DatasetOptions(), Settings())
+
+    assert bundle.profile.rows == 15180
+    assert bundle.profile.features == 16
+    assert bundle.profile.missing_values == 0
+    assert bundle.profile.duplicate_rows == 66
+    assert bundle.profile.class_counts == {"0": 13800, "1": 1380}
+
+
+def test_missing_target_is_rejected():
+    content = b"x,y\n1,0\n2,1\n"
+
+    with pytest.raises(DatasetError, match="target") as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == "missing_target_column"
+
+
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        (b"", "empty_file"),
+        (b"x,Y_cls\n1,0\n2,0\n", "invalid_target_classes"),
+        (b"x,Y_cls\n1,0\n,1\n", "missing_values"),
+        (b"x,Y_cls\na,0\n2,1\n", "non_numeric_feature"),
+    ],
+)
+def test_invalid_dataset_content_is_rejected(content, code):
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == code
+
+
+def test_duplicate_rows_add_warning_before_optional_cleanup():
+    content = b"x,Y_cls\n1,0\n1,0\n2,0\n3,1\n3,1\n4,1\n"
+
+    bundle = load_dataset(content, DatasetOptions(drop_duplicates=True), Settings())
+
+    assert bundle.profile.rows == 6
+    assert bundle.profile.duplicate_rows == 2
+    assert bundle.warnings == ["dataset contains duplicate rows"]
+    assert len(bundle.frame) == 4
