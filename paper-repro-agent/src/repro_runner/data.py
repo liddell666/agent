@@ -56,7 +56,7 @@ def load_dataset(
     if len(frame.columns) == 1:
         raise DatasetError("missing_feature_columns", "at least one feature is required")
 
-    missing_values = _missing_value_count(frame)
+    missing_values = _missing_value_count(frame, target_column)
     if missing_values:
         raise DatasetError("missing_values", "dataset contains missing values")
 
@@ -92,7 +92,7 @@ def profile_dataset(
         rows=rows,
         features=len(feature_columns),
         target=target_column,
-        missing_values=_missing_value_count(frame),
+        missing_values=_missing_value_count(frame, target_column),
         duplicate_rows=duplicate_rows,
         class_counts=class_counts,
         class_ratios={label: count / rows for label, count in class_counts.items()},
@@ -190,12 +190,15 @@ def _class_label(value: object) -> str:
     return str(value)
 
 
-def _missing_value_count(frame: pd.DataFrame) -> int:
-    return sum(
-        int(pd.isna(value))
-        or int(isinstance(value, str) and not value.strip())
-        for value in frame.to_numpy().flat
-    )
+def _missing_value_count(frame: pd.DataFrame, target_column: str) -> int:
+    count = 0
+    for column in frame.columns:
+        for value in frame[column]:
+            if pd.isna(value) or (isinstance(value, str) and not value.strip()):
+                count += 1
+            elif column == target_column and _is_missing_target_token(value):
+                count += 1
+    return count
 
 
 def _is_non_finite_token(value: object) -> bool:
@@ -210,3 +213,7 @@ def _is_non_finite_token(value: object) -> bool:
         "+infinity",
         "-infinity",
     }
+
+
+def _is_missing_target_token(value: object) -> bool:
+    return isinstance(value, str) and value.strip().casefold() in {"nan", "na", "n/a"}

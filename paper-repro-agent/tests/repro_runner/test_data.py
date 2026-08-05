@@ -122,3 +122,13 @@ def test_non_finite_feature_values_are_rejected(value):
         load_dataset(content, DatasetOptions(), Settings())
 
     assert raised.value.code == "non_finite_numeric_feature"
+
+
+@pytest.mark.parametrize("value", [b"NaN", b"NA", b"N/A"])
+def test_conventional_missing_target_values_are_rejected(value):
+    content = b"x,Y_cls\n1," + value + b"\n2,0\n3,0\n"
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == "missing_values"
