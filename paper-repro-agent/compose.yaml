@@ -27,6 +27,34 @@ services:
       retries: 5
       start_period: 30s
 
+  repro-runner:
+    container_name: repro-runner
+    build:
+      context: .
+      dockerfile: Dockerfile.repro
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REPRO_RUNNER_STORAGE_DIR: /data/experiments
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./src:/app/src:ro
+      - ./data/experiments:/data/experiments
+    networks:
+      dify:
+        aliases: [repro-runner]
+    init: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 networks:
   dify:
     external: true
