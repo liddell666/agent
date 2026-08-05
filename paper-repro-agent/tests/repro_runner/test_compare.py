@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +11,7 @@ from repro_runner.schemas import (
     ExperimentMetrics,
     ExperimentResult,
 )
+import repro_runner.storage as storage
 from repro_runner.storage import ResultNotFoundError, create_experiment_id, load_result, save_result
 
 
@@ -69,6 +71,10 @@ def test_comparison_requires_matching_dataset_and_split_qualifiers():
 
 def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
     result = make_result()
+    sentinel = "RAW_CSV_SECRET_07a1"
+    result.__dict__["raw_csv"] = sentinel
+    result.config.__dict__["raw_csv"] = sentinel
+    result.dataset.__dict__["raw_csv"] = sentinel
     settings = Settings(storage_dir=tmp_path)
 
     experiment_id = save_result(result, settings)
@@ -76,9 +82,37 @@ def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
 
     assert experiment_id == result.experiment_id
     assert {path.name for path in stored.iterdir()} == {"result.json", "config.json", "dataset_profile.json"}
-    assert load_result(experiment_id, settings) == result
-    assert "CSV" not in (stored / "result.json").read_text(encoding="utf-8")
+    loaded = load_result(experiment_id, settings)
+    assert loaded.experiment_id == result.experiment_id
     assert json.loads((stored / "config.json").read_text(encoding="utf-8")) == result.config.model_dump(mode="json")
+    expected_top_level_fields = {
+        "experiment_id", "status", "config", "dataset", "metrics", "feature_importance", "reproducibility_status"
+    }
+    for path in stored.iterdir():
+        payload = path.read_text(encoding="utf-8")
+        assert sentinel not in payload
+    assert set(json.loads((stored / "result.json").read_text(encoding="utf-8"))) == expected_top_level_fields
+    assert set(json.loads((stored / "config.json").read_text(encoding="utf-8"))) == {
+        "model", "test_size", "random_state", "drop_duplicates"
+    }
+    assert set(json.loads((stored / "dataset_profile.json").read_text(encoding="utf-8"))) == {
+        "rows", "features", "target", "missing_values", "duplicate_rows", "class_counts", "class_ratios",
+        "column_names", "column_types", "numeric_ranges"
+    }
+
+
+def test_storage_failure_does_not_publish_a_partial_experiment(tmp_path):
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    real_write = storage._write_json_atomic
+
+    with patch.object(storage, "_write_json_atomic", side_effect=[real_write, OSError("disk full")]):
+        with pytest.raises(OSError, match="disk full"):
+            save_result(result, settings)
+
+    assert not (tmp_path / result.experiment_id).exists()
+    with pytest.raises(ResultNotFoundError):
+        load_result(result.experiment_id, settings)
 
 
 @pytest.mark.parametrize("experiment_id", ["../outside", "exp-2026/../../outside", "", "not-an-experiment"])

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import shutil
 
 from repro_runner.config import Settings
 from repro_runner.schemas import ExperimentResult
@@ -28,14 +29,24 @@ def create_experiment_id() -> str:
 def save_result(result: ExperimentResult, settings: Settings) -> str:
     """Store only result metadata, configuration, and aggregate dataset profile."""
     experiment_id = _validate_experiment_id(result.experiment_id)
+    root = settings.storage_dir.resolve()
     directory = _experiment_directory(experiment_id, settings)
-    directory.mkdir(parents=True, exist_ok=True)
+    temporary = root / f".{experiment_id}.{secrets.token_hex(8)}.tmp"
+    root.mkdir(parents=True, exist_ok=True)
+    if directory.exists():
+        raise FileExistsError("experiment result already exists")
 
-    _write_json_atomic(directory / "result.json", result.model_dump(mode="json"))
-    _write_json_atomic(directory / "config.json", result.config.model_dump(mode="json"))
-    _write_json_atomic(
-        directory / "dataset_profile.json", result.dataset.model_dump(mode="json")
-    )
+    temporary.mkdir()
+    try:
+        _write_json_atomic(temporary / "result.json", _result_payload(result))
+        _write_json_atomic(temporary / "config.json", _config_payload(result))
+        _write_json_atomic(
+            temporary / "dataset_profile.json", _dataset_profile_payload(result)
+        )
+        temporary.replace(directory)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
     return experiment_id
 
 
@@ -74,3 +85,52 @@ def _write_json_atomic(path: Path, payload: object) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def _result_payload(result: ExperimentResult) -> dict[str, object]:
+    """Return the explicit public result contract, excluding arbitrary input context."""
+    return {
+        "experiment_id": result.experiment_id,
+        "status": result.status,
+        "config": _config_payload(result),
+        "dataset": _dataset_profile_payload(result),
+        "metrics": {
+            "roc_auc": result.metrics.roc_auc,
+            "accuracy": result.metrics.accuracy,
+            "balanced_accuracy": result.metrics.balanced_accuracy,
+            "precision": result.metrics.precision,
+            "recall": result.metrics.recall,
+            "f1": result.metrics.f1,
+            "confusion_matrix": result.metrics.confusion_matrix,
+        },
+        "feature_importance": [
+            {"feature": item.feature, "importance": item.importance}
+            for item in result.feature_importance
+        ],
+        "reproducibility_status": result.reproducibility_status,
+    }
+
+
+def _config_payload(result: ExperimentResult) -> dict[str, object]:
+    return {
+        "model": result.config.model,
+        "test_size": result.config.test_size,
+        "random_state": result.config.random_state,
+        "drop_duplicates": result.config.drop_duplicates,
+    }
+
+
+def _dataset_profile_payload(result: ExperimentResult) -> dict[str, object]:
+    dataset = result.dataset
+    return {
+        "rows": dataset.rows,
+        "features": dataset.features,
+        "target": dataset.target,
+        "missing_values": dataset.missing_values,
+        "duplicate_rows": dataset.duplicate_rows,
+        "class_counts": dataset.class_counts,
+        "class_ratios": dataset.class_ratios,
+        "column_names": dataset.column_names,
+        "column_types": dataset.column_types,
+        "numeric_ranges": dataset.numeric_ranges,
+    }
