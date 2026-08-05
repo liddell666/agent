@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -42,8 +43,9 @@ def load_dataset(
 ) -> DatasetBundle:
     """Read an UTF-8 CSV, validate the V2 contract, and return its profile."""
     _validate_content_size(content, settings)
+    headers = _validate_csv_records(content)
     frame = _read_csv(content)
-    _validate_columns(content, frame, settings)
+    _validate_columns(headers, frame, settings)
 
     target_column = options.target_column or settings.default_target_column
     if target_column not in frame.columns:
@@ -54,7 +56,7 @@ def load_dataset(
     if len(frame.columns) == 1:
         raise DatasetError("missing_feature_columns", "at least one feature is required")
 
-    missing_values = int(frame.isna().sum().sum())
+    missing_values = _missing_value_count(frame)
     if missing_values:
         raise DatasetError("missing_values", "dataset contains missing values")
 
@@ -90,7 +92,7 @@ def profile_dataset(
         rows=rows,
         features=len(feature_columns),
         target=target_column,
-        missing_values=int(frame.isna().sum().sum()),
+        missing_values=_missing_value_count(frame),
         duplicate_rows=duplicate_rows,
         class_counts=class_counts,
         class_ratios={label: count / rows for label, count in class_counts.items()},
@@ -113,15 +115,16 @@ def _validate_content_size(content: bytes, settings: Settings) -> None:
 
 def _read_csv(content: bytes) -> pd.DataFrame:
     try:
-        return pd.read_csv(io.BytesIO(content), encoding="utf-8")
+        return pd.read_csv(io.BytesIO(content), encoding="utf-8", keep_default_na=False)
     except UnicodeDecodeError as exc:
         raise DatasetError("invalid_encoding", "CSV must be UTF-8 encoded") from exc
     except (pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as exc:
         raise DatasetError("invalid_csv", "CSV content cannot be parsed") from exc
 
 
-def _validate_columns(content: bytes, frame: pd.DataFrame, settings: Settings) -> None:
-    headers = _read_headers(content)
+def _validate_columns(
+    headers: list[str], frame: pd.DataFrame, settings: Settings
+) -> None:
     if not headers or any(not header.strip() for header in headers):
         raise DatasetError("missing_column_name", "all CSV columns must have names")
     if len(headers) != len(set(headers)):
@@ -130,11 +133,18 @@ def _validate_columns(content: bytes, frame: pd.DataFrame, settings: Settings) -
         raise DatasetError("too_many_columns", "CSV exceeds the configured column limit")
 
 
-def _read_headers(content: bytes) -> list[str]:
+def _validate_csv_records(content: bytes) -> list[str]:
     try:
-        first_line = content.decode("utf-8").splitlines()[0]
-        return next(csv.reader([first_line]))
-    except (UnicodeDecodeError, IndexError, csv.Error) as exc:
+        records = csv.reader(io.StringIO(content.decode("utf-8")), strict=True)
+        headers = next(records)
+        expected_width = len(headers)
+        for record in records:
+            if len(record) != expected_width:
+                raise DatasetError("invalid_csv", "CSV rows must match the header width")
+        return headers
+    except UnicodeDecodeError as exc:
+        raise DatasetError("invalid_encoding", "CSV must be UTF-8 encoded") from exc
+    except (StopIteration, csv.Error) as exc:
         raise DatasetError("invalid_csv", "CSV must include a valid header row") from exc
 
 
@@ -143,9 +153,19 @@ def _validate_numeric_features(frame: pd.DataFrame, feature_columns: list[str]) 
         try:
             numeric_values = pd.to_numeric(frame[column], errors="raise")
         except (TypeError, ValueError) as exc:
+            if any(_is_non_finite_token(value) for value in frame[column]):
+                raise DatasetError(
+                    "non_finite_numeric_feature",
+                    "feature values must be finite numeric values",
+                ) from exc
             raise DatasetError(
                 "non_numeric_feature", "all feature columns must be numeric"
             ) from exc
+        if not all(math.isfinite(float(value)) for value in numeric_values):
+            raise DatasetError(
+                "non_finite_numeric_feature",
+                "feature values must be finite numeric values",
+            )
         frame[column] = numeric_values
 
 
@@ -168,3 +188,25 @@ def _class_counts(target: pd.Series) -> dict[str, int]:
 
 def _class_label(value: object) -> str:
     return str(value)
+
+
+def _missing_value_count(frame: pd.DataFrame) -> int:
+    return sum(
+        int(pd.isna(value))
+        or int(isinstance(value, str) and not value.strip())
+        for value in frame.to_numpy().flat
+    )
+
+
+def _is_non_finite_token(value: object) -> bool:
+    return isinstance(value, str) and value.strip().casefold() in {
+        "nan",
+        "+nan",
+        "-nan",
+        "inf",
+        "+inf",
+        "-inf",
+        "infinity",
+        "+infinity",
+        "-infinity",
+    }

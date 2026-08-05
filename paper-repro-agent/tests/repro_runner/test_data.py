@@ -68,3 +68,57 @@ def test_duplicate_rows_add_warning_before_optional_cleanup():
     assert bundle.profile.duplicate_rows == 2
     assert bundle.warnings == ["dataset contains duplicate rows"]
     assert len(bundle.frame) == 4
+
+
+def test_misaligned_record_width_is_rejected():
+    content = b"x,Y_cls\n1,0,unexpected\n2,1,unexpected\n"
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == "invalid_csv"
+
+
+def test_invalid_utf8_is_rejected():
+    content = b"x,Y_cls\n\xff,0\n2,1\n"
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == "invalid_encoding"
+
+
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        (b"x,x,Y_cls\n1,2,0\n3,4,1\n", "duplicate_column_name"),
+        (b"x,,Y_cls\n1,2,0\n3,4,1\n", "missing_column_name"),
+    ],
+)
+def test_invalid_headers_are_rejected(content, code):
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == code
+
+
+def test_excess_columns_are_rejected():
+    headers = [f"x{index}" for index in range(256)] + ["Y_cls"]
+    row_zero = ["0"] * 256 + ["0"]
+    row_one = ["1"] * 256 + ["1"]
+    content = "\n".join(",".join(row) for row in (headers, row_zero, row_one)).encode()
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == "too_many_columns"
+
+
+@pytest.mark.parametrize("value", [b"Infinity", b"-Infinity", b"NaN"])
+def test_non_finite_feature_values_are_rejected(value):
+    content = b"x,Y_cls\n" + value + b",0\n1,0\n2,1\n3,1\n"
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(content, DatasetOptions(), Settings())
+
+    assert raised.value.code == "non_finite_numeric_feature"
