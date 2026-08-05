@@ -1,5 +1,7 @@
+import pytest
 from fastapi.testclient import TestClient
 
+from repro_runner import api
 from repro_runner.config import Settings, get_settings
 
 
@@ -10,27 +12,27 @@ def _csv(rows: int = 40) -> bytes:
     return ("\n".join(data) + "\n").encode()
 
 
-def _client(tmp_path) -> TestClient:
-    from repro_runner.api import app
+@pytest.fixture
+def client(tmp_path) -> TestClient:
+    settings = Settings(storage_dir=tmp_path, max_upload_mb=1)
+    api.app.dependency_overrides[get_settings] = lambda: settings
+    with TestClient(api.app, raise_server_exceptions=False) as test_client:
+        yield test_client
+    api.app.dependency_overrides.clear()
 
-    app.dependency_overrides[get_settings] = lambda: Settings(storage_dir=tmp_path)
-    return TestClient(app, raise_server_exceptions=False)
 
-
-def test_healthz_is_public(tmp_path):
-    with _client(tmp_path) as client:
-        response = client.get("/healthz")
+def test_healthz_is_public(client: TestClient):
+    response = client.get("/healthz")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_validate_dataset_returns_profile(tmp_path):
-    with _client(tmp_path) as client:
-        response = client.post(
-            "/v1/validate-dataset",
-            files={"file": ("data.csv", _csv(), "text/csv")},
-        )
+def test_validate_dataset_returns_profile(client: TestClient):
+    response = client.post(
+        "/v1/validate-dataset",
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -38,16 +40,15 @@ def test_validate_dataset_returns_profile(tmp_path):
     assert body["dataset"]["target"] == "Y_cls"
 
 
-def test_run_experiment_returns_id_and_metrics_and_persists_it(tmp_path):
-    with _client(tmp_path) as client:
-        response = client.post(
-            "/v1/run-experiment",
-            files={"file": ("data.csv", _csv(), "text/csv")},
-        )
+def test_run_experiment_returns_id_and_metrics_and_persists_it(client: TestClient):
+    response = client.post(
+        "/v1/run-experiment",
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
 
-        assert response.status_code == 200
-        result = response.json()
-        fetched = client.get(f"/v1/experiments/{result['experiment_id']}")
+    assert response.status_code == 200
+    result = response.json()
+    fetched = client.get(f"/v1/experiments/{result['experiment_id']}")
 
     assert result["experiment_id"].startswith("exp-")
     assert "roc_auc" in result["metrics"]
@@ -56,12 +57,11 @@ def test_run_experiment_returns_id_and_metrics_and_persists_it(tmp_path):
     assert fetched.json() == result
 
 
-def test_dataset_errors_have_stable_code_and_request_id(tmp_path):
-    with _client(tmp_path) as client:
-        response = client.post(
-            "/v1/validate-dataset",
-            files={"file": ("data.csv", b"x1\n1\n", "text/csv")},
-        )
+def test_dataset_errors_have_stable_code_and_request_id(client: TestClient):
+    response = client.post(
+        "/v1/validate-dataset",
+        files={"file": ("data.csv", b"x1\n1\n", "text/csv")},
+    )
 
     assert response.status_code == 422
     detail = response.json()["detail"]
@@ -70,9 +70,8 @@ def test_dataset_errors_have_stable_code_and_request_id(tmp_path):
     assert detail["request_id"]
 
 
-def test_missing_experiment_has_not_found_code_and_request_id(tmp_path):
-    with _client(tmp_path) as client:
-        response = client.get("/v1/experiments/exp-20260805T010203Z-deadbeef")
+def test_missing_experiment_has_not_found_code_and_request_id(client: TestClient):
+    response = client.get("/v1/experiments/exp-20260805T010203Z-deadbeef")
 
     assert response.status_code == 404
     detail = response.json()["detail"]
@@ -80,27 +79,104 @@ def test_missing_experiment_has_not_found_code_and_request_id(tmp_path):
     assert detail["request_id"]
 
 
-def test_compare_result_uses_persisted_experiment(tmp_path):
-    with _client(tmp_path) as client:
-        result = client.post(
-            "/v1/run-experiment",
-            files={"file": ("data.csv", _csv(), "text/csv")},
-        ).json()
-        response = client.post(
-            "/v1/compare-result",
-            json={
-                "experiment_id": result["experiment_id"],
-                "reported_metrics": [
-                    {
-                        "name": "AUC",
-                        "reported_value": 0.91,
-                        "dataset": "test",
-                        "split": "test",
-                    }
-                ],
-            },
-        )
+def test_compare_result_uses_persisted_experiment(client: TestClient):
+    result = client.post(
+        "/v1/run-experiment",
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    ).json()
+    response = client.post(
+        "/v1/compare-result",
+        json={
+            "experiment_id": result["experiment_id"],
+            "reported_metrics": [
+                {
+                    "name": "AUC",
+                    "reported_value": 0.91,
+                    "dataset": "test",
+                    "split": "test",
+                }
+            ],
+        },
+    )
 
     assert response.status_code == 200
     assert response.json()["experiment_id"] == result["experiment_id"]
     assert response.json()["items"][0]["comparable"] is True
+
+
+def test_file_larger_than_configured_limit_is_413_with_request_id(client: TestClient):
+    response = client.post(
+        "/v1/validate-dataset",
+        files={"file": ("large.csv", b"x" * (1024 * 1024 + 1), "text/csv")},
+    )
+
+    assert response.status_code == 413
+    detail = response.json()["detail"]
+    assert detail["code"] == "file_too_large"
+    assert detail["request_id"]
+    assert "traceback" not in response.text.casefold()
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/v1/run-experiment", None),
+        ("/v1/run-experiment", {"model": "other"}),
+        ("/v1/run-experiment", {"test_size": "0.9"}),
+    ],
+)
+def test_invalid_request_is_sanitized_with_request_id(
+    client: TestClient, path: str, data: dict[str, str] | None
+):
+    kwargs = {} if data is None else {
+        "data": data,
+        "files": {"file": ("data.csv", _csv(), "text/csv")},
+    }
+    response = client.post(path, **kwargs)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "invalid_request"
+    assert detail["request_id"]
+    assert "traceback" not in response.text.casefold()
+
+
+def test_training_failure_is_sanitized_with_request_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    def fail_training(*_args, **_kwargs):
+        raise RuntimeError("private training stack")
+
+    monkeypatch.setattr(api, "run_random_forest", fail_training)
+    response = client.post(
+        "/v1/run-experiment",
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "experiment_failed"
+    assert detail["request_id"]
+    assert "private" not in response.text
+    assert "traceback" not in response.text.casefold()
+
+
+def test_requested_experiment_configuration_is_returned(client: TestClient):
+    csv = (
+        "x1,label\n" + "\n".join(f"{index},{index % 2}" for index in range(80)) + "\n"
+    ).encode()
+    response = client.post(
+        "/v1/run-experiment",
+        data={
+            "target_column": "label",
+            "random_state": "7",
+            "drop_duplicates": "true",
+        },
+        files={"file": ("data.csv", csv, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataset"]["target"] == "label"
+    assert body["config"]["random_state"] == 7
+    assert body["config"]["drop_duplicates"] is True

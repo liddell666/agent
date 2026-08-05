@@ -154,8 +154,13 @@ async def _read_upload(file: UploadFile, settings: Settings) -> bytes:
     max_bytes = settings.max_upload_mb * 1024 * 1024
     content = await file.read(max_bytes + 1)
     if len(content) > max_bytes:
-        raise _dataset_error(
-            DatasetError("file_too_large", "CSV content exceeds the configured size limit")
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "file_too_large",
+                "message": "CSV content exceeds the configured size limit",
+                "request_id": _request_id(),
+            },
         )
     return content
 
