@@ -10,6 +10,7 @@ from repro_runner.schemas import (
     ExperimentConfig,
     ExperimentMetrics,
     ExperimentResult,
+    SplitProvenance,
 )
 import repro_runner.storage as storage
 from repro_runner.storage import ResultNotFoundError, create_experiment_id, load_result, save_result
@@ -45,6 +46,13 @@ def make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test")
         ),
         metrics=ExperimentMetrics(**metrics),
         feature_importance=[],
+        split_provenance=SplitProvenance(
+            test_size=0.2,
+            random_state=42,
+            train_rows=8,
+            test_rows=2,
+            test_digest="sha256:" + "c" * 64,
+        ),
     )
 
 
@@ -59,6 +67,11 @@ def test_comparison_reports_absolute_and_relative_difference():
             "dataset": "test",
             "split": "test",
             "dataset_id": DATASET_ID,
+            "test_size": 0.2,
+            "random_state": 42,
+            "train_rows": 8,
+            "test_rows": 2,
+            "test_digest": "sha256:" + "c" * 64,
         }],
     )
 
@@ -98,7 +111,7 @@ def test_comparison_requires_matching_dataset_and_split_qualifiers():
     assert all(item.absolute_difference == 0.01 for item in response.items)
 
 
-def test_comparison_requires_matching_dataset_identity():
+def test_comparison_requires_complete_matching_split_provenance():
     result = make_result()
 
     response = compare_metrics(
@@ -109,13 +122,12 @@ def test_comparison_requires_matching_dataset_identity():
                 "reported_value": 0.91,
                 "dataset": "test",
                 "split": "test",
-            },
-            {
-                "name": "roc_auc",
-                "reported_value": 0.91,
-                "dataset": "test",
-                "split": "test",
                 "dataset_id": "sha256:" + "b" * 64,
+                "test_size": 0.2,
+                "random_state": 42,
+                "train_rows": 8,
+                "test_rows": 2,
+                "test_digest": "sha256:" + "c" * 64,
             },
             {
                 "name": "roc_auc",
@@ -123,13 +135,43 @@ def test_comparison_requires_matching_dataset_identity():
                 "dataset": "test",
                 "split": "test",
                 "dataset_id": DATASET_ID,
+                "test_size": 0.2,
+                "random_state": 42,
+                "train_rows": 8,
+                "test_rows": 2,
+                "test_digest": "sha256:" + "d" * 64,
+            },
+            {
+                "name": "roc_auc",
+                "reported_value": 0.91,
+                "dataset": "test",
+                "split": "test",
+                "dataset_id": DATASET_ID,
+                "test_size": 0.25,
+                "random_state": 42,
+                "train_rows": 8,
+                "test_rows": 2,
+                "test_digest": "sha256:" + "c" * 64,
+            },
+            {
+                "name": "roc_auc",
+                "reported_value": 0.91,
+                "dataset": "test",
+                "split": "test",
+                "dataset_id": DATASET_ID,
+                "test_size": 0.2,
+                "random_state": 42,
+                "train_rows": 8,
+                "test_rows": 2,
+                "test_digest": "sha256:" + "c" * 64,
             },
         ],
     )
 
-    assert [item.comparable for item in response.items] == [False, False, True]
+    assert [item.comparable for item in response.items] == [False, False, False, True]
     assert "identity" in response.items[0].reason
-    assert "identity" in response.items[1].reason
+    assert "digest" in response.items[1].reason
+    assert "test_size" in response.items[2].reason
 
 
 def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
@@ -150,7 +192,7 @@ def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
     stored_config = json.loads((stored / "config.json").read_text(encoding="utf-8"))
     assert {**result.config.model_dump(mode="json"), "service_version": "0.2.0"} == stored_config
     expected_top_level_fields = {
-        "experiment_id", "status", "config", "dataset", "metrics", "feature_importance", "reproducibility_status"
+        "experiment_id", "status", "config", "dataset", "metrics", "feature_importance", "reproducibility_status", "split_provenance"
     }
     for path in stored.iterdir():
         payload = path.read_text(encoding="utf-8")

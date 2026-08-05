@@ -1,7 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
-import threading
-import time
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -125,6 +121,11 @@ def test_compare_result_uses_persisted_experiment(client: TestClient):
                     "dataset": "test",
                     "split": "test",
                     "dataset_id": result["dataset"]["dataset_id"],
+                    "test_size": result["split_provenance"]["test_size"],
+                    "random_state": result["split_provenance"]["random_state"],
+                    "train_rows": result["split_provenance"]["train_rows"],
+                    "test_rows": result["split_provenance"]["test_rows"],
+                    "test_digest": result["split_provenance"]["test_digest"],
                 }
             ],
         },
@@ -133,6 +134,22 @@ def test_compare_result_uses_persisted_experiment(client: TestClient):
     assert response.status_code == 200
     assert response.json()["experiment_id"] == result["experiment_id"]
     assert response.json()["items"][0]["comparable"] is True
+
+
+def test_run_experiment_returns_invalid_split_as_422(client: TestClient):
+    response = client.post(
+        "/v1/run-experiment",
+        files={
+            "file": (
+                "data.csv",
+                b"x,Y_cls\n1,0\n2,0\n3,1\n4,1\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_split"
 
 
 def test_file_larger_than_configured_limit_is_413_with_request_id(client: TestClient):
@@ -214,34 +231,34 @@ def test_requested_experiment_configuration_is_returned(client: TestClient):
     assert body["dataset"]["effective_rows"] == 80
 
 
-def test_experiment_execution_is_serialized_by_default(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+def test_run_experiment_admits_request_before_reading_or_parsing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
-    active = 0
-    peak = 0
-    lock = threading.Lock()
-    sentinel = object()
+    states: list[str] = []
+    original_read = api._read_upload
+    original_load = api.load_dataset
 
-    def slow_training(_bundle, _config):
-        nonlocal active, peak
-        with lock:
-            active += 1
-            peak = max(peak, active)
-        time.sleep(0.08)
-        with lock:
-            active -= 1
-        return sentinel
+    async def observed_read(file, settings):
+        gate = api._experiment_gate(settings.max_concurrent_experiments)
+        assert gate.acquire(blocking=False) is False
+        states.append("read")
+        return await original_read(file, settings)
 
-    monkeypatch.setattr(api, "run_random_forest", slow_training)
-    monkeypatch.setattr(api, "save_result", lambda *_args: None)
+    def observed_load(*args, **kwargs):
+        settings = args[-1]
+        gate = api._experiment_gate(settings.max_concurrent_experiments)
+        assert gate.acquire(blocking=False) is False
+        states.append("parse")
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(api, "_read_upload", observed_read)
+    monkeypatch.setattr(api, "load_dataset", observed_load)
     api._experiment_gate.cache_clear()
-    settings = Settings(storage_dir=tmp_path)
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [
-            executor.submit(api._execute_experiment, object(), object(), settings)
-            for _ in range(3)
-        ]
-        assert [future.result() for future in futures] == [sentinel] * 3
+    response = client.post(
+        "/v1/run-experiment",
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
 
-    assert peak == 1
+    assert response.status_code == 200
+    assert states == ["read", "parse"]

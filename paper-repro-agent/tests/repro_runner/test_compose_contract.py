@@ -58,3 +58,16 @@ def test_dify_workflow_parses_http_body_before_branching():
     assert "{{#parse_validation_response.validation_ok#}} equals true" in workflow
     assert "{{#validate_dataset.body.valid#}}" not in workflow
     assert "training_csv" not in workflow.split("LLM", maxsplit=1)[-1]
+
+
+def test_dify_error_branches_only_use_outputs_they_create():
+    workflow = Path("dify/repro-experiment-workflow.md").read_text(encoding="utf-8")
+
+    for node in (
+        "normalize_validation_http_failure",
+        "format_validation_rejection",
+        "normalize_experiment_http_failure",
+        "format_experiment_rejection",
+    ):
+        assert node in workflow
+    assert "Every error branch ends using only variables created on that branch" in workflow

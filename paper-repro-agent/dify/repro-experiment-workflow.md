@@ -78,14 +78,18 @@ Add an IF/ELSE node named `validation_ok` after the Code node. Its successful co
 {{#parse_validation_response.validation_ok#}} equals true
 ```
 
-The ELSE branch goes straight to the End node and returns:
+The ELSE branch must first run a dedicated Code node named
+`format_validation_rejection`. Its only input is
+`validation_json = {{#parse_validation_response.validation_json#}}`; it returns all
+three End values (`validation_json`, `experiment_json`, and `markdown_summary`), with
+`experiment_json` set to `{}`. Its summary must say that validation rejected the CSV.
 
-- `validation_json`: `{{#parse_validation_response.validation_json#}}`
-- `experiment_json`: `{}`
-- `markdown_summary`: `数据校验失败。请检查标签列、数值特征、缺失值和错误详情。`
-
-If the HTTP node itself fails (network, 4xx, or 5xx), use its error-handling branch to
-the same End node. Do not retry through a model.
+The `validate_dataset` HTTP node's error-handling branch must instead run a separate
+Code node named `normalize_validation_http_failure`. Give it **no input from
+`validate_dataset`**: return a static structured validation error, `{}` for
+`experiment_json`, and a network/service failure summary. This is important because a
+failed HTTP node has no usable `body`, and `parse_validation_response` did not run.
+Do not retry through a model.
 
 ## 3. Run experiment node
 
@@ -104,16 +108,29 @@ On the `validation_ok` true branch, add an **HTTP Request** node named
 | Field `drop_duplicates` | `{{#start.drop_duplicates#}}` (Text) |
 | Field `model` | `random_forest` (Text) |
 
-Use the HTTP node's error-handling branch to return the validation response and a
-clear failure summary. No LLM node is needed for the V2 experiment workflow.
+Immediately after a successful HTTP response, add `parse_experiment_response`, which
+normalizes `{{#run_experiment.body#}}` into `experiment_ok` (Boolean),
+`experiment_json` (String), and `experiment_errors` (String). Branch on
+`experiment_ok`:
+
+- Its rejection branch runs a dedicated `format_experiment_rejection` Code node. It
+  receives `validation_json` from `parse_validation_response` and `experiment_json`
+  from `parse_experiment_response`, then returns all three End values.
+- The HTTP node's error-handling branch runs a separate
+  `normalize_experiment_http_failure` Code node. It receives only
+  `validation_json` from `parse_validation_response`, and returns that value, `{}`
+  for `experiment_json`, and a service failure summary. It must not reference
+  `run_experiment.body` or `parse_experiment_response`.
+
+No LLM node is needed for the V2 experiment workflow.
 
 ## 4. Report formatter code node
 
-After `run_experiment`, add a **Code** node named `format_experiment_report` with one
+After the successful `experiment_ok` branch, add a **Code** node named `format_experiment_report` with one
 input variable:
 
 ```text
-experiment = {{#run_experiment.body#}}
+experiment = {{#parse_experiment_response.experiment_json#}}
 ```
 
 Set its output variable to `markdown_summary` (String) and use this Python code:
@@ -168,13 +185,24 @@ def main(experiment):
 
 ## 5. End node outputs
 
-Expose exactly these three outputs:
+Create one success End node and four error End nodes. Every End node exposes exactly
+these three output names, but each error End must use only its immediately preceding
+normalizer/formatter outputs.
 
 | Output name | Value |
 | --- | --- |
-| `experiment_json` | `{{#run_experiment.body#}}` |
+| `experiment_json` | `{{#parse_experiment_response.experiment_json#}}` |
 | `validation_json` | `{{#parse_validation_response.validation_json#}}` |
 | `markdown_summary` | `{{#format_experiment_report.markdown_summary#}}` |
+
+Every error branch ends using only variables created on that branch:
+
+| Failure path | Final Code node | End values |
+| --- | --- | --- |
+| Validation HTTP failure | `normalize_validation_http_failure` | All three outputs from `normalize_validation_http_failure` |
+| Validation rejection | `format_validation_rejection` | All three outputs from `format_validation_rejection` |
+| Experiment HTTP failure | `normalize_experiment_http_failure` | All three outputs from `normalize_experiment_http_failure` |
+| Experiment rejection | `format_experiment_rejection` | All three outputs from `format_experiment_rejection` |
 
 The Start file is deliberately absent from End outputs. The service stores result
 metadata only and does not store a copy of the uploaded CSV.
@@ -183,3 +211,13 @@ metadata only and does not store a copy of the uploaded CSV.
 
 No LLM node is used in this V2 workflow. The CSV is posted only as multipart form data
 to `repro-runner`; neither raw file content nor individual rows are sent to a model.
+
+## Comparison semantics
+
+If a later workflow calls `/v1/compare-result`, it must present evidence from the paper
+for the same `dataset_id`, `test_size`, `random_state`, `train_rows`, `test_rows`, and
+held-out `test_digest`, in addition to the `dataset=test` and `split=test` qualifiers.
+The service intentionally marks a metric `comparable=false` when any one of those values
+is missing or differs. Do not copy values from this experiment into a paper-metric input
+to make a comparison appear valid; a paper without this provenance can still show an
+arithmetic difference, but not a comparable result.

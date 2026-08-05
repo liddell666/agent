@@ -108,6 +108,13 @@ def _result_payload(result: ExperimentResult) -> dict[str, object]:
             {"feature": item.feature, "importance": item.importance}
             for item in result.feature_importance
         ],
+        "split_provenance": {
+            "test_size": result.split_provenance.test_size,
+            "random_state": result.split_provenance.random_state,
+            "train_rows": result.split_provenance.train_rows,
+            "test_rows": result.split_provenance.test_rows,
+            "test_digest": result.split_provenance.test_digest,
+        },
         "reproducibility_status": result.reproducibility_status,
     }
 

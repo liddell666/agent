@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from uuid import uuid4
 
 import numpy as np
@@ -23,7 +25,17 @@ from repro_runner.schemas import (
     ExperimentMetrics,
     ExperimentResult,
     FeatureImportance,
+    SplitProvenance,
 )
+
+
+class ExperimentError(ValueError):
+    """A safe experiment error that can be mapped to a stable API response."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
 
 
 def run_random_forest(
@@ -35,13 +47,21 @@ def run_random_forest(
     classes = np.sort(np.unique(target))
     negative_class, positive_class = classes
 
-    x_train, x_test, y_train, y_test = train_test_split(
-        features,
-        target,
-        test_size=config.test_size,
-        stratify=target,
-        random_state=config.random_state,
-    )
+    try:
+        train_indices, test_indices = train_test_split(
+            np.arange(len(target)),
+            test_size=config.test_size,
+            stratify=target,
+            random_state=config.random_state,
+        )
+    except ValueError as exc:
+        raise ExperimentError(
+            "invalid_split",
+            "the requested stratified test split cannot represent both target classes",
+        ) from exc
+
+    x_train, x_test = features[train_indices], features[test_indices]
+    y_train, y_test = target[train_indices], target[test_indices]
     classifier = RandomForestClassifier(
         n_estimators=300,
         class_weight="balanced",
@@ -84,6 +104,13 @@ def run_random_forest(
         dataset=bundle.profile,
         metrics=metrics,
         feature_importance=feature_importance,
+        split_provenance=SplitProvenance(
+            test_size=config.test_size,
+            random_state=config.random_state,
+            train_rows=len(train_indices),
+            test_rows=len(test_indices),
+            test_digest=_test_set_digest(bundle, test_indices),
+        ),
         reproducibility_status="baseline_only",
     )
 
@@ -108,3 +135,27 @@ def _public_feature_importances(
         FeatureImportance(feature=feature, importance=importance)
         for feature, importance in sorted(rounded, key=lambda item: (-item[1], item[0]))
     ]
+
+
+def _test_set_digest(bundle: DatasetBundle, test_indices: np.ndarray) -> str:
+    """Hash held-out feature rows plus labels without retaining their contents."""
+    columns = [*bundle.feature_columns, bundle.target_column]
+    held_out = bundle.frame.iloc[test_indices][columns]
+    payload = {
+        "columns": columns,
+        "rows": [
+            [_digest_value(value) for value in row]
+            for row in held_out.itertuples(index=False, name=None)
+        ],
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _digest_value(value: object) -> object:
+    """Convert pandas/numpy scalars to JSON-safe values for deterministic hashing."""
+    if isinstance(value, np.generic):
+        return value.item()
+    return value

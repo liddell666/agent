@@ -73,6 +73,18 @@ class FeatureImportance(BaseModel):
     importance: float
 
 
+class SplitProvenance(BaseModel):
+    """Privacy-preserving identifiers for the held-out evaluation fold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    test_size: float = Field(ge=0.1, le=0.5)
+    random_state: int = Field(ge=0)
+    train_rows: int = Field(ge=1)
+    test_rows: int = Field(ge=1)
+    test_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class ExperimentResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -82,6 +94,7 @@ class ExperimentResult(BaseModel):
     dataset: DatasetProfile
     metrics: ExperimentMetrics
     feature_importance: list[FeatureImportance]
+    split_provenance: SplitProvenance
     reproducibility_status: Literal["baseline_only"] = "baseline_only"
 
 
@@ -93,6 +106,13 @@ class ReportedMetricInput(BaseModel):
     dataset: str | None = None
     split: str | None = None
     dataset_id: str | None = None
+    test_size: float | None = Field(default=None, ge=0.1, le=0.5)
+    random_state: int | None = Field(default=None, ge=0)
+    train_rows: int | None = Field(default=None, ge=1)
+    test_rows: int | None = Field(default=None, ge=1)
+    test_digest: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
 
 
 class ComparisonItem(BaseModel):

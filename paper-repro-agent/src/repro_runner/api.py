@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from threading import BoundedSemaphore
 from typing import Annotated, Literal
@@ -17,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from repro_runner.compare import compare_metrics
 from repro_runner.config import Settings, get_settings
 from repro_runner.data import DatasetError, load_dataset
-from repro_runner.engine import run_random_forest
+from repro_runner.engine import ExperimentError, run_random_forest
 from repro_runner.schemas import (
     ComparisonResponse,
     DatasetOptions,
@@ -90,7 +91,6 @@ async def run_experiment(
     model: Annotated[Literal["random_forest"], Form()] = "random_forest",
     settings: Settings = Depends(get_settings),
 ) -> ExperimentResult:
-    content = await _read_upload(file, settings)
     options = DatasetOptions(
         target_column=target_column or settings.default_target_column,
         drop_duplicates=drop_duplicates,
@@ -101,21 +101,27 @@ async def run_experiment(
         random_state=random_state,
         drop_duplicates=drop_duplicates,
     )
-    try:
-        bundle = await run_in_threadpool(load_dataset, content, options, settings)
-    except DatasetError as exc:
-        raise _dataset_error(exc) from None
-    except Exception:
-        request_id = _request_id()
-        logger.exception("experiment input preparation failed request_id=%s", request_id)
-        raise _internal_error("experiment_failed", request_id) from None
+    async with _admit_experiment(settings):
+        try:
+            content = await _read_upload(file, settings)
+            bundle = await run_in_threadpool(load_dataset, content, options, settings)
+        except DatasetError as exc:
+            raise _dataset_error(exc) from None
+        except HTTPException:
+            raise
+        except Exception:
+            request_id = _request_id()
+            logger.exception("experiment input preparation failed request_id=%s", request_id)
+            raise _internal_error("experiment_failed", request_id) from None
 
-    try:
-        result = await run_in_threadpool(_execute_experiment, bundle, config, settings)
-    except Exception:
-        request_id = _request_id()
-        logger.exception("experiment execution failed request_id=%s", request_id)
-        raise _internal_error("experiment_failed", request_id) from None
+        try:
+            result = await run_in_threadpool(_execute_experiment, bundle, config, settings)
+        except ExperimentError as exc:
+            raise _dataset_error(exc) from None
+        except Exception:
+            request_id = _request_id()
+            logger.exception("experiment execution failed request_id=%s", request_id)
+            raise _internal_error("experiment_failed", request_id) from None
     return result
 
 
@@ -183,10 +189,20 @@ def _experiment_gate(max_concurrent_experiments: int) -> BoundedSemaphore:
     return BoundedSemaphore(max(1, max_concurrent_experiments))
 
 
+@asynccontextmanager
+async def _admit_experiment(settings: Settings):
+    """Serialize the entire read, parse, train, and save lifecycle per process."""
+    gate = _experiment_gate(settings.max_concurrent_experiments)
+    await run_in_threadpool(gate.acquire)
+    try:
+        yield
+    finally:
+        gate.release()
+
+
 def _execute_experiment(bundle: object, config: object, settings: Settings) -> ExperimentResult:
-    """Run one training job under the shared CPU-work semaphore."""
-    with _experiment_gate(settings.max_concurrent_experiments):
-        result = run_random_forest(bundle, config)  # type: ignore[arg-type]
+    """Run and persist one already-admitted training job."""
+    result = run_random_forest(bundle, config)  # type: ignore[arg-type]
     save_result(result, settings)
     return result
 

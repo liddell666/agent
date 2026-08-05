@@ -41,7 +41,7 @@ def compare_metrics(
             metric_key,
             paper_value,
             independent_value,
-            result.dataset.dataset_id,
+            result,
         )
         comparable = reason is None
         absolute_difference = None
@@ -92,7 +92,7 @@ def _comparison_reason(
     metric_key: str,
     paper_value: float | None,
     independent_value: float | None,
-    result_dataset_id: str,
+    result: ExperimentResult,
 ) -> str | None:
     if metric_key not in _METRIC_ALIASES.values() and independent_value is None:
         return "metric name is not supported"
@@ -102,12 +102,32 @@ def _comparison_reason(
         return "paper metric is missing dataset or split qualifiers"
     if metric.dataset_id is None:
         return "paper metric is missing dataset identity"
-    if metric.dataset_id != result_dataset_id:
+    if metric.dataset_id != result.dataset.dataset_id:
         return "paper metric dataset identity differs from the independent dataset"
     if _normalized_qualifier(metric.dataset) != _INDEPENDENT_DATASET:
         return "paper metric dataset differs from the independent test dataset"
     if _normalized_qualifier(metric.split) != _INDEPENDENT_SPLIT:
         return "paper metric split differs from the independent test split"
+    if metric.test_digest is None:
+        return "paper metric is missing held-out test digest"
+    if metric.test_digest != result.split_provenance.test_digest:
+        return "paper metric held-out test digest differs from the independent test split"
+    if metric.test_size is None:
+        return "paper metric is missing test_size provenance"
+    if metric.test_size != result.split_provenance.test_size:
+        return "paper metric test_size differs from the independent test split"
+    if metric.random_state is None:
+        return "paper metric is missing random_state provenance"
+    if metric.random_state != result.split_provenance.random_state:
+        return "paper metric random_state differs from the independent test split"
+    if metric.train_rows is None:
+        return "paper metric is missing train_rows provenance"
+    if metric.train_rows != result.split_provenance.train_rows:
+        return "paper metric train_rows differs from the independent test split"
+    if metric.test_rows is None:
+        return "paper metric is missing test_rows provenance"
+    if metric.test_rows != result.split_provenance.test_rows:
+        return "paper metric test_rows differs from the independent test split"
     return None
 
 

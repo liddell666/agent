@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.ensemble import RandomForestClassifier
 
 import repro_runner.engine as engine
@@ -25,6 +26,8 @@ def test_same_seed_produces_same_metrics():
     second = run_random_forest(bundle, ExperimentConfig())
 
     assert first.metrics == second.metrics
+    assert first.split_provenance == second.split_provenance
+    assert first.split_provenance.test_digest.startswith("sha256:")
     assert first.reproducibility_status == "baseline_only"
 
 
@@ -152,3 +155,14 @@ def test_result_records_effective_rows_after_duplicate_removal():
 
     assert result.dataset.rows == 6
     assert result.dataset.effective_rows == 4
+
+
+def test_split_that_cannot_represent_both_classes_has_stable_error():
+    content = b"x,Y_cls\n1,0\n2,0\n3,1\n4,1\n"
+    bundle = load_dataset(content, DatasetOptions(), Settings())
+
+    with pytest.raises(engine.ExperimentError) as error:
+        run_random_forest(bundle, ExperimentConfig(test_size=0.2))
+
+    assert error.value.code == "invalid_split"
+    assert "split" in error.value.message
