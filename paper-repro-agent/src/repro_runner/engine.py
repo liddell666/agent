@@ -75,10 +75,7 @@ def run_random_forest(
         zip(bundle.feature_columns, classifier.feature_importances_),
         key=lambda item: (-float(item[1]), item[0]),
     )
-    feature_importance = [
-        FeatureImportance(feature=feature, importance=_round_metric(importance))
-        for feature, importance in sorted_importances
-    ]
+    feature_importance = _public_feature_importances(sorted_importances)
 
     return ExperimentResult(
         experiment_id=f"exp-{uuid4().hex}",
@@ -93,3 +90,21 @@ def run_random_forest(
 
 def _round_metric(value: float) -> float:
     return round(float(value), 6)
+
+
+def _public_feature_importances(
+    sorted_importances: list[tuple[str, float]],
+) -> list[FeatureImportance]:
+    """Round importances without exposing a total other than one."""
+    rounded = [
+        (feature, _round_metric(importance))
+        for feature, importance in sorted_importances
+    ]
+    residual = _round_metric(1.0 - sum(importance for _, importance in rounded))
+    first_feature, first_importance = rounded[0]
+    rounded[0] = (first_feature, _round_metric(first_importance + residual))
+
+    return [
+        FeatureImportance(feature=feature, importance=importance)
+        for feature, importance in sorted(rounded, key=lambda item: (-item[1], item[0]))
+    ]
