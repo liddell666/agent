@@ -45,10 +45,10 @@ Start
        false      -> dossier_semantic_failure -> Output
   -> validate_thresholds -> thresholds_ok?
        false -> thresholds_failure -> Output
-  -> validate_dataset HTTP -> validation_ok?
+  -> validate_dataset HTTP -> parse_validation_response -> validation_ok?
        HTTP error -> validation_http_failure -> Output
        false      -> validation_semantic_failure -> Output
-  -> normalize_experiment_inputs -> run_experiment HTTP -> experiment_ok?
+  -> normalize_experiment_inputs -> run_experiment HTTP -> parse_experiment_response -> experiment_ok?
        HTTP error -> experiment_http_failure -> Output
        false      -> experiment_semantic_failure -> Output
   -> build_comparison_request -> comparison_request_ok?
@@ -153,6 +153,54 @@ def main(drop_duplicates: bool) -> dict:
 
 Bind its input from Start before `run_experiment`.
 
+### `parse_validation_response`
+
+Input: `body` (String) = `{{#validate_dataset.body#}}`. Outputs:
+`validation_ok` (Boolean), `validation_json` (String), `validation_errors`
+(String).
+
+```python
+import json
+
+def main(body: str) -> dict:
+    try:
+        response = json.loads(body) if isinstance(body, str) else body
+    except (TypeError, json.JSONDecodeError):
+        response = {"valid": False, "errors": [{"code": "invalid_validation_response", "message": "The validation service returned invalid JSON."}]}
+    if not isinstance(response, dict):
+        response = {"valid": False, "errors": [{"code": "invalid_validation_response", "message": "The validation service response must be an object."}]}
+    errors = response.get("errors", [])
+    if not isinstance(errors, list):
+        errors = [{"code": "invalid_validation_response", "message": "The validation error list is invalid."}]
+    normalized = {**response, "valid": response.get("valid") is True, "errors": errors}
+    return {"validation_ok": normalized["valid"], "validation_json": json.dumps(normalized, ensure_ascii=False), "validation_errors": json.dumps(errors, ensure_ascii=False)}
+```
+
+### `parse_experiment_response`
+
+Input: `body` (String) = `{{#run_experiment.body#}}`. Outputs: `experiment_ok`
+(Boolean), `experiment_json` (String), `experiment_errors` (String).
+
+```python
+import json
+
+def main(body: str) -> dict:
+    try:
+        experiment = json.loads(body) if isinstance(body, str) else body
+    except (TypeError, json.JSONDecodeError):
+        experiment = {"status": "rejected", "errors": [{"code": "invalid_experiment_response", "message": "Experiment response could not be read."}]}
+    if not isinstance(experiment, dict):
+        experiment = {"status": "rejected", "errors": [{"code": "invalid_experiment_response", "message": "Experiment response must be an object."}]}
+    errors = experiment.get("errors", [])
+    if not isinstance(errors, list):
+        errors = [{"code": "invalid_experiment_response", "message": "Experiment error list is invalid."}]
+    ok = experiment.get("status") == "succeeded" and bool(experiment.get("experiment_id"))
+    if not ok and not errors:
+        errors = [{"code": "experiment_rejected", "message": "The experiment did not return a successful result."}]
+    normalized = {**experiment, "errors": errors}
+    return {"experiment_ok": ok, "experiment_json": json.dumps(normalized, ensure_ascii=False), "experiment_errors": json.dumps(errors, ensure_ascii=False)}
+```
+
 ### `build_comparison_request`
 
 Inputs: `dossier_json` (String), `experiment_json` (String). Outputs:
@@ -193,7 +241,7 @@ def main(dossier_json: str, experiment_json: str) -> dict:
 ```
 
 Bind `dossier_json` from `parse_dossier_response.dossier_json` and
-`experiment_json` from the successful run HTTP response body. The
+`experiment_json` from `parse_experiment_response.experiment_json`. The
 `comparison_request_ok?` IF condition is
 `build_comparison_request.comparison_request_ok is true`.
 
@@ -418,19 +466,113 @@ Add these six IF/ELSE conditions in this order:
 
 1. `dossier_ok?`: `parse_dossier_response.dossier_ok is true`.
 2. `thresholds_ok?`: `validate_thresholds.thresholds_ok is true`.
-3. `validation_ok?`: validation HTTP body `valid is true`.
-4. `experiment_ok?`: run HTTP body `status equals succeeded` and
-   `experiment_id is not empty`.
+3. `validation_ok?`: `parse_validation_response.validation_ok is true`.
+4. `experiment_ok?`: `parse_experiment_response.experiment_ok is true`.
 5. `comparison_request_ok?`: `build_comparison_request.comparison_request_ok
    is true`.
 6. `comparison_ok?`: `parse_comparison_response.comparison_ok is true`.
 
-For each false branch, use a small static terminal normalizer with the same six
+For each false branch, use the copyable normalizers below with the same six
 String outputs. Its error must be a fixed object (`invalid_dossier`,
 `invalid_similarity_thresholds`, `dataset_validation_failed`,
 `experiment_failed`, `invalid_comparison_request`, or
 `invalid_comparison_response`) and must use only inputs from nodes already run
 on that branch. Do not expose a raw HTTP body or any CSV content.
+
+For all six nodes below, declare outputs `dossier_json`, `validation_json`,
+`experiment_json`, `comparison_json`, `assessment_json`, and `markdown_report`
+as String. The snippets are standalone and their listed inputs are the exact
+bindings; an empty object represents a stage that did not run.
+
+`dossier_semantic_failure` inputs: `dossier_json` (String) =
+`{{#parse_dossier_response.dossier_json#}}`, `dossier_errors` (String) =
+`{{#parse_dossier_response.dossier_errors#}}`.
+
+```python
+import json
+def main(dossier_json: str, dossier_errors: str) -> dict:
+    try: dossier = json.loads(dossier_json)
+    except (TypeError, json.JSONDecodeError): dossier = {}
+    dossier = dossier if isinstance(dossier, dict) else {}
+    dossier.update({"valid": False, "errors": [{"code": "invalid_dossier", "message": "Dossier validation did not pass."}]})
+    return {"dossier_json": json.dumps(dossier, ensure_ascii=False), "validation_json": "{}", "experiment_json": "{}", "comparison_json": "{}", "assessment_json": json.dumps({"strict_status":"not_comparable","approximate_status":"insufficient_metrics","items":[]}), "markdown_report": "Dossier validation did not pass."}
+```
+
+`thresholds_failure` inputs: `dossier_json` (String) =
+`{{#parse_dossier_response.dossier_json#}}`, `threshold_errors` (String) =
+`{{#validate_thresholds.threshold_errors#}}`.
+
+```python
+import json
+def main(dossier_json: str, threshold_errors: str) -> dict:
+    try: dossier = json.loads(dossier_json)
+    except (TypeError, json.JSONDecodeError): dossier = {}
+    return {"dossier_json": json.dumps(dossier if isinstance(dossier, dict) else {}, ensure_ascii=False), "validation_json": "{}", "experiment_json": "{}", "comparison_json": "{}", "assessment_json": json.dumps({"strict_status":"not_comparable","approximate_status":"insufficient_metrics","items":[],"errors":[{"code":"invalid_similarity_thresholds","message":"Thresholds must satisfy 0 < close < partial <= 1."}]}, ensure_ascii=False), "markdown_report": "Similarity thresholds are invalid."}
+```
+
+`validation_semantic_failure` inputs: `dossier_json` (String) =
+`{{#parse_dossier_response.dossier_json#}}`, `validation_json` (String) =
+`{{#parse_validation_response.validation_json#}}`.
+
+```python
+import json
+def obj(value):
+    try: value = json.loads(value)
+    except (TypeError, json.JSONDecodeError): return {}
+    return value if isinstance(value, dict) else {}
+def main(dossier_json: str, validation_json: str) -> dict:
+    validation = obj(validation_json); validation.update({"valid":False, "errors":[{"code":"dataset_validation_failed","message":"Dataset validation did not pass."}]})
+    return {"dossier_json":json.dumps(obj(dossier_json), ensure_ascii=False), "validation_json":json.dumps(validation, ensure_ascii=False), "experiment_json":"{}", "comparison_json":"{}", "assessment_json":json.dumps({"strict_status":"not_comparable","approximate_status":"insufficient_metrics","items":[]}), "markdown_report":"Dataset validation did not pass."}
+```
+
+`experiment_semantic_failure` inputs: `dossier_json` (String) =
+`{{#parse_dossier_response.dossier_json#}}`, `validation_json` (String) =
+`{{#parse_validation_response.validation_json#}}`, `experiment_json` (String) =
+`{{#parse_experiment_response.experiment_json#}}`.
+
+```python
+import json
+def obj(value):
+    try: value = json.loads(value)
+    except (TypeError, json.JSONDecodeError): return {}
+    return value if isinstance(value, dict) else {}
+def main(dossier_json: str, validation_json: str, experiment_json: str) -> dict:
+    experiment = obj(experiment_json); experiment.update({"status":"failed", "errors":[{"code":"experiment_failed","message":"Experiment did not return a successful result."}]})
+    return {"dossier_json":json.dumps(obj(dossier_json), ensure_ascii=False), "validation_json":json.dumps(obj(validation_json), ensure_ascii=False), "experiment_json":json.dumps(experiment, ensure_ascii=False), "comparison_json":"{}", "assessment_json":json.dumps({"strict_status":"not_comparable","approximate_status":"insufficient_metrics","items":[]}), "markdown_report":"Experiment did not return a successful result."}
+```
+
+`request_failure` inputs: `dossier_json` (String) =
+`{{#parse_dossier_response.dossier_json#}}`, `validation_json` (String) =
+`{{#parse_validation_response.validation_json#}}`, `experiment_json` (String) =
+`{{#parse_experiment_response.experiment_json#}}`.
+
+```python
+import json
+def obj(value):
+    try: value = json.loads(value)
+    except (TypeError, json.JSONDecodeError): return {}
+    return value if isinstance(value, dict) else {}
+def main(dossier_json: str, validation_json: str, experiment_json: str) -> dict:
+    comparison = {"experiment_id":obj(experiment_json).get("experiment_id"), "items":[], "errors":[{"code":"invalid_comparison_request","message":"Experiment ID and unambiguous metrics are required."}]}
+    return {"dossier_json":json.dumps(obj(dossier_json), ensure_ascii=False), "validation_json":json.dumps(obj(validation_json), ensure_ascii=False), "experiment_json":json.dumps(obj(experiment_json), ensure_ascii=False), "comparison_json":json.dumps(comparison, ensure_ascii=False), "assessment_json":json.dumps({"strict_status":"not_comparable","approximate_status":"insufficient_metrics","items":[]}), "markdown_report":"Comparison request could not be built."}
+```
+
+`comparison_semantic_failure` inputs: `dossier_json` (String) =
+`{{#parse_dossier_response.dossier_json#}}`, `validation_json` (String) =
+`{{#parse_validation_response.validation_json#}}`, `experiment_json` (String) =
+`{{#parse_experiment_response.experiment_json#}}`, `comparison_json` (String) =
+`{{#parse_comparison_response.comparison_json#}}`.
+
+```python
+import json
+def obj(value):
+    try: value = json.loads(value)
+    except (TypeError, json.JSONDecodeError): return {}
+    return value if isinstance(value, dict) else {}
+def main(dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str) -> dict:
+    comparison = obj(comparison_json); comparison.update({"items":comparison.get("items", []), "errors":[{"code":"invalid_comparison_response","message":"Comparison response did not pass validation."}]})
+    return {"dossier_json":json.dumps(obj(dossier_json), ensure_ascii=False), "validation_json":json.dumps(obj(validation_json), ensure_ascii=False), "experiment_json":json.dumps(obj(experiment_json), ensure_ascii=False), "comparison_json":json.dumps(comparison, ensure_ascii=False), "assessment_json":json.dumps({"strict_status":"not_comparable","approximate_status":"insufficient_metrics","items":[]}), "markdown_report":"Comparison response did not pass validation."}
+```
 
 ## Terminal outputs
 

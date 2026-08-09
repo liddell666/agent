@@ -7,6 +7,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if (-not $PSBoundParameters.ContainsKey('DossierPath')) {
+    $DossierPath = Join-Path $PSScriptRoot '..\tests\fixtures\minimal-paper-dossier.json'
+}
+
 function Assert-Condition {
     param(
         [Parameter(Mandatory = $true)][bool]$Condition,
@@ -129,21 +133,25 @@ print(response.read().decode("utf-8"))
 $resolvedCsv = (Resolve-Path -LiteralPath $CsvPath -ErrorAction Stop).Path
 $resolvedDossier = (Resolve-Path -LiteralPath $DossierPath -ErrorAction Stop).Path
 $useHost = Test-ReproRunnerHost
-$containerDossier = '/tmp/smoke-comparison-dossier.json'
-$containerCsv = '/tmp/smoke-comparison-data.csv'
-
-if (-not $useHost) {
-    & docker inspect repro-runner --format '{{.State.Running}}' | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'repro-runner is unavailable on localhost:8001 and is not a running Docker container.'
-    }
-    & docker cp $resolvedDossier "repro-runner:$containerDossier"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not copy dossier fixture into repro-runner.' }
-    & docker cp $resolvedCsv "repro-runner:$containerCsv"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not copy CSV into repro-runner.' }
+if ($env:SMOKE_COMPARISON_FORCE_CONTAINER -eq '1') {
+    $useHost = $false
 }
+$runId = [guid]::NewGuid().ToString('N')
+$containerDossier = "/tmp/smoke-comparison-$runId-dossier.json"
+$containerCsv = "/tmp/smoke-comparison-$runId-data.csv"
 
 try {
+    if (-not $useHost) {
+        $running = (& docker inspect repro-runner --format '{{.State.Running}}' | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $running -ne 'true') {
+            throw 'repro-runner is unavailable on localhost:8001 and is not a running Docker container.'
+        }
+        & docker cp $resolvedDossier "repro-runner:$containerDossier"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not copy dossier fixture into repro-runner.' }
+        & docker cp $resolvedCsv "repro-runner:$containerCsv"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not copy CSV into repro-runner.' }
+    }
+
     if ($useHost) {
         $dossier = Invoke-HostMultipart '/v1/parse-dossier' $resolvedDossier @{ metric_overrides_json = '[]' }
         $validation = Invoke-HostMultipart '/v1/validate-dataset' $resolvedCsv @{ target_column = $TargetColumn }
@@ -199,6 +207,6 @@ try {
 }
 finally {
     if (-not $useHost) {
-        & docker exec repro-runner python -c "import os; [os.remove(path) for path in ('/tmp/smoke-comparison-dossier.json', '/tmp/smoke-comparison-data.csv') if os.path.exists(path)]" | Out-Null
+        & docker exec -u 0 repro-runner python -c 'import os,sys; [os.remove(path) for path in sys.argv[1:] if os.path.exists(path)]' $containerDossier $containerCsv | Out-Null
     }
 }
