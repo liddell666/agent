@@ -3,6 +3,11 @@ from pathlib import Path
 
 from dify.code.validate_evidence import main as validate_evidence
 from dify.code.validate_parser import main as validate_parser
+from dify.code.experiment_workflow import (
+    normalize_experiment_http_failure,
+    normalize_experiment_inputs,
+    normalize_validation_http_failure,
+)
 
 
 def test_dify_code_nodes_do_not_use_future_imports() -> None:
@@ -133,3 +138,52 @@ def test_evidence_validator_reports_exact_invalid_paths() -> None:
     assert "$.metrics[0].evidence" in result["invalid_paths"]
     assert "$.datasets[0].evidence[0].page" in result["invalid_paths"]
     assert "$.datasets[0].evidence[0].source_text" in result["invalid_paths"]
+
+
+def test_normalize_experiment_inputs_converts_boolean_to_form_text() -> None:
+    assert normalize_experiment_inputs(False) == {"drop_duplicates_text": "false"}
+    assert normalize_experiment_inputs(True) == {"drop_duplicates_text": "true"}
+
+
+def test_normalize_validation_http_failure_returns_safe_payload() -> None:
+    result = normalize_validation_http_failure()
+    validation = json.loads(result["validation_json"])
+
+    assert validation == {
+        "valid": False,
+        "errors": [
+            {
+                "code": "validation_service_unavailable",
+                "message": "数据验证服务请求失败，请稍后重试。",
+                "stage": "validate_dataset",
+            }
+        ],
+    }
+    assert result["experiment_json"] == "{}"
+    assert "暂时不可用" in result["markdown_summary"]
+
+
+def test_normalize_experiment_http_failure_preserves_validation() -> None:
+    validation_json = json.dumps({"valid": True, "dataset": {"rows": 10}})
+    result = normalize_experiment_http_failure(validation_json)
+    experiment = json.loads(result["experiment_json"])
+
+    assert json.loads(result["validation_json"])["dataset"]["rows"] == 10
+    assert experiment == {
+        "status": "failed",
+        "errors": [
+            {
+                "code": "experiment_service_unavailable",
+                "message": "实验服务请求失败，请稍后重试。",
+                "stage": "run_experiment",
+            }
+        ],
+    }
+    assert "暂时不可用" in result["markdown_summary"]
+
+
+def test_normalize_experiment_http_failure_does_not_echo_invalid_input() -> None:
+    result = normalize_experiment_http_failure("not-json")
+
+    assert json.loads(result["validation_json"]) == {"valid": True}
+    assert "not-json" not in json.dumps(result, ensure_ascii=False)
