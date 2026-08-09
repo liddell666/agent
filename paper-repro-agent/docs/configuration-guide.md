@@ -185,3 +185,48 @@ docker compose -f E:\Docker\Projects\dify\docker\docker-compose.yaml up -d --for
 - Dify 官方插件仓库：https://github.com/langgenius/dify-official-plugins
 - DeepSeek 模型与定价：https://api-docs.deepseek.com/quick_start/pricing
 - DeepSeek JSON Output：https://api-docs.deepseek.com/guides/json_mode/
+
+## 7. V3 论文对标复现工作流
+
+V3 is an independent deterministic comparison workflow. The published V2
+table-experiment workflow remains published and unchanged. Configure V3 from
+[paper-comparison-workflow.md](../dify/paper-comparison-workflow.md); it uses
+`http://repro-runner:8001` only from inside the Dify Docker network and does
+not use an LLM or DeepSeek to score metrics.
+
+Rebuild **only** `repro-runner` after changing its code or before a local V3
+smoke check. This does not restart PostgreSQL, Redis, or other Dify services:
+
+```powershell
+docker compose -f .\compose.yaml up -d --build repro-runner
+```
+
+Check its host-mapped health endpoint:
+
+```powershell
+Invoke-RestMethod http://localhost:8001/healthz
+docker inspect repro-runner --format '{{.State.Health.Status}}'
+```
+
+Run the end-to-end comparison smoke test with a local CSV. The script uses the
+host mapping when available and otherwise performs the same bounded requests
+inside the running `repro-runner` container. It emits only normalized summaries
+and never CSV rows:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_comparison.ps1 `
+  -CsvPath 'E:\论文复现\成果\2training_samples_15180.csv' `
+  -TargetColumn 'Y_cls'
+```
+
+The bundled dossier fixture deliberately contains no dataset digest or random
+seed. Therefore a successful smoke comparison must contain metric items but
+must remain strictly non-comparable. Approximate similarity is a separate,
+deterministic conclusion: 近似指标一致不等于严格复现。
+
+For service troubleshooting, inspect the most recent 200 `repro-runner` log
+lines. Do not add request payloads or CSV rows to diagnostic output:
+
+```powershell
+docker logs --tail 200 repro-runner
+```

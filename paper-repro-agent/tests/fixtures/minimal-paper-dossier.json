@@ -1,0 +1,26 @@
+{
+  "title": "Minimal Classification Paper",
+  "research_problem": "Binary classification benchmark.",
+  "task_type": "classification",
+  "datasets": [],
+  "methods": [],
+  "metrics": [
+    {
+      "name": "AUC",
+      "reported_value": "91%",
+      "dataset": "test",
+      "split": "test",
+      "evidence": [
+        {
+          "page": 2,
+          "source_text": "The held-out test AUC was 91%.",
+          "source": "paper",
+          "confidence": 1.0
+        }
+      ]
+    }
+  ],
+  "gaps": [
+    "The paper does not provide a dataset digest or random seed."
+  ]
+}
