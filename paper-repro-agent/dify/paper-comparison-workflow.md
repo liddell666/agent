@@ -41,27 +41,34 @@ Dify SSRF allow-list includes `repro-runner`.
 ```text
 Start
   -> parse_dossier HTTP -> parse_dossier_response -> dossier_ok?
-       HTTP error -> dossier_http_failure -> Output
-       false      -> dossier_semantic_failure -> Output
+       HTTP error -> dossier_http_failure -> terminal aggregation
+       false      -> dossier_semantic_failure -> terminal aggregation
   -> validate_thresholds -> thresholds_ok?
-       false -> thresholds_failure -> Output
+       false -> thresholds_failure -> terminal aggregation
   -> validate_dataset HTTP -> parse_validation_response -> validation_ok?
-       HTTP error -> validation_http_failure -> Output
-       false      -> validation_semantic_failure -> Output
+       HTTP error -> validation_http_failure -> terminal aggregation
+       false      -> validation_semantic_failure -> terminal aggregation
   -> normalize_experiment_inputs -> run_experiment HTTP -> parse_experiment_response -> experiment_ok?
-       HTTP error -> experiment_http_failure -> Output
-       false      -> experiment_semantic_failure -> Output
+       HTTP error -> experiment_http_failure -> terminal aggregation
+       false      -> experiment_semantic_failure -> terminal aggregation
   -> build_comparison_request -> comparison_request_ok?
-       false -> request_failure -> Output
+       false -> request_failure -> terminal aggregation
   -> compare_result HTTP -> parse_comparison_response -> comparison_ok?
-       HTTP error -> comparison_http_failure -> Output
-       false      -> comparison_semantic_failure -> Output
-  -> score_approximate_similarity -> format_comparison_report -> Output
+       HTTP error -> comparison_http_failure -> terminal aggregation
+       false      -> comparison_semantic_failure -> terminal aggregation
+  -> score_approximate_similarity -> format_comparison_report -> terminal aggregation
+
+terminal aggregation:
+  aggregate_dossier_json -> aggregate_validation_json -> aggregate_experiment_json
+  -> aggregate_comparison_json -> aggregate_assessment_json
+  -> aggregate_markdown_report -> Output
 ```
 
 Every arrow labelled `HTTP error` is the HTTP node's error-handling branch;
 never wire it into a node that reads the skipped HTTP response. Every terminal
-node has the six output strings described in [Terminal outputs](#terminal-outputs).
+producer has the six strings described in [Terminal outputs](#terminal-outputs),
+then the Variable Aggregator chain joins the mutually exclusive branches before
+the workflow's single Output node.
 
 ## HTTP nodes
 
@@ -576,8 +583,11 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 
 ## Terminal outputs
 
-Every Output node, including all HTTP and semantic failure branches, exposes
-these six String values with the same names:
+Dify requires Output variable names to be unique across the workflow. Therefore
+the graph must not create a separate Output node on every mutually exclusive
+branch: doing so makes publication fail because each branch repeats the same six
+names. Every success or failure terminal **producer** still returns these six
+String values with the same names:
 
 1. `dossier_json`
 2. `validation_json`
@@ -586,9 +596,31 @@ these six String values with the same names:
 5. `assessment_json`
 6. `markdown_report`
 
-On the success branch bind all six directly from `format_comparison_report`.
-On a failure branch bind all six directly from that branch's static normalizer.
-This prevents a branch from dereferencing a node that did not run.
+Add six Variable Aggregator nodes with String output type, in this exact order:
+
+1. `aggregate_dossier_json`
+2. `aggregate_validation_json`
+3. `aggregate_experiment_json`
+4. `aggregate_comparison_json`
+5. `aggregate_assessment_json`
+6. `aggregate_markdown_report`
+
+For each aggregator, add the matching field from all eleven mutually exclusive
+terminal producers, in this order: `format_comparison_report`,
+`normalize_dossier_http_failure`, `dossier_semantic_failure`,
+`thresholds_failure`, `normalize_validation_http_failure`,
+`validation_semantic_failure`, `normalize_experiment_http_failure`,
+`experiment_semantic_failure`, `request_failure`,
+`normalize_comparison_http_failure`, and `comparison_semantic_failure`.
+
+Connect every terminal producer to `aggregate_dossier_json`, then connect the
+six aggregators as a chain in the order above. A Variable Aggregator is the Dify
+join primitive for mutually exclusive branches: it returns the one available
+candidate without evaluating a skipped producer. Finally create exactly one
+Output node. Bind its six uniquely named String outputs to the corresponding
+aggregator's `output` value. No semantic or HTTP failure normalizer reads an
+unexecuted HTTP response, and the single shared Output node never binds directly
+to branch-local values.
 
 ## Manual acceptance checks
 
@@ -601,7 +633,7 @@ This prevents a branch from dereferencing a node that did not run.
 4. Confirm the approximate grade is deterministic and the report includes
    `近似指标一致不等于严格复现。`.
 5. Test damaged JSON, no metrics, reversed thresholds, a missing target column,
-   and each HTTP error branch. Each must reach an Output node with all six
-   strings.
+   and each HTTP error branch. Each must reach the single shared Output node
+   with all six strings.
 
 Publish V3 only after those checks. V2 remains published and unchanged.

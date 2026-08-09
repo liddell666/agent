@@ -73,6 +73,22 @@ def test_dify_error_branches_only_use_outputs_they_create():
     assert "Every error branch ends using only variables created on that branch" in workflow
 
 
+def test_comparison_workflow_uses_one_output_after_branch_aggregation():
+    workflow = Path("dify/paper-comparison-workflow.md").read_text(encoding="utf-8")
+
+    assert "Dify requires Output variable names to be unique across the workflow" in workflow
+    for node in (
+        "aggregate_dossier_json",
+        "aggregate_validation_json",
+        "aggregate_experiment_json",
+        "aggregate_comparison_json",
+        "aggregate_assessment_json",
+        "aggregate_markdown_report",
+    ):
+        assert node in workflow
+    assert "Every Output node, including all HTTP and semantic failure branches" not in workflow
+
+
 def test_dify_response_and_error_code_nodes_have_copyable_contracts():
     workflow = Path("dify/repro-experiment-workflow.md").read_text(encoding="utf-8")
 
