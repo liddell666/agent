@@ -32,6 +32,13 @@ the numeric defaults as numbers.
 | `close_threshold` | Number | no | `0.05` |
 | `partial_threshold` | Number | no | `0.10` |
 
+For `paper_dossier`, JSON must use Dify's `Custom` file type: configure the
+File variable and set `allowed_file_types` to `custom`, allow only the `.JSON`
+extension, and allow only local-file upload. Dify 1.16 rejects
+`application/json` when the variable is configured as `document`, even when
+`.JSON` appears in the extension allow-list. Configure `training_csv` as a
+document File variable that allows only `.CSV` and local-file upload.
+
 Use `http://repro-runner:8001` for all HTTP nodes. It is the Docker-network
 name, not the host-only address. Before configuring the workflow, ensure the
 Dify SSRF allow-list includes `repro-runner`.
