@@ -72,3 +72,29 @@ Resolved every HIGH and MEDIUM item from `task-5-review.md`.
 
 The current unreconstructed live container returns 404 for `/v1/parse-dossier`,
 so the smoke's complete live request sequence remains a Task 6 verification.
+
+## Transport re-review fixes (2026-08-10)
+
+### Status
+
+Resolved both Windows PowerShell 5.1 transport findings.
+
+### Commit
+
+- `f02f60e fix: harden smoke transport on Windows`
+
+### Changes and validation
+
+- Host `compare-result` JSON is written as UTF-8 bytes to a GUID temporary
+  file and sent with curl `--data-binary @file`; the file is removed in a
+  `finally` block.
+- Container requests use a GUID-specific Python client file copied into the
+  container. The request is provided as Base64 through an environment variable,
+  so no quoted Python source or JSON is passed as a native PowerShell argument.
+  The client, dossier, CSV, and local client file are all removed in `finally`.
+- A controlled endpoint that rejects malformed comparison JSON passed both a
+  Windows PowerShell host run and a forced-container run; each returned the
+  normalized `mock-exp` comparison summary.
+- PowerShell AST parse, all embedded Dify Python snippets, and `git diff
+  --check` passed. Full tests: `156 passed`, with one existing deprecation
+  warning.
