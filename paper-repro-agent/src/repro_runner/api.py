@@ -17,10 +17,12 @@ from starlette.concurrency import run_in_threadpool
 from repro_runner.compare import compare_metrics
 from repro_runner.config import Settings, get_settings
 from repro_runner.data import DatasetError, load_dataset
+from repro_runner.dossier import parse_dossier
 from repro_runner.engine import ExperimentError, run_random_forest
 from repro_runner.schemas import (
     ComparisonResponse,
     DatasetOptions,
+    DossierParseResponse,
     ExperimentConfig,
     ExperimentResult,
     ReportedMetricInput,
@@ -92,6 +94,36 @@ async def request_validation_error(
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/v1/parse-dossier", response_model=DossierParseResponse)
+async def parse_dossier_upload(
+    file: Annotated[UploadFile, File()],
+    metric_overrides_json: Annotated[str, Form()] = "[]",
+    settings: Settings = Depends(get_settings),
+) -> DossierParseResponse:
+    if len(metric_overrides_json.encode("utf-8")) > (
+        settings.max_metric_overrides_kb * 1024
+    ):
+        return DossierParseResponse(
+            valid=False,
+            errors=[
+                ValidationErrorItem(
+                    code="invalid_metric_overrides",
+                    message="Metric overrides exceed the configured size limit.",
+                )
+            ],
+        )
+
+    content = await _read_dossier_upload(file, settings)
+    try:
+        return await run_in_threadpool(
+            parse_dossier, file.filename or "", content, metric_overrides_json
+        )
+    except Exception:
+        request_id = _request_id()
+        logger.exception("dossier parsing failed request_id=%s", request_id)
+        raise _internal_error("dossier_parse_failed", request_id) from None
 
 
 @app.post("/v1/validate-dataset", response_model=ValidationResponse)
@@ -211,6 +243,22 @@ async def _read_upload(file: UploadFile, settings: Settings) -> bytes:
             detail={
                 "code": "file_too_large",
                 "message": "CSV content exceeds the configured size limit",
+                "request_id": _request_id(),
+            },
+        )
+    return content
+
+
+async def _read_dossier_upload(file: UploadFile, settings: Settings) -> bytes:
+    """Read a bounded dossier upload before parsing its JSON payload."""
+    max_bytes = settings.max_dossier_mb * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "dossier_file_too_large",
+                "message": "Dossier content exceeds the configured size limit",
                 "request_id": _request_id(),
             },
         )

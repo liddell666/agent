@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -15,6 +16,32 @@ def _csv(rows: int = 40) -> bytes:
     return ("\n".join(data) + "\n").encode()
 
 
+def _dossier() -> bytes:
+    return json.dumps(
+        {
+            "title": "Minimal Paper",
+            "research_problem": "Binary classification.",
+            "task_type": "classification",
+            "datasets": [],
+            "methods": [],
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "reported_value": "91%",
+                    "evidence": [
+                        {
+                            "page": 1,
+                            "source_text": "AUC is 91%.",
+                            "source": "paper",
+                        }
+                    ],
+                }
+            ],
+            "gaps": [],
+        }
+    ).encode()
+
+
 @pytest.fixture
 def client(tmp_path) -> TestClient:
     settings = Settings(storage_dir=tmp_path, max_upload_mb=1)
@@ -29,6 +56,91 @@ def test_healthz_is_public(client: TestClient):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_parse_dossier_returns_normalized_metrics(client: TestClient):
+    response = client.post(
+        "/v1/parse-dossier",
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["metrics"][0]["reported_value"] == 0.91
+
+
+def test_parse_dossier_returns_validation_error_for_bad_dossier_json(client: TestClient):
+    response = client.post(
+        "/v1/parse-dossier",
+        files={"file": ("paper.json", b"{", "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_dossier_json"
+
+
+def test_parse_dossier_rejects_large_file_without_calling_parser(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    called = False
+
+    def unexpected_parser(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("parser must not be called")
+
+    monkeypatch.setattr(api, "parse_dossier", unexpected_parser)
+    response = client.post(
+        "/v1/parse-dossier",
+        files={
+            "file": (
+                "large.json",
+                b"x" * (5 * 1024 * 1024 + 1),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "dossier_file_too_large"
+    assert called is False
+
+
+def test_parse_dossier_sanitizes_unexpected_parser_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    def fail_parser(*_args, **_kwargs):
+        raise RuntimeError("private dossier parser detail")
+
+    monkeypatch.setattr(api, "parse_dossier", fail_parser)
+    response = client.post(
+        "/v1/parse-dossier",
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "dossier_parse_failed"
+    assert detail["request_id"]
+    assert "private dossier parser detail" not in response.text
+
+
+def test_parse_dossier_rejects_oversized_metric_overrides_semantically(
+    client: TestClient,
+):
+    response = client.post(
+        "/v1/parse-dossier",
+        data={"metric_overrides_json": "x" * (64 * 1024 + 1)},
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_metric_overrides"
 
 
 def test_validate_dataset_returns_profile(client: TestClient):
