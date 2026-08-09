@@ -1,6 +1,33 @@
+import json
+
 import pytest
 
-from repro_runner.dossier import normalize_metric_name, parse_reported_value
+from repro_runner.dossier import normalize_metric_name, parse_dossier, parse_reported_value
+
+
+def _dossier(metrics: list[dict[str, object]]) -> bytes:
+    return json.dumps(
+        {
+            "title": "Minimal Paper",
+            "research_problem": "Binary classification.",
+            "task_type": "classification",
+            "datasets": [],
+            "methods": [],
+            "metrics": metrics,
+            "gaps": [],
+        }
+    ).encode()
+
+
+def _evidence() -> list[dict[str, object]]:
+    return [
+        {
+            "page": 8,
+            "source_text": "The test metric was reported in the paper.",
+            "source": "paper",
+            "confidence": 1.0,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -45,3 +72,133 @@ def test_normalize_metric_name(name, expected):
 )
 def test_parse_reported_value(value, expected):
     assert parse_reported_value(value) == expected
+
+
+def test_parse_dossier_preserves_evidence_and_converts_percent():
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC",
+                    "reported_value": "91%",
+                    "dataset": "test",
+                    "split": "test",
+                    "evidence": _evidence(),
+                }
+            ]
+        ),
+    )
+
+    assert response.valid is True
+    metric = response.metrics[0]
+    assert metric.normalized_name == "roc_auc"
+    assert metric.reported_value == 0.91
+    assert metric.source == "paper_dossier"
+    assert metric.evidence[0].model_dump() == _evidence()[0]
+
+
+def test_override_replaces_unique_metric_and_preserves_unprovided_fields():
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC",
+                    "reported_value": 0.88,
+                    "dataset": "benchmark-a",
+                    "split": "validation",
+                    "evidence": _evidence(),
+                }
+            ]
+        ),
+        json.dumps(
+            [{"name": "roc_auc", "reported_value": 0.91, "split": "test"}]
+        ),
+    )
+
+    metric = response.metrics[0]
+    assert metric.reported_value == 0.91
+    assert metric.split == "test"
+    assert metric.dataset == "benchmark-a"
+    assert metric.source == "manual_override"
+
+
+def test_duplicate_metric_without_unique_override_is_ambiguous():
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC",
+                    "reported_value": 0.88,
+                    "dataset": "A",
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "ROC AUC",
+                    "reported_value": 0.91,
+                    "dataset": "B",
+                    "evidence": _evidence(),
+                },
+            ]
+        ),
+    )
+
+    assert [metric.ambiguous for metric in response.metrics] == [True, True]
+    assert response.warnings == ["ambiguous_metric"]
+
+
+def test_override_with_dataset_narrowing_selects_only_one_duplicate():
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC",
+                    "reported_value": 0.88,
+                    "dataset": "A",
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "ROC AUC",
+                    "reported_value": 0.91,
+                    "dataset": "B",
+                    "evidence": _evidence(),
+                },
+            ]
+        ),
+        json.dumps([{"name": "AUC", "dataset": "A", "split": "test"}]),
+    )
+
+    assert [metric.ambiguous for metric in response.metrics] == [False, True]
+    assert [metric.source for metric in response.metrics] == [
+        "manual_override",
+        "paper_dossier",
+    ]
+    assert response.warnings == ["ambiguous_metric"]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "overrides", "code"),
+    [
+        ("paper.txt", b"{}", "[]", "invalid_dossier_extension"),
+        ("paper.json", b"\xff", "[]", "invalid_dossier_encoding"),
+        ("paper.json", b"{", "[]", "invalid_dossier_json"),
+        ("paper.json", b"{}", "[]", "invalid_dossier_schema"),
+        ("paper.json", _dossier([]), "[]", "no_reported_metrics"),
+        (
+            "paper.json",
+            _dossier([{"name": "AUC", "evidence": []}]),
+            "{}",
+            "invalid_metric_overrides",
+        ),
+    ],
+)
+def test_parse_dossier_returns_safe_validation_errors(
+    filename, content, overrides, code
+):
+    response = parse_dossier(filename, content, overrides)
+
+    assert response.valid is False
+    assert response.errors[0].code == code
