@@ -130,19 +130,37 @@ import json
 def main():
     validation = {
         "valid": False,
-        "errors": [{"code": "validation_service_unavailable", "message": "The validation service request failed."}],
+        "errors": [
+            {
+                "code": "validation_service_unavailable",
+                "message": "数据验证服务请求失败，请稍后重试。",
+                "stage": "validate_dataset",
+            }
+        ],
     }
     return {
         "validation_json": json.dumps(validation, ensure_ascii=False),
         "experiment_json": "{}",
-        "markdown_summary": "数据校验服务暂时不可用；请稍后重试。",
+        "markdown_summary": "数据验证服务暂时不可用，请稍后重试。",
     }
 ```
 
 ## 3. Run experiment node
 
-On the `validation_ok` true branch, add an **HTTP Request** node named
-`run_experiment`.
+On the `validation_ok` true branch, add a **Code** node named
+`normalize_experiment_inputs` before `run_experiment`.
+
+```text
+Input: drop_duplicates = {{#start.drop_duplicates#}}
+Output: drop_duplicates_text (String)
+```
+
+```python
+def main(drop_duplicates):
+    return {"drop_duplicates_text": "true" if drop_duplicates is True else "false"}
+```
+
+After the normalizer, add an **HTTP Request** node named `run_experiment`.
 
 | Setting | Value |
 | --- | --- |
@@ -153,7 +171,7 @@ On the `validation_ok` true branch, add an **HTTP Request** node named
 | Field `target_column` | `{{#start.target_column#}}` (Text) |
 | Field `test_size` | `{{#start.test_size#}}` (Text) |
 | Field `random_state` | `{{#start.random_state#}}` (Text) |
-| Field `drop_duplicates` | `{{#start.drop_duplicates#}}` (Text) |
+| Field `drop_duplicates` | `{{#normalize_experiment_inputs.drop_duplicates_text#}}` (Text) |
 | Field `model` | `random_forest` (Text) |
 
 Immediately after a successful HTTP response, add `parse_experiment_response`, which
@@ -248,13 +266,19 @@ def main(validation_json):
     except (TypeError, json.JSONDecodeError):
         validation = {"valid": True}
     experiment = {
-        "status": "rejected",
-        "errors": [{"code": "experiment_service_unavailable", "message": "The experiment service request failed."}],
+        "status": "failed",
+        "errors": [
+            {
+                "code": "experiment_service_unavailable",
+                "message": "实验服务请求失败，请稍后重试。",
+                "stage": "run_experiment",
+            }
+        ],
     }
     return {
         "validation_json": json.dumps(validation if isinstance(validation, dict) else {"valid": True}, ensure_ascii=False),
         "experiment_json": json.dumps(experiment, ensure_ascii=False),
-        "markdown_summary": "实验服务暂时不可用；请稍后重试。",
+        "markdown_summary": "实验服务暂时不可用，请稍后重试。",
     }
 ```
 
@@ -319,9 +343,20 @@ def main(experiment):
 
 ## 5. End node outputs
 
-Create one success End node and four error End nodes. Every End node exposes exactly
-these three output names, but each error End must use only its immediately preceding
-normalizer/formatter outputs.
+Dify 1.16 requires output variable names to be globally unique across all Output
+nodes. Use these public names:
+
+```text
+Success: validation_json, experiment_json, markdown_summary
+Validation failure: validation_failure_json, validation_failure_experiment_json, validation_failure_summary
+Experiment failure: experiment_failure_validation_json, experiment_failure_json, experiment_failure_summary
+```
+
+The validation HTTP failure and validation rejection paths both terminate through
+`validation_failure_output`. The experiment HTTP failure and experiment rejection
+paths both terminate through `experiment_failure_output`. If Dify does not allow two
+incoming paths to bind directly to one Output node, place a Variable Aggregator before
+the Output node and aggregate the corresponding String values from the two normalizers.
 
 | Output name | Value |
 | --- | --- |
@@ -329,7 +364,8 @@ normalizer/formatter outputs.
 | `validation_json` | `{{#parse_validation_response.validation_json#}}` |
 | `markdown_summary` | `{{#format_experiment_report.markdown_summary#}}` |
 
-Every error branch ends using only variables created on that branch:
+Every error branch ends using only variables created on that branch and maps them to
+the stage-specific public names above:
 
 | Failure path | Final Code node | End values |
 | --- | --- | --- |
