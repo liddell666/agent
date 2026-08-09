@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 from fastapi import HTTPException
@@ -110,8 +111,10 @@ def test_parse_dossier_rejects_large_file_without_calling_parser(
 
 
 def test_parse_dossier_sanitizes_unexpected_parser_error(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
+    caplog.set_level(logging.ERROR, logger="repro_runner.api")
+
     def fail_parser(*_args, **_kwargs):
         raise RuntimeError("private dossier parser detail")
 
@@ -126,6 +129,10 @@ def test_parse_dossier_sanitizes_unexpected_parser_error(
     assert detail["code"] == "dossier_parse_failed"
     assert detail["request_id"]
     assert "private dossier parser detail" not in response.text
+    assert "dossier parsing failed" in caplog.text
+    assert detail["request_id"] in caplog.text
+    assert "private dossier parser detail" not in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 def test_parse_dossier_rejects_oversized_metric_overrides_semantically(

@@ -122,7 +122,7 @@ async def parse_dossier_upload(
         )
     except Exception:
         request_id = _request_id()
-        logger.exception("dossier parsing failed request_id=%s", request_id)
+        logger.error("dossier parsing failed request_id=%s", request_id)
         raise _internal_error("dossier_parse_failed", request_id) from None
 
 
