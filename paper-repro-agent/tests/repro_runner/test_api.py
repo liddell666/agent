@@ -1,6 +1,8 @@
 import asyncio
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import logging
+from threading import Barrier, Event
 
 import pytest
 from fastapi import HTTPException
@@ -252,17 +254,16 @@ def test_run_experiment_same_idempotency_key_executes_and_saves_once(
     train_calls = 0
     save_calls = 0
     original_train = api.run_random_forest
-    original_save = api.save_result
 
     def counted_train(*args, **kwargs):
         nonlocal train_calls
         train_calls += 1
         return original_train(*args, **kwargs)
 
-    def counted_save(*args, **kwargs):
+    def counted_save(result, _settings):
         nonlocal save_calls
         save_calls += 1
-        return original_save(*args, **kwargs)
+        return result.experiment_id
 
     monkeypatch.setattr(api, "run_random_forest", counted_train)
     monkeypatch.setattr(api, "save_result", counted_save)
@@ -279,6 +280,63 @@ def test_run_experiment_same_idempotency_key_executes_and_saves_once(
     assert second.json() == first.json()
     assert train_calls == 1
     assert save_calls == 1
+
+
+def test_concurrent_same_key_retries_join_before_admission_rejection(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    calls = 0
+    barrier = Barrier(4)
+    training_started = Event()
+    release_training = Event()
+    replay_read_started = Event()
+    release_replay_read = Event()
+    original_train = api.run_random_forest
+    original_read = api._read_upload
+    read_calls = 0
+
+    def blocking_train(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        training_started.set()
+        assert release_training.wait(timeout=5)
+        return original_train(*args, **kwargs)
+
+    async def blocking_replay_read(file, settings):
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls > 1:
+            replay_read_started.set()
+            assert await asyncio.to_thread(release_replay_read.wait, 5)
+        return await original_read(file, settings)
+
+    def post_experiment():
+        barrier.wait(timeout=5)
+        return client.post(
+            "/v1/run-experiment",
+            data={"idempotency_key": "concurrent-retry"},
+            files={"file": ("data.csv", _csv(), "text/csv")},
+        )
+
+    monkeypatch.setattr(api, "run_random_forest", blocking_train)
+    monkeypatch.setattr(api, "_read_upload", blocking_replay_read)
+    monkeypatch.setattr(
+        api, "save_result", lambda result, _settings: result.experiment_id
+    )
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        requests = [executor.submit(post_experiment) for _ in range(3)]
+        barrier.wait(timeout=5)
+        assert training_started.wait(timeout=5)
+        wait(requests, timeout=1, return_when=FIRST_COMPLETED)
+        release_training.set()
+        assert replay_read_started.wait(timeout=5)
+        wait(requests, timeout=1, return_when=FIRST_COMPLETED)
+        release_replay_read.set()
+        responses = [request.result(timeout=10) for request in requests]
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert responses[0].json() == responses[1].json() == responses[2].json()
+    assert calls == 1
 
 
 def test_run_experiment_rejects_idempotency_key_reuse_with_different_input(
@@ -567,6 +625,33 @@ def test_run_experiment_admits_request_before_reading_or_parsing(
     assert states == ["read", "parse"]
 
 
+def test_keyed_experiment_admits_request_before_reading_or_fingerprinting(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    states: list[str] = []
+    original_read = api._read_upload
+
+    async def observed_read(file, settings):
+        assert api._get_experiment_limiter().is_saturated(
+            settings.max_concurrent_experiments
+        )
+        states.append("read")
+        return await original_read(file, settings)
+
+    monkeypatch.setattr(api, "_read_upload", observed_read)
+    monkeypatch.setattr(
+        api, "save_result", lambda result, _settings: result.experiment_id
+    )
+    response = client.post(
+        "/v1/run-experiment",
+        data={"idempotency_key": "admission-boundary"},
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert states == ["read"]
+
+
 def test_async_admission_rejects_saturation_and_recovers_after_cancellation():
     async def scenario():
         settings = Settings(max_concurrent_experiments=1)
@@ -626,6 +711,38 @@ def test_idempotency_registry_joins_concurrent_identical_requests():
     asyncio.run(scenario())
 
 
+def test_cancelling_registry_owner_cancels_work_before_admission_is_released():
+    async def scenario():
+        settings = Settings(max_concurrent_experiments=1)
+        api.app.state.experiment_limiter = api.ExperimentAdmissionLimiter()
+        registry = api.ExperimentIdempotencyRegistry(max_entries=2)
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def operation():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def request():
+            async with api._admit_experiment(settings):
+                return await registry.execute("cancelled", "fingerprint", operation)
+
+        owner = asyncio.create_task(request())
+        await started.wait()
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+        assert stopped.is_set()
+        async with api._admit_experiment(settings):
+            pass
+
+    asyncio.run(scenario())
+
+
 def test_idempotency_registry_is_bounded_and_safe_across_event_loops():
     registry = api.ExperimentIdempotencyRegistry(max_entries=2)
     calls = 0
@@ -648,8 +765,11 @@ def test_idempotency_registry_is_bounded_and_safe_across_event_loops():
 
     async def new_loop():
         async def operation():
-            return "new-loop"
+            nonlocal calls
+            calls += 1
+            return "unexpected-retraining"
 
-        return await registry.execute("loop-key", "loop-fingerprint", operation)
+        return await registry.execute("one", "fp-one", operation)
 
-    assert asyncio.run(new_loop()) == "new-loop"
+    assert asyncio.run(new_loop()) == "one-again"
+    assert calls == 4

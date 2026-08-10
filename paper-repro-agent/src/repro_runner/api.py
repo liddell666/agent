@@ -193,17 +193,41 @@ async def run_experiment(
             content = await _read_experiment_upload(file, settings)
             return await _run_experiment_content(content, options, config, settings)
 
-    content = await _read_experiment_upload(file, settings)
-    fingerprint = _experiment_request_fingerprint(content, options, config)
-
-    async def execute_once() -> ExperimentResult:
-        async with _admit_experiment(settings):
-            return await _run_experiment_content(content, options, config, settings)
-
+    registry = _get_experiment_idempotency_registry()
     try:
-        return await _get_experiment_idempotency_registry().execute(
-            idempotency_key, fingerprint, execute_once
-        )
+        while True:
+            reservation = registry.reserve(idempotency_key)
+            try:
+                if reservation.owner:
+                    try:
+                        async with _admit_experiment(settings):
+                            content = await _read_experiment_upload(file, settings)
+                            fingerprint = _experiment_request_fingerprint(
+                                content, options, config
+                            )
+                            result = await _run_experiment_content(
+                                content, options, config, settings
+                            )
+                            registry.complete(reservation, fingerprint, result)
+                            return result
+                    except BaseException:
+                        registry.abort(reservation)
+                        raise
+
+                if not await registry.wait(reservation):
+                    continue
+                await registry.acquire_verification(reservation)
+                try:
+                    async with _admit_experiment(settings):
+                        content = await _read_experiment_upload(file, settings)
+                        fingerprint = _experiment_request_fingerprint(
+                            content, options, config
+                        )
+                        return registry.replay(reservation, fingerprint)
+                finally:
+                    registry.release_verification(reservation)
+            finally:
+                registry.release(reservation)
     except IdempotencyConflictError:
         raise _idempotency_conflict_error() from None
     except IdempotencyCapacityError:
