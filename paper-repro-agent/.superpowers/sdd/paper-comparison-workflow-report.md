@@ -1,5 +1,39 @@
 # Task 6 report: published V3 paper-comparison workflow
 
+## Task 8 superseding publication (2026-08-10)
+
+Task 8 supersedes the Task 6 live-deployment evidence below. Dify's official
+DSL import flow necessarily created replacement app
+`471a5361-cbd7-404b-8db7-cc04a33d7072`; the previous published V3 app
+`79a680e6-1d56-43ad-b5f6-04faa3f735ad` and V2 app
+`27f04e8d-3ba5-4b94-825b-021e3aa3017c` were preserved. The replacement was
+published at `2026-08-10 15:22:19 Asia/Shanghai` as workflow
+`bf163667-7e38-408b-a4a8-53131b081e47` and is available at
+`http://localhost/workflow/vCjB0Nju4oOLTduz`.
+
+The final saved export, `论文对标复现 V3 (4).yml` at `15:25:08`, is executable-
+semantically identical to committed `dify/paper-comparison-workflow.yml`.
+Its eight raw differences are Dify-only UI serialization (`height`, one node's
+top-level `selected` marker, and `viewport`); URLs, variables, edges, branches, code,
+timeouts, retries, and bindings have zero differences. An earlier untouched
+post-import export at `14:38:28` had zero raw differences as well.
+
+The final restored draft run is workflow run
+`c51bb081-c417-4171-9721-9ecb23f80253` at
+`2026-08-10 15:20:53 Asia/Shanghai`: `Success`, `3.363s`, 27 steps, zero model
+tokens, and experiment `exp-09fa0c6862d5417a8bb3ced8de09e1a0`.
+It used the real 15,180-row CSV and committed dossier fixture; produced AUC
+`0.871388`; retained paper value `0.91`, `paper_dossier`, and evidence `p.2`;
+reported strict `not_comparable` and approximate `highly_similar`; and rendered
+the complete report with real Markdown line breaks and the warning
+`近似指标一致不等于严格复现。` Dify 1.16's official log and editor history UI
+show timestamps, status, trace, and experiment IDs. The exact run and published
+workflow UUIDs above were confirmed with read-only local Dify database queries.
+
+The complete Task 8 boundary/failure matrix, parity details, live idempotency
+proof, preservation notes, and final verification are recorded in
+`.superpowers/sdd/task-8-report.md`.
+
 ## Outcome
 
 - Status: DONE.
@@ -125,7 +159,8 @@ and autosaved before the next test.
 ## V2 and draft cleanup
 
 - V2 app `27f04e8d-3ba5-4b94-825b-021e3aa3017c` remains published and was not
-  edited or republished. Its public URL remains
+  semantically edited or republished; its published workflow ID is unchanged.
+  Its draft received UI/layout-only inspection updates. Its public URL remains
   `http://localhost/workflow/8fF5OEnIVVCskV2s`; the latest published workflow
   row remains `91106c4c-e336-4e58-bfdf-f14409696e82`, created
   `2026-08-09 19:58:14 Asia/Shanghai`.
