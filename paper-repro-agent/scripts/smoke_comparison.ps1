@@ -152,12 +152,12 @@ print(response.read().decode("utf-8"))
     if ($useHost) {
         $dossier = Invoke-HostMultipart '/v1/parse-dossier' $resolvedDossier @{ metric_overrides_json = '[]' }
         $validation = Invoke-HostMultipart '/v1/validate-dataset' $resolvedCsv @{ target_column = $TargetColumn }
-        $experiment = Invoke-HostMultipart '/v1/run-experiment' $resolvedCsv @{ target_column = $TargetColumn; test_size = '0.2'; random_state = '42'; drop_duplicates = 'false'; model = 'random_forest' }
+        $experiment = Invoke-HostMultipart '/v1/run-experiment' $resolvedCsv @{ target_column = $TargetColumn; test_size = '0.2'; random_state = '42'; drop_duplicates = 'false'; model = 'random_forest'; idempotency_key = "smoke-comparison-$runId" }
     }
     else {
         $dossier = Invoke-ContainerRequest '/v1/parse-dossier' 'multipart' $containerDossier @{ metric_overrides_json = '[]' }
         $validation = Invoke-ContainerRequest '/v1/validate-dataset' 'multipart' $containerCsv @{ target_column = $TargetColumn }
-        $experiment = Invoke-ContainerRequest '/v1/run-experiment' 'multipart' $containerCsv @{ target_column = $TargetColumn; test_size = '0.2'; random_state = '42'; drop_duplicates = 'false'; model = 'random_forest' }
+        $experiment = Invoke-ContainerRequest '/v1/run-experiment' 'multipart' $containerCsv @{ target_column = $TargetColumn; test_size = '0.2'; random_state = '42'; drop_duplicates = 'false'; model = 'random_forest'; idempotency_key = "smoke-comparison-$runId" }
     }
 
     Assert-Condition ([bool]$dossier.valid) 'Dossier parsing failed.'

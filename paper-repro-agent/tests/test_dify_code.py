@@ -394,3 +394,118 @@ def test_report_preserves_json_and_labels_evidence_without_claiming_reproduction
     assert "p.2" in result["markdown_report"]
     assert "近似指标一致不等于严格复现。" in result["markdown_report"]
     assert "复现成功" not in result["markdown_report"]
+
+
+def test_report_contains_complete_comparison_and_dataset_details_with_real_newlines() -> None:
+    dossier_json = json.dumps(
+        {
+            "title": "Complete comparison fixture",
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "reported_value": 0.91,
+                    "dataset": "ExampleSet",
+                    "split": "test",
+                    "source": "manual_override",
+                    "evidence": [{"page": 2, "source_text": "The test AUC is 0.91."}],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    validation_json = json.dumps(
+        {
+            "valid": True,
+            "dataset": {
+                "rows": 15180,
+                "features": 16,
+                "missing_values": 0,
+                "duplicate_rows": 66,
+            },
+        },
+        ensure_ascii=False,
+    )
+    experiment_json = json.dumps(
+        {
+            "experiment_id": "exp-report-contract",
+            "status": "succeeded",
+            "config": {"target_column": "Y_cls", "test_size": 0.2, "random_state": 42},
+            "split_provenance": {"train_rows": 12144, "test_rows": 3036},
+        },
+        ensure_ascii=False,
+    )
+    comparison_json = json.dumps(
+        {
+            "experiment_id": "exp-report-contract",
+            "items": [
+                {
+                    "name": "roc_auc",
+                    "paper_value": 0.91,
+                    "independent_value": 0.871388,
+                    "absolute_difference": 0.038612,
+                    "relative_difference": -0.042431,
+                    "comparable": False,
+                    "reason": "paper metric is missing dataset identity",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    assessment_json = json.dumps(
+        {
+            "strict_status": "not_comparable",
+            "approximate_status": "highly_similar",
+            "close_threshold": 0.05,
+            "partial_threshold": 0.10,
+            "items": [
+                {
+                    "name": "roc_auc",
+                    "paper_value": 0.91,
+                    "independent_value": 0.871388,
+                    "difference_for_grade": 0.042431,
+                    "grade": "highly_similar",
+                    "comparable": False,
+                    "reason": "paper metric is missing dataset identity",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    report = format_comparison_report(
+        dossier_json,
+        validation_json,
+        experiment_json,
+        comparison_json,
+        assessment_json,
+    )["markdown_report"]
+
+    assert "\n## 数据与划分摘要\n" in report
+    assert "\\n" not in report
+    for required in (
+        "Complete comparison fixture",
+        "exp-report-contract",
+        "15180",
+        "16",
+        "12144",
+        "3036",
+        "Y_cls",
+        "0.2",
+        "42",
+        "roc_auc",
+        "论文值: 0.91",
+        "独立值: 0.871388",
+        "绝对差: 0.038612",
+        "相对差: -0.042431",
+        "严格可比: false",
+        "paper metric is missing dataset identity",
+        "近似等级: highly_similar",
+        "manual_override",
+        "p.2",
+        "not_comparable",
+        "highly_similar",
+        "近似指标一致不等于严格复现。",
+    ):
+        assert required in report
+    assert "复现成功" not in report

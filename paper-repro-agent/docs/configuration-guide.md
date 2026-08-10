@@ -189,10 +189,21 @@ docker compose -f E:\Docker\Projects\dify\docker\docker-compose.yaml up -d --for
 ## 7. V3 论文对标复现工作流
 
 V3 is an independent deterministic comparison workflow. The published V2
-table-experiment workflow remains published and unchanged. Configure V3 from
-[paper-comparison-workflow.md](../dify/paper-comparison-workflow.md); it uses
+table-experiment workflow remains published and unchanged. The deployable,
+secret-free source of truth is
+[paper-comparison-workflow.yml](../dify/paper-comparison-workflow.yml); import
+that file for a new environment and use
+[paper-comparison-workflow.md](../dify/paper-comparison-workflow.md) for the
+existing-app update and parity procedure. V3 uses
 `http://repro-runner:8001` only from inside the Dify Docker network and does
 not use an LLM or DeepSeek to score metrics.
+
+The Start contract uses `paper_dossier_json` as a required local-only Custom
+`.JSON` File and `metric_overrides_json` as an optional Paragraph with default
+`[]`. All four HTTP nodes use finite timeouts and bounded retry. The
+`run_experiment` multipart request binds `idempotency_key` to
+`sys.workflow_run_id`, so retrying one Dify workflow run cannot create a second
+training result.
 
 Rebuild **only** `repro-runner` after changing its code or before a local V3
 smoke check. This does not restart PostgreSQL, Redis, or other Dify services:
@@ -208,8 +219,9 @@ Invoke-RestMethod http://localhost:8001/healthz
 docker inspect repro-runner --format '{{.State.Health.Status}}'
 ```
 
-Run the end-to-end comparison smoke test with a local CSV. The script uses the
-host mapping when available and otherwise performs the same bounded requests
+Run the end-to-end comparison smoke test with a local CSV. The script assigns
+one stable `smoke-comparison-<run-id>` idempotency key to its experiment call,
+uses the host mapping when available, and otherwise performs the same bounded requests
 inside the running `repro-runner` container. It emits only normalized summaries
 and never CSV rows:
 

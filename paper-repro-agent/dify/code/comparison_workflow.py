@@ -300,6 +300,39 @@ def _approximate_label(status):
     }.get(status, "指标不足")
 
 
+def _report_value(value):
+    if value is None or value == "":
+        return "未提供"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).replace("\r", " ").replace("\n", " ")
+
+
+def _matching_metric(metrics, name):
+    if not isinstance(metrics, list):
+        return {}
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        candidate = metric.get("normalized_name") or metric.get("name")
+        if candidate == name:
+            return metric
+    return {}
+
+
+def _matching_assessment(items, name, index):
+    if not isinstance(items, list):
+        return {}
+    if index < len(items) and isinstance(items[index], dict):
+        candidate = items[index]
+        if candidate.get("name") == name:
+            return candidate
+    for item in items:
+        if isinstance(item, dict) and item.get("name") == name:
+            return item
+    return {}
+
+
 def format_comparison_report(
     dossier_json, validation_json, experiment_json, comparison_json, assessment_json
 ):
@@ -314,25 +347,96 @@ def format_comparison_report(
     title = dossier.get("title") if isinstance(dossier.get("title"), str) else "未命名论文"
     strict_status = assessment.get("strict_status", "not_comparable")
     approximate_status = assessment.get("approximate_status", "insufficient_metrics")
+    experiment_id = experiment.get("experiment_id") or comparison.get("experiment_id") or "未提供"
+    dataset = validation.get("dataset") if isinstance(validation.get("dataset"), dict) else {}
+    if not dataset and isinstance(experiment.get("dataset"), dict):
+        dataset = experiment["dataset"]
+    config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
+    split = (
+        experiment.get("split_provenance")
+        if isinstance(experiment.get("split_provenance"), dict)
+        else {}
+    )
     lines = [
         "# 论文指标对比报告",
         "",
         "论文: {0}".format(title),
-        "实验 ID: {0}".format(experiment.get("experiment_id") or comparison.get("experiment_id") or "未提供"),
+        "实验 ID: {0}".format(_report_value(experiment_id)),
         "严格可比性: {0}".format(strict_status),
-        "近似相似度: {0}".format(_approximate_label(approximate_status)),
+        "近似相似度: {0} ({1})".format(
+            _approximate_label(approximate_status), approximate_status
+        ),
         "",
-        "## 论文来源与证据",
+        "## 数据与划分摘要",
+        "- 数据集: 行数 {0}; 有效行数 {1}; 特征数 {2}; 目标列 {3}; 缺失值 {4}; 重复行 {5}".format(
+            _report_value(dataset.get("rows")),
+            _report_value(dataset.get("effective_rows")),
+            _report_value(dataset.get("features")),
+            _report_value(dataset.get("target") or config.get("target_column")),
+            _report_value(dataset.get("missing_values")),
+            _report_value(dataset.get("duplicate_rows")),
+        ),
+        "- 划分: test_size {0}; random_state {1}; 训练行 {2}; 测试行 {3}".format(
+            _report_value(split.get("test_size", config.get("test_size"))),
+            _report_value(split.get("random_state", config.get("random_state"))),
+            _report_value(split.get("train_rows")),
+            _report_value(split.get("test_rows")),
+        ),
+        "",
+        "## 指标明细",
     ]
-    metrics = dossier.get("metrics")
-    if isinstance(metrics, list) and metrics:
+    metrics = dossier.get("metrics") if isinstance(dossier.get("metrics"), list) else []
+    comparison_items = (
+        comparison.get("items") if isinstance(comparison.get("items"), list) else []
+    )
+    assessment_items = (
+        assessment.get("items") if isinstance(assessment.get("items"), list) else []
+    )
+    if comparison_items:
+        for index, item in enumerate(comparison_items):
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") if isinstance(item.get("name"), str) else "未命名指标"
+            metric = _matching_metric(metrics, name)
+            grade = _matching_assessment(assessment_items, name, index).get("grade")
+            pages = _pages(metric.get("evidence"))
+            lines.extend(
+                [
+                    "### {0}".format(_report_value(name)),
+                    "- 论文值: {0}; 独立值: {1}; 绝对差: {2}; 相对差: {3}".format(
+                        _report_value(item.get("paper_value")),
+                        _report_value(item.get("independent_value")),
+                        _report_value(item.get("absolute_difference")),
+                        _report_value(item.get("relative_difference")),
+                    ),
+                    "- 严格可比: {0}; 原因: {1}; 近似等级: {2}".format(
+                        _report_value(item.get("comparable") is True),
+                        _report_value(item.get("reason") or "满足全部严格来源条件"),
+                        _report_value(grade),
+                    ),
+                    "- 论文数据集/划分: {0}/{1}; 来源: {2}; 证据页: {3}".format(
+                        _report_value(metric.get("dataset")),
+                        _report_value(metric.get("split")),
+                        _report_value(metric.get("source") or "未标注来源"),
+                        pages or "无页码证据",
+                    ),
+                ]
+            )
+    else:
+        lines.append("- 没有可用的论文值与独立实验值对。")
+    lines.extend(["", "## 论文来源与证据"])
+    if metrics:
         for metric in metrics:
             if not isinstance(metric, dict):
                 continue
-            name = metric.get("name") if isinstance(metric.get("name"), str) else "未命名指标"
-            source = metric.get("source") if isinstance(metric.get("source"), str) else "未标注来源"
+            name = metric.get("normalized_name") or metric.get("name") or "未命名指标"
+            source = metric.get("source") or "未标注来源"
             pages = _pages(metric.get("evidence"))
-            lines.append("- {0}: 来源 {1}{2}".format(name, source, "；证据 " + pages if pages else "；无页码证据"))
+            lines.append(
+                "- {0}: 来源 {1}; 证据页 {2}".format(
+                    _report_value(name), _report_value(source), pages or "无页码证据"
+                )
+            )
     else:
         lines.append("- 未提供可展示的论文指标证据。")
     lines.extend(
