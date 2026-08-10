@@ -214,6 +214,7 @@ def test_build_comparison_request_strips_display_fields_and_ambiguous_items() ->
             {
                 "name": "AUC",
                 "normalized_name": "roc_auc",
+                "supported": True,
                 "reported_value": 0.91,
                 "dataset": "test",
                 "split": "test",
@@ -225,10 +226,20 @@ def test_build_comparison_request_strips_display_fields_and_ambiguous_items() ->
             {
                 "name": "F1",
                 "normalized_name": "f1",
+                "supported": True,
                 "reported_value": 0.5,
                 "source": "paper_dossier",
                 "evidence": [],
                 "ambiguous": True,
+            },
+            {
+                "name": "MCC",
+                "normalized_name": "mcc",
+                "supported": False,
+                "reported_value": 0.72,
+                "source": "paper_dossier",
+                "evidence": [{"page": 9}],
+                "ambiguous": False,
             },
             "not a metric",
         ],

@@ -52,6 +52,20 @@ def client(tmp_path) -> TestClient:
     api.app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def client_with_raised_dossier_limits(tmp_path) -> TestClient:
+    settings = Settings(
+        storage_dir=tmp_path,
+        max_upload_mb=1,
+        max_dossier_mb=20,
+        max_metric_overrides_kb=256,
+    )
+    api.app.dependency_overrides[get_settings] = lambda: settings
+    with TestClient(api.app, raise_server_exceptions=False) as test_client:
+        yield test_client
+    api.app.dependency_overrides.clear()
+
+
 def test_healthz_is_public(client: TestClient):
     response = client.get("/healthz")
 
@@ -110,6 +124,34 @@ def test_parse_dossier_rejects_large_file_without_calling_parser(
     assert called is False
 
 
+def test_parse_dossier_hard_cap_cannot_be_raised_by_settings(
+    client_with_raised_dossier_limits: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    called = False
+
+    def unexpected_parser(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("parser must not be called")
+
+    monkeypatch.setattr(api, "parse_dossier", unexpected_parser)
+    response = client_with_raised_dossier_limits.post(
+        "/v1/parse-dossier",
+        files={
+            "file": (
+                "large.json",
+                b"x" * (5 * 1024 * 1024 + 1),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "dossier_file_too_large"
+    assert called is False
+
+
 def test_parse_dossier_sanitizes_unexpected_parser_error(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
@@ -150,6 +192,31 @@ def test_parse_dossier_rejects_oversized_metric_overrides_semantically(
     assert body["errors"][0]["code"] == "invalid_metric_overrides"
 
 
+def test_metric_override_hard_cap_cannot_be_raised_by_settings(
+    client_with_raised_dossier_limits: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    called = False
+
+    def unexpected_parser(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("parser must not be called")
+
+    monkeypatch.setattr(api, "parse_dossier", unexpected_parser)
+    response = client_with_raised_dossier_limits.post(
+        "/v1/parse-dossier",
+        data={"metric_overrides_json": "x" * (64 * 1024 + 1)},
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_metric_overrides"
+    assert called is False
+
+
 def test_validate_dataset_returns_profile(client: TestClient):
     response = client.post(
         "/v1/validate-dataset",
@@ -177,6 +244,96 @@ def test_run_experiment_returns_id_and_metrics_and_persists_it(client: TestClien
     assert result["reproducibility_status"] == "baseline_only"
     assert fetched.status_code == 200
     assert fetched.json() == result
+
+
+def test_run_experiment_same_idempotency_key_executes_and_saves_once(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    train_calls = 0
+    save_calls = 0
+    original_train = api.run_random_forest
+    original_save = api.save_result
+
+    def counted_train(*args, **kwargs):
+        nonlocal train_calls
+        train_calls += 1
+        return original_train(*args, **kwargs)
+
+    def counted_save(*args, **kwargs):
+        nonlocal save_calls
+        save_calls += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(api, "run_random_forest", counted_train)
+    monkeypatch.setattr(api, "save_result", counted_save)
+    request = {
+        "data": {"idempotency_key": "dify-run-123"},
+        "files": {"file": ("data.csv", _csv(), "text/csv")},
+    }
+
+    first = client.post("/v1/run-experiment", **request)
+    second = client.post("/v1/run-experiment", **request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert train_calls == 1
+    assert save_calls == 1
+
+
+def test_run_experiment_rejects_idempotency_key_reuse_with_different_input(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    train_calls = 0
+    original_train = api.run_random_forest
+
+    def counted_train(*args, **kwargs):
+        nonlocal train_calls
+        train_calls += 1
+        return original_train(*args, **kwargs)
+
+    monkeypatch.setattr(api, "run_random_forest", counted_train)
+    first = client.post(
+        "/v1/run-experiment",
+        data={"idempotency_key": "dify-run-conflict"},
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+    conflict = client.post(
+        "/v1/run-experiment",
+        data={"idempotency_key": "dify-run-conflict", "random_state": "7"},
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    detail = conflict.json()["detail"]
+    assert detail["code"] == "idempotency_conflict"
+    assert detail["request_id"]
+    assert "dify-run-conflict" not in conflict.text
+    assert train_calls == 1
+
+
+def test_run_experiment_without_idempotency_key_remains_independent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    train_calls = 0
+    original_train = api.run_random_forest
+
+    def counted_train(*args, **kwargs):
+        nonlocal train_calls
+        train_calls += 1
+        return original_train(*args, **kwargs)
+
+    monkeypatch.setattr(api, "run_random_forest", counted_train)
+    request = {"files": {"file": ("data.csv", _csv(), "text/csv")}}
+
+    first = client.post("/v1/run-experiment", **request)
+    second = client.post("/v1/run-experiment", **request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["experiment_id"] != second.json()["experiment_id"]
+    assert train_calls == 2
 
 
 @pytest.mark.parametrize(
@@ -316,6 +473,7 @@ def test_file_larger_than_configured_limit_is_413_with_request_id(client: TestCl
         ("/v1/run-experiment", None),
         ("/v1/run-experiment", {"model": "other"}),
         ("/v1/run-experiment", {"test_size": "0.9"}),
+        ("/v1/run-experiment", {"idempotency_key": "x" * 129}),
     ],
 )
 def test_invalid_request_is_sanitized_with_request_id(
@@ -437,3 +595,61 @@ def test_async_admission_rejects_saturation_and_recovers_after_cancellation():
             pass
 
     asyncio.run(scenario())
+
+
+def test_idempotency_registry_joins_concurrent_identical_requests():
+    async def scenario():
+        registry = api.ExperimentIdempotencyRegistry(max_entries=2)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return "shared-result"
+
+        first = asyncio.create_task(registry.execute("same", "fingerprint", operation))
+        await started.wait()
+        second = asyncio.create_task(registry.execute("same", "fingerprint", operation))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await asyncio.gather(first, second) == [
+            "shared-result",
+            "shared-result",
+        ]
+        assert calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_idempotency_registry_is_bounded_and_safe_across_event_loops():
+    registry = api.ExperimentIdempotencyRegistry(max_entries=2)
+    calls = 0
+
+    async def run_sequence():
+        nonlocal calls
+
+        async def operation(value):
+            nonlocal calls
+            calls += 1
+            return value
+
+        await registry.execute("one", "fp-one", lambda: operation("one"))
+        await registry.execute("two", "fp-two", lambda: operation("two"))
+        await registry.execute("three", "fp-three", lambda: operation("three"))
+        return await registry.execute("one", "fp-one", lambda: operation("one-again"))
+
+    assert asyncio.run(run_sequence()) == "one-again"
+    assert calls == 4
+
+    async def new_loop():
+        async def operation():
+            return "new-loop"
+
+        return await registry.execute("loop-key", "loop-fingerprint", operation)
+
+    assert asyncio.run(new_loop()) == "new-loop"

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from repro_runner.dossier import normalize_metric_name, parse_dossier, parse_reported_value
+from repro_runner.schemas import DossierMetric
 
 
 def _dossier(metrics: list[dict[str, object]]) -> bytes:
@@ -98,6 +99,41 @@ def test_parse_dossier_preserves_evidence_and_converts_percent():
     assert metric.evidence[0].model_dump() == _evidence()[0]
 
 
+def test_dossier_metric_schema_requires_supported_flag():
+    schema = DossierMetric.model_json_schema()
+
+    assert schema["properties"]["supported"]["type"] == "boolean"
+    assert "supported" in schema["required"]
+
+
+def test_parse_dossier_marks_supported_metrics_and_preserves_unsupported_metrics():
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC",
+                    "reported_value": 0.91,
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "Matthews correlation coefficient",
+                    "reported_value": 0.72,
+                    "evidence": _evidence(),
+                },
+            ]
+        ),
+    )
+
+    assert [metric.normalized_name for metric in response.metrics] == [
+        "roc_auc",
+        "matthews_correlation_coefficient",
+    ]
+    assert [metric.supported for metric in response.metrics] == [True, False]
+    assert response.metrics[1].reported_value == 0.72
+    assert response.metrics[1].evidence[0].source_text
+
+
 def test_override_replaces_unique_metric_and_preserves_unprovided_fields():
     response = parse_dossier(
         "paper.json",
@@ -168,7 +204,7 @@ def test_override_with_dataset_narrowing_selects_only_one_duplicate():
                 },
             ]
         ),
-        json.dumps([{"name": "AUC", "dataset": "A", "split": "test"}]),
+        json.dumps([{"name": "AUC", "dataset": "A"}]),
     )
 
     assert [metric.ambiguous for metric in response.metrics] == [False, True]
@@ -176,6 +212,39 @@ def test_override_with_dataset_narrowing_selects_only_one_duplicate():
         "manual_override",
         "paper_dossier",
     ]
+    assert response.warnings == ["ambiguous_metric"]
+
+
+def test_duplicate_override_applies_all_selectors_before_selecting_metric():
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC",
+                    "reported_value": 0.88,
+                    "dataset": "A",
+                    "split": "test",
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "ROC AUC",
+                    "reported_value": 0.91,
+                    "dataset": "B",
+                    "split": "train",
+                    "evidence": _evidence(),
+                },
+            ]
+        ),
+        json.dumps([{"name": "AUC", "dataset": "A", "split": "train"}]),
+    )
+
+    assert [metric.ambiguous for metric in response.metrics] == [True, True]
+    assert [metric.source for metric in response.metrics] == [
+        "paper_dossier",
+        "paper_dossier",
+    ]
+    assert response.metrics[0].split == "test"
     assert response.warnings == ["ambiguous_metric"]
 
 

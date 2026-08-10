@@ -99,6 +99,7 @@ def _metrics_from_dossier(dossier: PaperDossier) -> list[DossierMetric]:
         DossierMetric(
             name=metric.name,
             normalized_name=normalize_metric_name(metric.name),
+            supported=normalize_metric_name(metric.name) in SUPPORTED_METRICS,
             reported_value=parse_reported_value(metric.reported_value),
             dataset=metric.dataset,
             split=metric.split,
@@ -125,10 +126,13 @@ def _apply_overrides_and_mark_ambiguity(
 
     for override in overrides:
         candidates = list(grouped.get(normalize_metric_name(override.name), []))
-        if len(candidates) > 1 and "dataset" in override.model_fields_set:
-            candidates = [item for item in candidates if item.dataset == override.dataset]
-        if len(candidates) > 1 and "split" in override.model_fields_set:
-            candidates = [item for item in candidates if item.split == override.split]
+        if len(candidates) > 1:
+            if "dataset" in override.model_fields_set:
+                candidates = [
+                    item for item in candidates if item.dataset == override.dataset
+                ]
+            if "split" in override.model_fields_set:
+                candidates = [item for item in candidates if item.split == override.split]
         if len(candidates) != 1:
             continue
 

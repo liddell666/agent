@@ -124,7 +124,11 @@ def build_comparison_request(dossier_json, experiment_json):
     metrics = dossier.get("metrics")
     if isinstance(metrics, list):
         for metric in metrics:
-            if not isinstance(metric, dict) or metric.get("ambiguous") is True:
+            if (
+                not isinstance(metric, dict)
+                or metric.get("ambiguous") is True
+                or metric.get("supported") is not True
+            ):
                 continue
             name = metric.get("normalized_name") or metric.get("name")
             if (

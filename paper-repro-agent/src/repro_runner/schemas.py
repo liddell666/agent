@@ -157,6 +157,7 @@ class DossierMetric(BaseModel):
 
     name: str
     normalized_name: str
+    supported: bool
     reported_value: float | None = None
     dataset: str | None = None
     split: str | None = None
