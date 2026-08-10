@@ -141,3 +141,44 @@ class ComparisonResponse(BaseModel):
 
     experiment_id: str
     items: list[ComparisonItem] = Field(default_factory=list)
+
+
+class DossierEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page: int = Field(ge=1)
+    source_text: str = Field(min_length=1, max_length=2000)
+    source: Literal["paper", "supplement", "repository", "user", "inferred"]
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class DossierMetric(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    normalized_name: str
+    supported: bool
+    reported_value: float | None = None
+    dataset: str | None = None
+    split: str | None = None
+    dataset_id: str | None = None
+    test_size: float | None = Field(default=None, ge=0.1, le=0.5)
+    random_state: int | None = Field(default=None, ge=0)
+    train_rows: int | None = Field(default=None, ge=1)
+    test_rows: int | None = Field(default=None, ge=1)
+    test_digest: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$"
+    )
+    source: Literal["paper_dossier", "manual_override"]
+    evidence: list[DossierEvidence] = Field(default_factory=list)
+    ambiguous: bool = False
+
+
+class DossierParseResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    title: str | None = None
+    metrics: list[DossierMetric] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[ValidationErrorItem] = Field(default_factory=list)

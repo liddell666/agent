@@ -1,4 +1,8 @@
 import asyncio
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import json
+import logging
+from threading import Barrier, Event
 
 import pytest
 from fastapi import HTTPException
@@ -15,9 +19,49 @@ def _csv(rows: int = 40) -> bytes:
     return ("\n".join(data) + "\n").encode()
 
 
+def _dossier() -> bytes:
+    return json.dumps(
+        {
+            "title": "Minimal Paper",
+            "research_problem": "Binary classification.",
+            "task_type": "classification",
+            "datasets": [],
+            "methods": [],
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "reported_value": "91%",
+                    "evidence": [
+                        {
+                            "page": 1,
+                            "source_text": "AUC is 91%.",
+                            "source": "paper",
+                        }
+                    ],
+                }
+            ],
+            "gaps": [],
+        }
+    ).encode()
+
+
 @pytest.fixture
 def client(tmp_path) -> TestClient:
     settings = Settings(storage_dir=tmp_path, max_upload_mb=1)
+    api.app.dependency_overrides[get_settings] = lambda: settings
+    with TestClient(api.app, raise_server_exceptions=False) as test_client:
+        yield test_client
+    api.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client_with_raised_dossier_limits(tmp_path) -> TestClient:
+    settings = Settings(
+        storage_dir=tmp_path,
+        max_upload_mb=1,
+        max_dossier_mb=20,
+        max_metric_overrides_kb=256,
+    )
     api.app.dependency_overrides[get_settings] = lambda: settings
     with TestClient(api.app, raise_server_exceptions=False) as test_client:
         yield test_client
@@ -29,6 +73,150 @@ def test_healthz_is_public(client: TestClient):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_parse_dossier_returns_normalized_metrics(client: TestClient):
+    response = client.post(
+        "/v1/parse-dossier",
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["metrics"][0]["reported_value"] == 0.91
+
+
+def test_parse_dossier_returns_validation_error_for_bad_dossier_json(client: TestClient):
+    response = client.post(
+        "/v1/parse-dossier",
+        files={"file": ("paper.json", b"{", "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_dossier_json"
+
+
+def test_parse_dossier_rejects_large_file_without_calling_parser(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    called = False
+
+    def unexpected_parser(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("parser must not be called")
+
+    monkeypatch.setattr(api, "parse_dossier", unexpected_parser)
+    response = client.post(
+        "/v1/parse-dossier",
+        files={
+            "file": (
+                "large.json",
+                b"x" * (5 * 1024 * 1024 + 1),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "dossier_file_too_large"
+    assert called is False
+
+
+def test_parse_dossier_hard_cap_cannot_be_raised_by_settings(
+    client_with_raised_dossier_limits: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    called = False
+
+    def unexpected_parser(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("parser must not be called")
+
+    monkeypatch.setattr(api, "parse_dossier", unexpected_parser)
+    response = client_with_raised_dossier_limits.post(
+        "/v1/parse-dossier",
+        files={
+            "file": (
+                "large.json",
+                b"x" * (5 * 1024 * 1024 + 1),
+                "application/json",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "dossier_file_too_large"
+    assert called is False
+
+
+def test_parse_dossier_sanitizes_unexpected_parser_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    caplog.set_level(logging.ERROR, logger="repro_runner.api")
+
+    def fail_parser(*_args, **_kwargs):
+        raise RuntimeError("private dossier parser detail")
+
+    monkeypatch.setattr(api, "parse_dossier", fail_parser)
+    response = client.post(
+        "/v1/parse-dossier",
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert detail["code"] == "dossier_parse_failed"
+    assert detail["request_id"]
+    assert "private dossier parser detail" not in response.text
+    assert "dossier parsing failed" in caplog.text
+    assert detail["request_id"] in caplog.text
+    assert "private dossier parser detail" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+def test_parse_dossier_rejects_oversized_metric_overrides_semantically(
+    client: TestClient,
+):
+    response = client.post(
+        "/v1/parse-dossier",
+        data={"metric_overrides_json": "x" * (64 * 1024 + 1)},
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_metric_overrides"
+
+
+def test_metric_override_hard_cap_cannot_be_raised_by_settings(
+    client_with_raised_dossier_limits: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    called = False
+
+    def unexpected_parser(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("parser must not be called")
+
+    monkeypatch.setattr(api, "parse_dossier", unexpected_parser)
+    response = client_with_raised_dossier_limits.post(
+        "/v1/parse-dossier",
+        data={"metric_overrides_json": "x" * (64 * 1024 + 1)},
+        files={"file": ("paper.json", _dossier(), "application/json")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_metric_overrides"
+    assert called is False
 
 
 def test_validate_dataset_returns_profile(client: TestClient):
@@ -58,6 +246,152 @@ def test_run_experiment_returns_id_and_metrics_and_persists_it(client: TestClien
     assert result["reproducibility_status"] == "baseline_only"
     assert fetched.status_code == 200
     assert fetched.json() == result
+
+
+def test_run_experiment_same_idempotency_key_executes_and_saves_once(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    train_calls = 0
+    save_calls = 0
+    original_train = api.run_random_forest
+
+    def counted_train(*args, **kwargs):
+        nonlocal train_calls
+        train_calls += 1
+        return original_train(*args, **kwargs)
+
+    def counted_save(result, _settings):
+        nonlocal save_calls
+        save_calls += 1
+        return result.experiment_id
+
+    monkeypatch.setattr(api, "run_random_forest", counted_train)
+    monkeypatch.setattr(api, "save_result", counted_save)
+    request = {
+        "data": {"idempotency_key": "dify-run-123"},
+        "files": {"file": ("data.csv", _csv(), "text/csv")},
+    }
+
+    first = client.post("/v1/run-experiment", **request)
+    second = client.post("/v1/run-experiment", **request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert train_calls == 1
+    assert save_calls == 1
+
+
+def test_concurrent_same_key_retries_join_before_admission_rejection(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    calls = 0
+    barrier = Barrier(4)
+    training_started = Event()
+    release_training = Event()
+    replay_read_started = Event()
+    release_replay_read = Event()
+    original_train = api.run_random_forest
+    original_read = api._read_upload
+    read_calls = 0
+
+    def blocking_train(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        training_started.set()
+        assert release_training.wait(timeout=5)
+        return original_train(*args, **kwargs)
+
+    async def blocking_replay_read(file, settings):
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls > 1:
+            replay_read_started.set()
+            assert await asyncio.to_thread(release_replay_read.wait, 5)
+        return await original_read(file, settings)
+
+    def post_experiment():
+        barrier.wait(timeout=5)
+        return client.post(
+            "/v1/run-experiment",
+            data={"idempotency_key": "concurrent-retry"},
+            files={"file": ("data.csv", _csv(), "text/csv")},
+        )
+
+    monkeypatch.setattr(api, "run_random_forest", blocking_train)
+    monkeypatch.setattr(api, "_read_upload", blocking_replay_read)
+    monkeypatch.setattr(
+        api, "save_result", lambda result, _settings: result.experiment_id
+    )
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        requests = [executor.submit(post_experiment) for _ in range(3)]
+        barrier.wait(timeout=5)
+        assert training_started.wait(timeout=5)
+        wait(requests, timeout=1, return_when=FIRST_COMPLETED)
+        release_training.set()
+        assert replay_read_started.wait(timeout=5)
+        wait(requests, timeout=1, return_when=FIRST_COMPLETED)
+        release_replay_read.set()
+        responses = [request.result(timeout=10) for request in requests]
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert responses[0].json() == responses[1].json() == responses[2].json()
+    assert calls == 1
+
+
+def test_run_experiment_rejects_idempotency_key_reuse_with_different_input(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    train_calls = 0
+    original_train = api.run_random_forest
+
+    def counted_train(*args, **kwargs):
+        nonlocal train_calls
+        train_calls += 1
+        return original_train(*args, **kwargs)
+
+    monkeypatch.setattr(api, "run_random_forest", counted_train)
+    first = client.post(
+        "/v1/run-experiment",
+        data={"idempotency_key": "dify-run-conflict"},
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+    conflict = client.post(
+        "/v1/run-experiment",
+        data={"idempotency_key": "dify-run-conflict", "random_state": "7"},
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    detail = conflict.json()["detail"]
+    assert detail["code"] == "idempotency_conflict"
+    assert detail["request_id"]
+    assert "dify-run-conflict" not in conflict.text
+    assert train_calls == 1
+
+
+def test_run_experiment_without_idempotency_key_remains_independent(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    train_calls = 0
+    original_train = api.run_random_forest
+
+    def counted_train(*args, **kwargs):
+        nonlocal train_calls
+        train_calls += 1
+        return original_train(*args, **kwargs)
+
+    monkeypatch.setattr(api, "run_random_forest", counted_train)
+    request = {"files": {"file": ("data.csv", _csv(), "text/csv")}}
+
+    first = client.post("/v1/run-experiment", **request)
+    second = client.post("/v1/run-experiment", **request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["experiment_id"] != second.json()["experiment_id"]
+    assert train_calls == 2
 
 
 @pytest.mark.parametrize(
@@ -197,6 +531,7 @@ def test_file_larger_than_configured_limit_is_413_with_request_id(client: TestCl
         ("/v1/run-experiment", None),
         ("/v1/run-experiment", {"model": "other"}),
         ("/v1/run-experiment", {"test_size": "0.9"}),
+        ("/v1/run-experiment", {"idempotency_key": "x" * 129}),
     ],
 )
 def test_invalid_request_is_sanitized_with_request_id(
@@ -290,6 +625,33 @@ def test_run_experiment_admits_request_before_reading_or_parsing(
     assert states == ["read", "parse"]
 
 
+def test_keyed_experiment_admits_request_before_reading_or_fingerprinting(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    states: list[str] = []
+    original_read = api._read_upload
+
+    async def observed_read(file, settings):
+        assert api._get_experiment_limiter().is_saturated(
+            settings.max_concurrent_experiments
+        )
+        states.append("read")
+        return await original_read(file, settings)
+
+    monkeypatch.setattr(api, "_read_upload", observed_read)
+    monkeypatch.setattr(
+        api, "save_result", lambda result, _settings: result.experiment_id
+    )
+    response = client.post(
+        "/v1/run-experiment",
+        data={"idempotency_key": "admission-boundary"},
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert states == ["read"]
+
+
 def test_async_admission_rejects_saturation_and_recovers_after_cancellation():
     async def scenario():
         settings = Settings(max_concurrent_experiments=1)
@@ -318,3 +680,96 @@ def test_async_admission_rejects_saturation_and_recovers_after_cancellation():
             pass
 
     asyncio.run(scenario())
+
+
+def test_idempotency_registry_joins_concurrent_identical_requests():
+    async def scenario():
+        registry = api.ExperimentIdempotencyRegistry(max_entries=2)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return "shared-result"
+
+        first = asyncio.create_task(registry.execute("same", "fingerprint", operation))
+        await started.wait()
+        second = asyncio.create_task(registry.execute("same", "fingerprint", operation))
+        await asyncio.sleep(0)
+        release.set()
+
+        assert await asyncio.gather(first, second) == [
+            "shared-result",
+            "shared-result",
+        ]
+        assert calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_registry_owner_cancels_work_before_admission_is_released():
+    async def scenario():
+        settings = Settings(max_concurrent_experiments=1)
+        api.app.state.experiment_limiter = api.ExperimentAdmissionLimiter()
+        registry = api.ExperimentIdempotencyRegistry(max_entries=2)
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def operation():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def request():
+            async with api._admit_experiment(settings):
+                return await registry.execute("cancelled", "fingerprint", operation)
+
+        owner = asyncio.create_task(request())
+        await started.wait()
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+        assert stopped.is_set()
+        async with api._admit_experiment(settings):
+            pass
+
+    asyncio.run(scenario())
+
+
+def test_idempotency_registry_is_bounded_and_safe_across_event_loops():
+    registry = api.ExperimentIdempotencyRegistry(max_entries=2)
+    calls = 0
+
+    async def run_sequence():
+        nonlocal calls
+
+        async def operation(value):
+            nonlocal calls
+            calls += 1
+            return value
+
+        await registry.execute("one", "fp-one", lambda: operation("one"))
+        await registry.execute("two", "fp-two", lambda: operation("two"))
+        await registry.execute("three", "fp-three", lambda: operation("three"))
+        return await registry.execute("one", "fp-one", lambda: operation("one-again"))
+
+    assert asyncio.run(run_sequence()) == "one-again"
+    assert calls == 4
+
+    async def new_loop():
+        async def operation():
+            nonlocal calls
+            calls += 1
+            return "unexpected-retraining"
+
+        return await registry.execute("one", "fp-one", operation)
+
+    assert asyncio.run(new_loop()) == "one-again"
+    assert calls == 4

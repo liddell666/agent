@@ -239,7 +239,13 @@ difference_for_grade = abs(independent_value - paper_value)
 16. `format_comparison_report` 代码节点
 17. `输出`
 
-每个 HTTP 节点都使用有限重试，并有独立的异常分支。失败分支不得引用未执行节点的输出。
+每个 HTTP 节点都使用有限重试和有限连接/读/写超时，并有独立的异常分支。
+`run_experiment` 把 `sys.workflow_run_id` 作为稳定的 `idempotency_key`，保证同一次
+工作流运行的 HTTP 重试不会重复训练。失败分支不得引用未执行节点的输出。
+
+`dify/paper-comparison-workflow.yml` 是唯一的可部署工作流契约，必须保留完整图、
+代码体、HTTP 设置、异常分支、六个变量聚合器和一个 Output，并且不得包含密钥。
+操作文档只解释该 DSL 的导入、现有应用更新和验收流程，不另行维护第二份代码体。
 
 ## 错误处理
 

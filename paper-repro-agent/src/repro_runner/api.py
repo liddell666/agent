@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
+import hashlib
+import json
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -15,12 +17,24 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from repro_runner.compare import compare_metrics
-from repro_runner.config import Settings, get_settings
+from repro_runner.config import (
+    MAX_DOSSIER_BYTES,
+    MAX_METRIC_OVERRIDES_BYTES,
+    Settings,
+    get_settings,
+)
 from repro_runner.data import DatasetError, load_dataset
+from repro_runner.dossier import parse_dossier
 from repro_runner.engine import ExperimentError, run_random_forest
+from repro_runner.idempotency import (
+    IdempotencyCapacityError,
+    IdempotencyConflictError,
+    IdempotencyRegistry,
+)
 from repro_runner.schemas import (
     ComparisonResponse,
     DatasetOptions,
+    DossierParseResponse,
     ExperimentConfig,
     ExperimentResult,
     ReportedMetricInput,
@@ -37,6 +51,10 @@ from repro_runner.storage import (
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Reproduction Runner", version="0.2.0")
+
+
+class ExperimentIdempotencyRegistry(IdempotencyRegistry[ExperimentResult]):
+    """Idempotency registry specialized for experiment results."""
 
 
 class ComparisonRequest(BaseModel):
@@ -94,6 +112,37 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/v1/parse-dossier", response_model=DossierParseResponse)
+async def parse_dossier_upload(
+    file: Annotated[UploadFile, File()],
+    metric_overrides_json: Annotated[str, Form()] = "[]",
+    settings: Settings = Depends(get_settings),
+) -> DossierParseResponse:
+    configured_limit = settings.max_metric_overrides_kb * 1024
+    if len(metric_overrides_json.encode("utf-8")) > min(
+        configured_limit, MAX_METRIC_OVERRIDES_BYTES
+    ):
+        return DossierParseResponse(
+            valid=False,
+            errors=[
+                ValidationErrorItem(
+                    code="invalid_metric_overrides",
+                    message="Metric overrides exceed the configured size limit.",
+                )
+            ],
+        )
+
+    content = await _read_dossier_upload(file, settings)
+    try:
+        return await run_in_threadpool(
+            parse_dossier, file.filename or "", content, metric_overrides_json
+        )
+    except Exception:
+        request_id = _request_id()
+        logger.error("dossier parsing failed request_id=%s", request_id)
+        raise _internal_error("dossier_parse_failed", request_id) from None
+
+
 @app.post("/v1/validate-dataset", response_model=ValidationResponse)
 async def validate_dataset(
     file: Annotated[UploadFile, File()],
@@ -126,6 +175,7 @@ async def run_experiment(
     random_state: Annotated[int, Form(ge=0)] = 42,
     drop_duplicates: Annotated[bool, Form()] = False,
     model: Annotated[Literal["random_forest"], Form()] = "random_forest",
+    idempotency_key: Annotated[str | None, Form(min_length=1, max_length=128)] = None,
     settings: Settings = Depends(get_settings),
 ) -> ExperimentResult:
     options = DatasetOptions(
@@ -138,28 +188,50 @@ async def run_experiment(
         random_state=random_state,
         drop_duplicates=drop_duplicates,
     )
-    async with _admit_experiment(settings):
-        try:
-            content = await _read_upload(file, settings)
-            bundle = await run_in_threadpool(load_dataset, content, options, settings)
-        except DatasetError as exc:
-            raise _dataset_error(exc) from None
-        except HTTPException:
-            raise
-        except Exception:
-            request_id = _request_id()
-            logger.exception("experiment input preparation failed request_id=%s", request_id)
-            raise _internal_error("experiment_failed", request_id) from None
+    if idempotency_key is None:
+        async with _admit_experiment(settings):
+            content = await _read_experiment_upload(file, settings)
+            return await _run_experiment_content(content, options, config, settings)
 
-        try:
-            result = await run_in_threadpool(_execute_experiment, bundle, config, settings)
-        except ExperimentError as exc:
-            raise _dataset_error(exc) from None
-        except Exception:
-            request_id = _request_id()
-            logger.exception("experiment execution failed request_id=%s", request_id)
-            raise _internal_error("experiment_failed", request_id) from None
-    return result
+    registry = _get_experiment_idempotency_registry()
+    try:
+        while True:
+            reservation = registry.reserve(idempotency_key)
+            try:
+                if reservation.owner:
+                    try:
+                        async with _admit_experiment(settings):
+                            content = await _read_experiment_upload(file, settings)
+                            fingerprint = _experiment_request_fingerprint(
+                                content, options, config
+                            )
+                            result = await _run_experiment_content(
+                                content, options, config, settings
+                            )
+                            registry.complete(reservation, fingerprint, result)
+                            return result
+                    except BaseException:
+                        registry.abort(reservation)
+                        raise
+
+                if not await registry.wait(reservation):
+                    continue
+                await registry.acquire_verification(reservation)
+                try:
+                    async with _admit_experiment(settings):
+                        content = await _read_experiment_upload(file, settings)
+                        fingerprint = _experiment_request_fingerprint(
+                            content, options, config
+                        )
+                        return registry.replay(reservation, fingerprint)
+                finally:
+                    registry.release_verification(reservation)
+            finally:
+                registry.release(reservation)
+    except IdempotencyConflictError:
+        raise _idempotency_conflict_error() from None
+    except IdempotencyCapacityError:
+        raise _idempotency_capacity_error() from None
 
 
 @app.get("/v1/experiments/{experiment_id}", response_model=ExperimentResult)
@@ -217,6 +289,77 @@ async def _read_upload(file: UploadFile, settings: Settings) -> bytes:
     return content
 
 
+async def _read_dossier_upload(file: UploadFile, settings: Settings) -> bytes:
+    """Read a bounded dossier upload before parsing its JSON payload."""
+    max_bytes = min(settings.max_dossier_mb * 1024 * 1024, MAX_DOSSIER_BYTES)
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "dossier_file_too_large",
+                "message": "Dossier content exceeds the configured size limit",
+                "request_id": _request_id(),
+            },
+        )
+    return content
+
+
+async def _read_experiment_upload(file: UploadFile, settings: Settings) -> bytes:
+    try:
+        return await _read_upload(file, settings)
+    except HTTPException:
+        raise
+    except Exception:
+        request_id = _request_id()
+        logger.exception("experiment input preparation failed request_id=%s", request_id)
+        raise _internal_error("experiment_failed", request_id) from None
+
+
+async def _run_experiment_content(
+    content: bytes,
+    options: DatasetOptions,
+    config: ExperimentConfig,
+    settings: Settings,
+) -> ExperimentResult:
+    try:
+        bundle = await run_in_threadpool(load_dataset, content, options, settings)
+    except DatasetError as exc:
+        raise _dataset_error(exc) from None
+    except Exception:
+        request_id = _request_id()
+        logger.exception("experiment input preparation failed request_id=%s", request_id)
+        raise _internal_error("experiment_failed", request_id) from None
+
+    try:
+        return await run_in_threadpool(_execute_experiment, bundle, config, settings)
+    except ExperimentError as exc:
+        raise _dataset_error(exc) from None
+    except Exception:
+        request_id = _request_id()
+        logger.exception("experiment execution failed request_id=%s", request_id)
+        raise _internal_error("experiment_failed", request_id) from None
+
+
+def _experiment_request_fingerprint(
+    content: bytes, options: DatasetOptions, config: ExperimentConfig
+) -> str:
+    metadata = json.dumps(
+        {
+            "options": options.model_dump(mode="json"),
+            "config": config.model_dump(mode="json"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(content)
+    digest.update(b"\x00")
+    digest.update(metadata)
+    return digest.hexdigest()
+
+
 def _dataset_error(exc: DatasetError) -> HTTPException:
     return HTTPException(
         status_code=422,
@@ -230,6 +373,14 @@ def _get_experiment_limiter() -> ExperimentAdmissionLimiter:
         limiter = ExperimentAdmissionLimiter()
         app.state.experiment_limiter = limiter
     return limiter
+
+
+def _get_experiment_idempotency_registry() -> ExperimentIdempotencyRegistry:
+    registry = getattr(app.state, "experiment_idempotency_registry", None)
+    if registry is None:
+        registry = ExperimentIdempotencyRegistry()
+        app.state.experiment_idempotency_registry = registry
+    return registry
 
 
 @asynccontextmanager
@@ -266,6 +417,28 @@ def _not_found_error() -> HTTPException:
             "code": "experiment_not_found",
             "message": "experiment result was not found",
             "request_id": request_id,
+        },
+    )
+
+
+def _idempotency_conflict_error() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "idempotency_conflict",
+            "message": "the idempotency key was already used for a different request",
+            "request_id": _request_id(),
+        },
+    )
+
+
+def _idempotency_capacity_error() -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={
+            "code": "idempotency_capacity_reached",
+            "message": "the idempotency registry is at capacity",
+            "request_id": _request_id(),
         },
     )
 

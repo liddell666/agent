@@ -960,13 +960,14 @@ git commit -m "feat: add dify comparison workflow helpers"
 
 **Files:**
 - Create: `dify/paper-comparison-workflow.md`
+- Create: `dify/paper-comparison-workflow.yml`
 - Create: `tests/fixtures/minimal-paper-dossier.json`
 - Create: `scripts/smoke_comparison.ps1`
 - Modify: `docs/configuration-guide.md`
 
 **Interfaces:**
 - Consumes: `/v1/parse-dossier`, `/v1/validate-dataset`, `/v1/run-experiment`, `/v1/compare-result`, and Task 4 code helpers.
-- Produces: copyable Dify configuration and a host-side smoke command.
+- Produces: a deployable Dify DSL, its operator guide, and a host-side smoke command.
 
 - [ ] **Step 1: Add a stable dossier fixture**
 
@@ -1026,14 +1027,24 @@ Print only normalized summaries; never print CSV rows.
 
 `dify/paper-comparison-workflow.md` must include:
 
-- the nine Start variables and exact defaults;
+- the nine Start variables and exact defaults, including `paper_dossier_json`
+  as a custom `.JSON` File and `metric_overrides_json` as a Paragraph defaulting
+  to `[]`;
 - multipart fields for `parse_dossier`, `validate_dataset`, and `run_experiment`;
+- bounded retry and finite timeout settings for all four HTTP nodes, with
+  `run_experiment.idempotency_key` bound to `sys.workflow_run_id`;
 - raw JSON body binding for `compare_result` from `build_comparison_request.comparison_request_json`;
 - each Task 4 function copied into a separate Dify code node with exact input/output types;
 - IF/ELSE conditions for dossier, thresholds, validation, experiment, request, and comparison success;
 - static normalizers for all HTTP failure branches;
 - six output variables on every terminal branch;
 - the prohibition on LLM-based scoring and the wording restrictions.
+
+`dify/paper-comparison-workflow.yml` is the canonical deployable contract and
+must include the complete graph, code bodies, failure branches, six Variable
+Aggregators, and one Output without secrets. Regression tests parse this DSL,
+compile its Python code, and execute its embedded formatter rather than relying
+on prose assertions.
 
 - [ ] **Step 4: Extend the configuration guide**
 
@@ -1059,7 +1070,7 @@ Expected: no PowerShell parse errors and no whitespace errors.
 - [ ] **Step 6: Commit the workflow contract**
 
 ```powershell
-git add dify/paper-comparison-workflow.md tests/fixtures/minimal-paper-dossier.json scripts/smoke_comparison.ps1 docs/configuration-guide.md
+git add dify/paper-comparison-workflow.md dify/paper-comparison-workflow.yml tests/fixtures/minimal-paper-dossier.json scripts/smoke_comparison.ps1 docs/configuration-guide.md
 git commit -m "docs: define dify paper comparison workflow"
 ```
 
