@@ -1,5 +1,16 @@
 # Task 6 report: published V3 paper-comparison workflow
 
+## Final post-review publication (2026-08-10)
+
+A duplicate-metric evidence attribution defect found during final review was
+fixed in both the canonical formatter and embedded DSL. The unchanged final
+app/public URL was republished at `2026-08-10 16:07:57 Asia/Shanghai` as
+workflow `7561584f-491b-4b47-83d0-be7b75c79e12`. The report now associates
+comparison items with the exact ordered metric set sent to the comparison
+service, including when a later manual override resolves a duplicate metric.
+The earlier public V3 was renamed to `论文对标复现 V3（旧版·仅回滚）` so its
+rollback URL remains available without being confused with the final app.
+
 ## Task 8 superseding publication (2026-08-10)
 
 Task 8 supersedes the Task 6 live-deployment evidence below. Dify's official

@@ -308,12 +308,30 @@ def _report_value(value):
     return str(value).replace("\r", " ").replace("\n", " ")
 
 
-def _matching_metric(metrics, name):
+def _selected_metrics(metrics):
     if not isinstance(metrics, list):
-        return {}
+        return []
+    selected = []
     for metric in metrics:
-        if not isinstance(metric, dict):
+        if (
+            not isinstance(metric, dict)
+            or metric.get("ambiguous") is True
+            or metric.get("supported") is not True
+        ):
             continue
+        candidate = metric.get("normalized_name") or metric.get("name")
+        if (
+            isinstance(candidate, str)
+            and candidate.strip()
+            and metric.get("reported_value") is not None
+        ):
+            selected.append(metric)
+    return selected
+
+
+def _matching_selected_metric(metrics, name, index):
+    if index < len(metrics):
+        metric = metrics[index]
         candidate = metric.get("normalized_name") or metric.get("name")
         if candidate == name:
             return metric
@@ -386,6 +404,7 @@ def format_comparison_report(
         "## 指标明细",
     ]
     metrics = dossier.get("metrics") if isinstance(dossier.get("metrics"), list) else []
+    selected_metrics = _selected_metrics(metrics)
     comparison_items = (
         comparison.get("items") if isinstance(comparison.get("items"), list) else []
     )
@@ -397,7 +416,7 @@ def format_comparison_report(
             if not isinstance(item, dict):
                 continue
             name = item.get("name") if isinstance(item.get("name"), str) else "未命名指标"
-            metric = _matching_metric(metrics, name)
+            metric = _matching_selected_metric(selected_metrics, name, index)
             grade = _matching_assessment(assessment_items, name, index).get("grade")
             pages = _pages(metric.get("evidence"))
             lines.extend(

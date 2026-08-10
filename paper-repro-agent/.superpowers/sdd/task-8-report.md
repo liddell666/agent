@@ -1,5 +1,25 @@
 # Task 8 report: final Dify review fixes and replacement publication
 
+## Post-review duplicate-metric evidence fix (2026-08-10)
+
+Final whole-branch review found that the report formatter could associate a
+comparison item with the first dossier metric of the same normalized name,
+even when that metric was ambiguous and a later manual override was the metric
+actually sent to comparison. The formatter now derives the same ordered set of
+supported, non-ambiguous, valued metrics as `build_comparison_request` and
+associates response items by that request order. Regression coverage includes
+selecting the second duplicate and retaining the order of multiple selected
+duplicates; canonical and embedded-DSL focused tests pass (`34 passed`).
+
+The corrected embedded formatter was synchronized through the official Dify
+editor and republished at `2026-08-10 16:07:57 Asia/Shanghai` without changing
+the app or public URL. The new published workflow is
+`7561584f-491b-4b47-83d0-be7b75c79e12`; a read-only database check confirms its
+formatter is 7,674 characters and contains both ordered-selection helpers.
+To prevent users selecting the earlier public rollback app by mistake, that
+app was renamed to `论文对标复现 V3（旧版·仅回滚）`; its URL and rollback state
+remain available.
+
 ## Outcome
 
 - Status: DONE.
@@ -117,7 +137,8 @@ train and save exactly once.
   remained in place. Its draft shows only UI/layout metadata autosave
   differences from inspection. `http://localhost/workflow/8fF5OEnIVVCskV2s`
   returns HTTP 200.
-- Previous V3 app `79a680e6-1d56-43ad-b5f6-04faa3f735ad` remains published at
+- Previous V3 app `79a680e6-1d56-43ad-b5f6-04faa3f735ad`, now explicitly named
+  `论文对标复现 V3（旧版·仅回滚）`, remains published at
   `http://localhost/workflow/Rpyrr9DXYM8bapKF`, which returns HTTP 200. It was
   not republished or deleted. Before the switch to import, its unpublished
   draft received only two local Start max-length edits; its working published

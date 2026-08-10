@@ -44,6 +44,8 @@ def _formatter_inputs() -> dict[str, str]:
                     {
                         "name": "AUC",
                         "normalized_name": "roc_auc",
+                        "supported": True,
+                        "ambiguous": False,
                         "reported_value": 0.91,
                         "dataset": "ExampleSet",
                         "split": "test",
@@ -313,3 +315,38 @@ def test_embedded_formatter_executes_with_the_canonical_safe_report_contract() -
     ):
         assert required in report
     assert "复现成功" not in report
+
+
+def test_embedded_formatter_matches_selected_duplicate_metric_evidence() -> None:
+    node = _by_title(_document())["format_comparison_report"]
+    namespace: dict[str, object] = {}
+    exec(compile(node["data"]["code"], "<dify:format_comparison_report>", "exec"), namespace)
+    inputs = _formatter_inputs()
+    dossier = json.loads(inputs["dossier_json"])
+    selected = dossier["metrics"][0]
+    dossier["metrics"] = [
+        {
+            **selected,
+            "reported_value": 0.80,
+            "dataset": "A",
+            "source": "paper_dossier",
+            "evidence": [{"page": 1}],
+            "supported": True,
+            "ambiguous": True,
+        },
+        {
+            **selected,
+            "dataset": "B",
+            "source": "manual_override",
+            "evidence": [{"page": 2}],
+            "supported": True,
+            "ambiguous": False,
+        },
+    ]
+    inputs["dossier_json"] = json.dumps(dossier, ensure_ascii=False)
+
+    embedded = namespace["main"](**inputs)
+    detail = embedded["markdown_report"].split("## 论文来源与证据", 1)[0]
+
+    assert "论文数据集/划分: B/test; 来源: manual_override; 证据页: p.2" in detail
+    assert "论文数据集/划分: A/test; 来源: paper_dossier; 证据页: p.1" not in detail

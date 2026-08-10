@@ -404,6 +404,8 @@ def test_report_contains_complete_comparison_and_dataset_details_with_real_newli
                 {
                     "name": "AUC",
                     "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": False,
                     "reported_value": 0.91,
                     "dataset": "ExampleSet",
                     "split": "test",
@@ -509,3 +511,128 @@ def test_report_contains_complete_comparison_and_dataset_details_with_real_newli
     ):
         assert required in report
     assert "复现成功" not in report
+
+
+def test_report_matches_the_selected_duplicate_metric_evidence() -> None:
+    dossier_json = json.dumps(
+        {
+            "title": "Duplicate metric fixture",
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": True,
+                    "reported_value": 0.80,
+                    "dataset": "A",
+                    "split": "test",
+                    "source": "paper_dossier",
+                    "evidence": [{"page": 1}],
+                },
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.91,
+                    "dataset": "B",
+                    "split": "test",
+                    "source": "manual_override",
+                    "evidence": [{"page": 2}],
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+    comparison_json = json.dumps(
+        {
+            "experiment_id": "exp-duplicate",
+            "items": [
+                {
+                    "name": "roc_auc",
+                    "paper_value": 0.91,
+                    "independent_value": 0.87,
+                    "absolute_difference": 0.04,
+                    "relative_difference": -0.043956,
+                    "comparable": False,
+                    "reason": "paper metric is missing dataset identity",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    assessment_json = json.dumps(
+        {
+            "strict_status": "not_comparable",
+            "approximate_status": "highly_similar",
+            "items": [{"name": "roc_auc", "grade": "highly_similar"}],
+        },
+        ensure_ascii=False,
+    )
+
+    report = format_comparison_report(
+        dossier_json,
+        '{"valid":true}',
+        '{"experiment_id":"exp-duplicate","status":"succeeded"}',
+        comparison_json,
+        assessment_json,
+    )["markdown_report"]
+
+    detail = report.split("## 论文来源与证据", 1)[0]
+    assert "论文数据集/划分: B/test; 来源: manual_override; 证据页: p.2" in detail
+    assert "论文数据集/划分: A/test; 来源: paper_dossier; 证据页: p.1" not in detail
+
+
+def test_report_keeps_multiple_selected_duplicate_metrics_in_request_order() -> None:
+    metrics = [
+        {
+            "name": "AUC",
+            "normalized_name": "roc_auc",
+            "supported": True,
+            "ambiguous": False,
+            "reported_value": value,
+            "dataset": dataset,
+            "split": "test",
+            "source": source,
+            "evidence": [{"page": page}],
+        }
+        for value, dataset, source, page in (
+            (0.90, "A", "paper_dossier", 1),
+            (0.91, "B", "manual_override", 2),
+        )
+    ]
+    comparison_items = [
+        {
+            "name": "roc_auc",
+            "paper_value": value,
+            "independent_value": 0.87,
+            "absolute_difference": round(value - 0.87, 2),
+            "relative_difference": None,
+            "comparable": False,
+            "reason": "paper metric is missing dataset identity",
+        }
+        for value in (0.90, 0.91)
+    ]
+    assessment_items = [
+        {"name": "roc_auc", "grade": grade}
+        for grade in ("highly_similar", "partially_similar")
+    ]
+
+    report = format_comparison_report(
+        json.dumps({"title": "Two selected duplicates", "metrics": metrics}),
+        '{"valid":true}',
+        '{"experiment_id":"exp-two","status":"succeeded"}',
+        json.dumps({"experiment_id": "exp-two", "items": comparison_items}),
+        json.dumps(
+            {
+                "strict_status": "not_comparable",
+                "approximate_status": "partially_similar",
+                "items": assessment_items,
+            }
+        ),
+    )["markdown_report"]
+
+    detail = report.split("## 论文来源与证据", 1)[0]
+    first = detail.index("论文数据集/划分: A/test; 来源: paper_dossier; 证据页: p.1")
+    second = detail.index("论文数据集/划分: B/test; 来源: manual_override; 证据页: p.2")
+    assert first < second
