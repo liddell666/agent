@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from repro_runner.compare import compare_metrics
+from repro_runner.compare import compare_metrics, compare_suite_metrics
 from repro_runner.config import (
     MAX_DOSSIER_BYTES,
     MAX_METRIC_OVERRIDES_BYTES,
@@ -41,6 +41,8 @@ from repro_runner.schemas import (
     ExperimentSuiteResult,
     ModelSuiteConfig,
     ReportedMetricInput,
+    SuiteComparisonRequest,
+    SuiteComparisonResponse,
     ValidationErrorItem,
     ValidationResponse,
 )
@@ -377,6 +379,31 @@ async def compare_result(
     except Exception:
         request_id = _request_id()
         logger.exception("experiment comparison failed request_id=%s", request_id)
+        raise _internal_error("comparison_failed", request_id) from None
+
+
+@app.post("/v1/compare-model-suite-result", response_model=SuiteComparisonResponse)
+async def compare_model_suite_result(
+    request: SuiteComparisonRequest, settings: Settings = Depends(get_settings)
+) -> SuiteComparisonResponse:
+    try:
+        result = await run_in_threadpool(load_suite_result, request.experiment_id, settings)
+    except ResultNotFoundError:
+        raise _not_found_error() from None
+    except ResultFormatError:
+        raise _result_format_error() from None
+    except Exception:
+        request_id = _request_id()
+        logger.exception("model suite comparison lookup failed request_id=%s", request_id)
+        raise _internal_error("comparison_failed", request_id) from None
+
+    try:
+        return await run_in_threadpool(
+            compare_suite_metrics, result, request.reported_metrics
+        )
+    except Exception:
+        request_id = _request_id()
+        logger.exception("model suite comparison failed request_id=%s", request_id)
         raise _internal_error("comparison_failed", request_id) from None
 
 

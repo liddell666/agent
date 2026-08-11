@@ -9,7 +9,10 @@ from repro_runner.schemas import (
     ComparisonItem,
     ComparisonResponse,
     ExperimentResult,
+    ExperimentSuiteResult,
     ReportedMetricInput,
+    SuiteComparisonItem,
+    SuiteComparisonResponse,
 )
 
 
@@ -41,17 +44,13 @@ def compare_metrics(
             metric_key,
             paper_value,
             independent_value,
-            result,
+            result.dataset.dataset_id,
+            result.split_provenance,
         )
         comparable = reason is None
-        absolute_difference = None
-        relative_difference = None
-        if paper_value is not None and independent_value is not None:
-            absolute_difference = _round_public(abs(independent_value - paper_value))
-            if paper_value != 0:
-                relative_difference = _round_public(
-                    (independent_value - paper_value) / abs(paper_value)
-                )
+        absolute_difference, relative_difference = _difference_fields(
+            paper_value, independent_value
+        )
 
         items.append(
             ComparisonItem(
@@ -67,8 +66,64 @@ def compare_metrics(
     return ComparisonResponse(experiment_id=result.experiment_id, items=items)
 
 
+def compare_suite_metrics(
+    result: ExperimentSuiteResult,
+    reported: Iterable[ReportedMetricInput | dict[str, object]],
+) -> SuiteComparisonResponse:
+    """Compare paper metrics against every successful model in a suite result."""
+    reported_metrics = [ReportedMetricInput.model_validate(candidate) for candidate in reported]
+    successful_models = [
+        item
+        for item in result.results
+        if item.status == "succeeded" and item.metrics is not None
+    ]
+    metric_values = {
+        item.model: _metric_values_from_metrics(item.metrics) for item in successful_models
+    }
+    items = []
+    for metric in reported_metrics:
+        metric_key = _normalize_metric_name(metric.name)
+        paper_value = _parse_number(metric.reported_value)
+        for model_result in successful_models:
+            independent_value = metric_values[model_result.model].get(metric_key)
+            reason = _comparison_reason(
+                metric,
+                metric_key,
+                paper_value,
+                independent_value,
+                result.dataset.dataset_id,
+                result.split_provenance,
+            )
+            comparable = reason is None
+            absolute_difference, relative_difference = _difference_fields(
+                paper_value, independent_value
+            )
+            items.append(
+                SuiteComparisonItem(
+                    model=model_result.model,
+                    name=metric.name,
+                    paper_value=paper_value,
+                    independent_value=independent_value,
+                    absolute_difference=absolute_difference,
+                    relative_difference=relative_difference,
+                    comparable=comparable,
+                    reason=reason,
+                )
+            )
+
+    return SuiteComparisonResponse(
+        experiment_id=result.experiment_id,
+        items=items,
+        paper_reference_metric=_suite_reference_metric(reported_metrics, metric_values),
+    )
+
+
 def _metric_values(result: ExperimentResult) -> dict[str, float]:
-    values = result.metrics.model_dump(exclude={"confusion_matrix"})
+    return _metric_values_from_metrics(result.metrics)
+
+
+def _metric_values_from_metrics(metrics) -> dict[str, float]:
+    values = metrics.model_dump(exclude={"confusion_matrix"})
     return {name: float(value) for name, value in values.items()}
 
 
@@ -92,19 +147,20 @@ def _comparison_reason(
     metric_key: str,
     paper_value: float | None,
     independent_value: float | None,
-    result: ExperimentResult,
+    dataset_id: str,
+    split_provenance,
 ) -> str | None:
     if metric_key not in _METRIC_ALIASES.values() and independent_value is None:
         return "metric name is not supported"
     if paper_value is None:
         return "reported value is not numeric"
-    if result.split_provenance is None:
+    if split_provenance is None:
         return "independent experiment is a legacy artifact without split provenance"
     if metric.dataset is None or metric.split is None:
         return "paper metric is missing dataset or split qualifiers"
     if metric.dataset_id is None:
         return "paper metric is missing dataset identity"
-    if metric.dataset_id != result.dataset.dataset_id:
+    if metric.dataset_id != dataset_id:
         return "paper metric dataset identity differs from the independent dataset"
     if _normalized_qualifier(metric.dataset) != _INDEPENDENT_DATASET:
         return "paper metric dataset differs from the independent test dataset"
@@ -112,24 +168,54 @@ def _comparison_reason(
         return "paper metric split differs from the independent test split"
     if metric.test_digest is None:
         return "paper metric is missing held-out test digest"
-    if metric.test_digest != result.split_provenance.test_digest:
+    if metric.test_digest != split_provenance.test_digest:
         return "paper metric held-out test digest differs from the independent test split"
     if metric.test_size is None:
         return "paper metric is missing test_size provenance"
-    if metric.test_size != result.split_provenance.test_size:
+    if metric.test_size != split_provenance.test_size:
         return "paper metric test_size differs from the independent test split"
     if metric.random_state is None:
         return "paper metric is missing random_state provenance"
-    if metric.random_state != result.split_provenance.random_state:
+    if metric.random_state != split_provenance.random_state:
         return "paper metric random_state differs from the independent test split"
     if metric.train_rows is None:
         return "paper metric is missing train_rows provenance"
-    if metric.train_rows != result.split_provenance.train_rows:
+    if metric.train_rows != split_provenance.train_rows:
         return "paper metric train_rows differs from the independent test split"
     if metric.test_rows is None:
         return "paper metric is missing test_rows provenance"
-    if metric.test_rows != result.split_provenance.test_rows:
+    if metric.test_rows != split_provenance.test_rows:
         return "paper metric test_rows differs from the independent test split"
+    return None
+
+
+def _difference_fields(
+    paper_value: float | None, independent_value: float | None
+) -> tuple[float | None, float | None]:
+    absolute_difference = None
+    relative_difference = None
+    if paper_value is not None and independent_value is not None:
+        absolute_difference = _round_public(abs(independent_value - paper_value))
+        if paper_value != 0:
+            relative_difference = _round_public(
+                (independent_value - paper_value) / abs(paper_value)
+            )
+    return absolute_difference, relative_difference
+
+
+def _suite_reference_metric(
+    reported_metrics: list[ReportedMetricInput],
+    metric_values: dict[str, dict[str, float]],
+) -> str | None:
+    if not metric_values:
+        return None
+    supported_metrics = {
+        metric_name for values in metric_values.values() for metric_name in values
+    }
+    for metric in reported_metrics:
+        metric_key = _normalize_metric_name(metric.name)
+        if metric_key in supported_metrics:
+            return metric_key
     return None
 
 
