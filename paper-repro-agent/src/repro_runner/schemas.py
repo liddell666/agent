@@ -1,6 +1,13 @@
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+MissingPolicy = Literal["reject", "drop_rows", "impute"]
+SamplingStrategy = Literal["original", "class_weight", "balanced_undersample"]
+ComparisonMode = Literal["paper_comparable", "real_world"]
+InferredColumnType = Literal["numeric", "categorical", "text", "datetime", "constant"]
 
 
 class DatasetOptions(BaseModel):
@@ -8,6 +15,19 @@ class DatasetOptions(BaseModel):
 
     target_column: str = "Y_cls"
     drop_duplicates: bool = False
+    missing_policy: MissingPolicy = "reject"
+    sampling_strategy: SamplingStrategy = "original"
+    comparison_mode: ComparisonMode = "paper_comparable"
+    feature_columns: list[str] = Field(default_factory=list)
+    exclude_columns: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def reject_duplicate_column_lists(self) -> "DatasetOptions":
+        if len(self.feature_columns) != len(set(self.feature_columns)):
+            raise ValueError("feature_columns must not contain duplicates")
+        if len(self.exclude_columns) != len(set(self.exclude_columns)):
+            raise ValueError("exclude_columns must not contain duplicates")
+        return self
 
 
 class ExperimentConfig(BaseModel):
@@ -45,11 +65,56 @@ class ValidationErrorItem(BaseModel):
     message: str
 
 
+class ColumnProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    inferred_type: InferredColumnType
+    missing_count: int = Field(ge=0)
+    unique_count: int = Field(ge=0)
+    is_target_candidate: bool
+    risk_flags: list[str] = Field(default_factory=list)
+
+
+class DatasetDiagnosticSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rows: int = Field(ge=0)
+    effective_rows: int = Field(ge=0)
+    features: int = Field(ge=0)
+    target: str | None = None
+    missing_values: int = Field(ge=0)
+    duplicate_rows: int = Field(ge=0)
+    class_counts: dict[str, int] = Field(default_factory=dict)
+    class_ratios: dict[str, float] = Field(default_factory=dict)
+    column_names: list[str] = Field(default_factory=list)
+    column_types: dict[str, str] = Field(default_factory=dict)
+    numeric_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    dataset_id: str
+
+
 class ValidationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     valid: bool
     dataset: DatasetProfile | None = None
+    columns: list[ColumnProfile] = Field(default_factory=list)
+    target_candidates: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    recommended_options: DatasetOptions | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[ValidationErrorItem] = Field(default_factory=list)
+
+
+class DatasetDiagnosticResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    valid: bool
+    dataset: DatasetDiagnosticSummary | None = None
+    columns: list[ColumnProfile] = Field(default_factory=list)
+    target_candidates: list[str] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    recommended_options: DatasetOptions | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[ValidationErrorItem] = Field(default_factory=list)
 
@@ -142,8 +207,49 @@ class ModelSuiteConfig(BaseModel):
     use_gpu: bool = False
     n_jobs: int = Field(default=4, ge=1, le=16)
 
+    @field_validator("threshold")
+    @classmethod
+    def reject_non_finite_threshold(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("threshold must be finite")
+        return value
+
     @model_validator(mode="after")
     def reject_duplicate_models(self) -> "ModelSuiteConfig":
+        if len(self.models) != len(set(self.models)):
+            raise ValueError("models must not contain duplicates")
+        return self
+
+
+class ExperimentManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    dataset_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    target_column: str
+    feature_columns: list[str] = Field(min_length=1)
+    missing_policy: MissingPolicy
+    sampling_strategy: SamplingStrategy
+    comparison_mode: ComparisonMode
+    test_size: float = Field(ge=0.1, le=0.5)
+    random_state: int = Field(ge=0)
+    cv_folds: int = Field(ge=3, le=10)
+    optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"]
+    threshold: float = Field(ge=0.0, le=1.0)
+    models: list[ModelName] = Field(min_length=1)
+    dossier_id: str | None = None
+
+    @field_validator("threshold")
+    @classmethod
+    def manifest_threshold_must_be_finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("threshold must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_manifest_lists(self) -> "ExperimentManifest":
+        if len(self.feature_columns) != len(set(self.feature_columns)):
+            raise ValueError("feature_columns must not contain duplicates")
         if len(self.models) != len(set(self.models)):
             raise ValueError("models must not contain duplicates")
         return self

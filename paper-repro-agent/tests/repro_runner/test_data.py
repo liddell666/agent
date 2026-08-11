@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from repro_runner.config import Settings
-from repro_runner.data import DatasetError, load_dataset
+from repro_runner.data import DatasetError, diagnose_dataset, load_dataset
 from repro_runner.schemas import DatasetOptions, ExperimentConfig
 
 
@@ -150,3 +150,53 @@ def test_dataset_identity_is_a_stable_content_digest():
     assert first.profile.dataset_id == second.profile.dataset_id
     assert first.profile.dataset_id != changed.profile.dataset_id
     assert len(first.profile.dataset_id.removeprefix("sha256:")) == 64
+
+
+def test_diagnose_dataset_supports_utf8_bom_and_tab_delimited_content():
+    content = (
+        "\ufeffid\tcategory\ttext\tconstant\tY_cls\n"
+        "1\tred\tfree form alpha\talways\t0\n"
+        "2\tblue\tfree form beta\talways\t0\n"
+        "3\tred\tfree form gamma\talways\t1\n"
+        "4\tgreen\tfree form delta\talways\t1\n"
+    ).encode("utf-8")
+
+    first = diagnose_dataset(
+        content,
+        DatasetOptions(target_column="Y_cls"),
+        Settings(),
+    )
+    second = diagnose_dataset(
+        content,
+        DatasetOptions(target_column="Y_cls"),
+        Settings(),
+    )
+
+    inferred_types = {
+        column.name: column.inferred_type
+        for column in first.columns
+    }
+
+    assert first.valid is True
+    assert first.dataset is not None
+    assert first.dataset.dataset_id == second.dataset.dataset_id
+    assert first.dataset.dataset_id.startswith("sha256:")
+    assert inferred_types == {
+        "id": "numeric",
+        "category": "categorical",
+        "text": "text",
+        "constant": "constant",
+        "Y_cls": "categorical",
+    }
+    assert "constant_column:constant" in first.risk_flags
+    assert "id_like_name:id" in first.risk_flags
+
+
+def test_diagnose_dataset_rejects_malformed_rows_without_echoing_source_data():
+    content = b"x\tY_cls\n1\t0\tsecret\n2\t1\n"
+
+    response = diagnose_dataset(content, DatasetOptions(), Settings())
+
+    assert response.valid is False
+    assert response.errors[0].code == "invalid_csv"
+    assert "secret" not in response.errors[0].message

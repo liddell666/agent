@@ -23,7 +23,7 @@ from repro_runner.config import (
     Settings,
     get_settings,
 )
-from repro_runner.data import DatasetError, load_dataset
+from repro_runner.data import DatasetError, diagnose_dataset, load_dataset
 from repro_runner.dossier import parse_dossier
 from repro_runner.engine import ExperimentError, run_random_forest
 from repro_runner.idempotency import (
@@ -34,6 +34,7 @@ from repro_runner.idempotency import (
 from repro_runner.schemas import (
     ComparisonResponse,
     DEFAULT_MODEL_NAMES,
+    DatasetDiagnosticResponse,
     DatasetOptions,
     DossierParseResponse,
     ExperimentConfig,
@@ -177,6 +178,29 @@ async def validate_dataset(
         logger.exception("dataset validation failed request_id=%s", request_id)
         raise _internal_error("validation_failed", request_id) from None
     return ValidationResponse(valid=True, dataset=bundle.profile, warnings=bundle.warnings)
+
+
+@app.post("/v1/diagnose-dataset", response_model=DatasetDiagnosticResponse)
+async def diagnose_dataset_route(
+    file: Annotated[UploadFile, File()],
+    target_column: Annotated[str | None, Form()] = None,
+    exclude_columns_json: Annotated[str | None, Form()] = None,
+    settings: Settings = Depends(get_settings),
+) -> DatasetDiagnosticResponse:
+    content = await _read_upload(file, settings)
+    exclude_columns = _parse_exclude_columns(exclude_columns_json)
+    options = DatasetOptions(
+        target_column=target_column or settings.default_target_column,
+        exclude_columns=exclude_columns,
+    )
+    try:
+        return await run_in_threadpool(diagnose_dataset, content, options, settings)
+    except HTTPException:
+        raise
+    except Exception:
+        request_id = _request_id()
+        logger.exception("dataset diagnosis failed request_id=%s", request_id)
+        raise _internal_error("validation_failed", request_id) from None
 
 
 @app.post("/v1/run-experiment", response_model=ExperimentResult)
@@ -672,6 +696,18 @@ def _invalid_request_exception() -> HTTPException:
             "request_id": request_id,
         },
     )
+
+
+def _parse_exclude_columns(exclude_columns_json: str | None) -> list[str]:
+    if exclude_columns_json in {None, ""}:
+        return []
+    try:
+        value = json.loads(exclude_columns_json)
+    except json.JSONDecodeError:
+        raise _invalid_request_exception() from None
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise _invalid_request_exception()
+    return value
 
 
 def _idempotency_capacity_error() -> HTTPException:

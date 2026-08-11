@@ -231,6 +231,37 @@ def test_validate_dataset_returns_profile(client: TestClient):
     assert body["dataset"]["target"] == "Y_cls"
 
 
+def test_diagnose_dataset_returns_structured_warnings_without_echoing_rows(
+    client: TestClient,
+):
+    content = (
+        "id,score,segment,constant,Y_cls\n"
+        "1,0.1,alpha,always,0\n"
+        "2,0.2,beta,always,0\n"
+        "3,0.3,gamma,always,1\n"
+        "4,0.4,delta,always,1\n"
+    ).encode()
+
+    response = client.post(
+        "/v1/diagnose-dataset",
+        files={"file": ("data.csv", content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["warnings"]
+    assert "secret" not in response.text
+    assert "1,0.1,alpha,always,0" not in response.text
+    assert {column["name"] for column in body["columns"]} == {
+        "id",
+        "score",
+        "segment",
+        "constant",
+        "Y_cls",
+    }
+
+
 def test_run_experiment_returns_id_and_metrics_and_persists_it(client: TestClient):
     response = client.post(
         "/v1/run-experiment",
