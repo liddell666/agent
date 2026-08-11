@@ -3,7 +3,7 @@
 Date: Tuesday, August 11, 2026
 Branch: `codex/multi-model-cv`
 Worktree: `C:\Users\17716\Documents\arcgis\.worktrees\multi-model-cv`
-Overall status: FAIL
+Overall status: PASS WITH LIMITATIONS
 
 ## Scope note
 
@@ -11,21 +11,20 @@ This record covers the Task 9 verification brief only. I did not modify the lega
 
 ## Verification summary
 
-- FAIL — required focused pytest gate, as invoked from the brief, does not pass in the current shell/repository setup.
-- FAIL — required full `pytest -q` gate, as invoked from the brief, does not pass in the current shell/repository setup.
-- PASS — the same focused and full suites pass when the repository root is added to `PYTHONPATH` (`.;src`), which narrows the failure to import-path/test-configuration behavior rather than model-suite logic.
-- PASS — multi-model DSL regeneration is deterministic and clean.
-- PASS — no secret-like matches were found in `dify/paper-comparison-multimodel-workflow.yml`.
-- FAIL — `docker compose build repro-runner` is blocked locally because `.env` is absent.
-- PASS — direct `Dockerfile.repro` image build succeeded; the built image runs as non-root `app` and served `{"status":"ok"}` on `/healthz`.
-- PASS — two-model live API smoke test succeeded with a safe synthetic local fixture.
-- NOT RUN / UNAVAILABLE — seven-model real-data experiment was not run because the scoped workspace did not contain the original training CSV required by the brief.
+- PASS - required focused pytest gate now passes from a plain shell with repository-managed pytest configuration and `PYTHONPATH` unset.
+- PASS - required full `pytest -q` gate now passes from a plain shell with repository-managed pytest configuration and `PYTHONPATH` unset.
+- PASS - multi-model DSL regeneration is deterministic and clean.
+- PASS - no secret-like matches were found in `dify/paper-comparison-multimodel-workflow.yml`.
+- LIMITATION - `docker compose build repro-runner` remains blocked locally because `.env` is absent.
+- PASS - direct `Dockerfile.repro` image build succeeded; the built image runs as non-root `app` and served `{"status":"ok"}` on `/healthz`.
+- PASS - two-model live API smoke test succeeded with a safe synthetic local fixture.
+- LIMITATION - seven-model real-data experiment remains unavailable because the scoped workspace did not contain the original training CSV required by the brief.
 
 ## Detailed results
 
 ### 1) Focused runner and Dify tests
 
-Status: FAIL
+Status: PASS
 
 Command:
 
@@ -33,33 +32,23 @@ Command:
 pytest -q tests/repro_runner/test_suite_schemas.py tests/repro_runner/test_split.py tests/repro_runner/test_metrics.py tests/repro_runner/test_model_registry.py tests/repro_runner/test_suite_engine.py tests/repro_runner/test_suite_compare.py tests/repro_runner/test_suite_api.py tests/test_dify_multimodel_code.py tests/test_dify_multimodel_dsl.py tests/test_dify_comparison_dsl.py
 ```
 
-Observed result:
+Environment:
 
-- Exit code `1`
-- Collection failed before test execution
-- `ModuleNotFoundError: No module named 'dify'`
-- `ModuleNotFoundError: No module named 'scripts'`
-- 3 collection errors, 1 warning
-
-Evidence note:
-
-- `pyproject.toml` sets `pythonpath = ["src"]`
-- the Dify tests import top-level `dify` and `scripts`
-
-Environment-only diagnostic retry:
-
-```powershell
-$env:PYTHONPATH='.;src'; pytest -q tests/repro_runner/test_suite_schemas.py tests/repro_runner/test_split.py tests/repro_runner/test_metrics.py tests/repro_runner/test_model_registry.py tests/repro_runner/test_suite_engine.py tests/repro_runner/test_suite_compare.py tests/repro_runner/test_suite_api.py tests/test_dify_multimodel_code.py tests/test_dify_multimodel_dsl.py tests/test_dify_comparison_dsl.py
-```
+- `PYTHONPATH` unset (`Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue`)
 
 Observed result:
 
 - Exit code `0`
-- `79 passed, 1 warning in 13.52s`
+- `79 passed, 1 warning in 13.33s`
+
+Evidence note:
+
+- the follow-up brief captured the RED-state plain-shell collection failure caused by pytest `pythonpath` including only `src`
+- `pyproject.toml` now includes both `src` and the repository root, preserving `src` imports while allowing the top-level `dify` and `scripts` packages used by the Dify tests to resolve without shell overrides
 
 ### 2) Full test suite
 
-Status: FAIL
+Status: PASS
 
 Command:
 
@@ -67,24 +56,14 @@ Command:
 pytest -q
 ```
 
-Observed result:
+Environment:
 
-- Exit code `1`
-- Collection failed before execution
-- `ModuleNotFoundError: No module named 'dify'`
-- `ModuleNotFoundError: No module named 'scripts'`
-- 4 collection errors, 1 warning
-
-Environment-only diagnostic retry:
-
-```powershell
-$env:PYTHONPATH='.;src'; pytest -q
-```
+- `PYTHONPATH` unset (`Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue`)
 
 Observed result:
 
 - Exit code `0`
-- `256 passed, 1 warning in 24.39s`
+- `256 passed, 1 warning in 23.91s`
 
 ### 3) Generated files, diff cleanliness, and secret scan
 
@@ -139,7 +118,7 @@ Observed result:
 
 #### 4a) Compose-based build
 
-Status: FAIL
+Status: LIMITATION
 
 Command:
 
@@ -208,14 +187,14 @@ Returned metrics:
 
 ### 6) Seven-model real-data experiment
 
-Status: NOT RUN / UNAVAILABLE
+Status: LIMITATION
 
 Reason:
 
 - the brief requires the original paper PDF/dossier plus the same training CSV
 - scoped workspace search found `tests/fixtures/minimal-paper.pdf` and `tests/fixtures/minimal-paper-dossier.json`
 - no original real training CSV was present in the scoped workspace
-- I did not invent substitute “real-data” inputs
+- I did not invent substitute "real-data" inputs
 
 Search command:
 
@@ -330,25 +309,29 @@ Observed live API result:
 
 ## Inspected files
 
-- `requirements-repro.lock` — includes `xgboost==3.4.0` and `lightgbm==4.7.0`
-- `dify/paper-comparison-multimodel-workflow.yml` — regenerated cleanly; no secret-like matches
-- `compose.yaml` — compose path requires `.env`
-- `Dockerfile.repro` — image defaults include non-root `app` user and `uvicorn` command
+- `requirements-repro.lock` - includes `xgboost==3.4.0` and `lightgbm==4.7.0`
+- `dify/paper-comparison-multimodel-workflow.yml` - regenerated cleanly; no secret-like matches
+- `compose.yaml` - compose path requires `.env`
+- `Dockerfile.repro` - image defaults include non-root `app` user and `uvicorn` command
 
 ## Conclusion
 
-Final verification outcome: FAIL
+Final verification outcome: PASS WITH LIMITATIONS
 
-Why FAIL instead of PASS:
+Why PASS:
 
-1. the exact focused pytest command from the brief fails in the current setup
-2. the exact full `pytest -q` command from the brief fails in the current setup
-3. `docker compose build repro-runner` also fails locally without `.env`
+1. the exact focused pytest command from the brief now passes in a plain shell with `PYTHONPATH` unset
+2. the exact full `pytest -q` command from the brief now passes in a plain shell with `PYTHONPATH` unset
+3. the change is configuration-only and preserves existing `src` import behavior while making the repository-managed pytest gate self-contained
+
+Remaining explicit limitations:
+
+- `docker compose build repro-runner` still requires the local `.env` file, which was not present in the scoped workspace
+- the seven-model real-data run remains unavailable because the scoped workspace did not include the original training CSV required by the brief
 
 Why this is still useful:
 
-- the model-suite implementation itself appears healthy under a minimal environment fix (`PYTHONPATH=.;src`)
 - the direct Docker image build and `/healthz` probe succeeded
 - the two-model live API smoke test succeeded
 - the legacy V3 single-model route still works
-- the seven-model real-data run was correctly left as unavailable instead of invented
+- the seven-model real-data run was correctly left unavailable instead of invented
