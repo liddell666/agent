@@ -62,6 +62,224 @@ def _number(value):
     return parsed if math.isfinite(parsed) else None
 
 
+_SUITE_METRIC_ALIASES = {"auc": "roc_auc", "roc_auc": "roc_auc"}
+_SUITE_SUPPORTED_METRICS = {
+    "roc_auc",
+    "accuracy",
+    "balanced_accuracy",
+    "precision",
+    "recall",
+    "f1",
+}
+
+
+def _normalized_metric_name(value):
+    if not isinstance(value, str):
+        return None
+    normalized = "_".join(value.strip().casefold().replace("-", " ").split())
+    normalized = _SUITE_METRIC_ALIASES.get(normalized, normalized)
+    return normalized if normalized in _SUITE_SUPPORTED_METRICS else None
+
+
+def build_suite_comparison_request(dossier_json, suite_json):
+    dossier = _object(dossier_json, {})
+    suite = _object(suite_json, {})
+    experiment_id = suite.get("experiment_id")
+    reported = []
+    metrics = dossier.get("metrics")
+    if isinstance(metrics, list):
+        for metric in metrics:
+            if (
+                not isinstance(metric, dict)
+                or metric.get("ambiguous") is True
+                or metric.get("supported") is not True
+            ):
+                continue
+            name = _normalized_metric_name(metric.get("normalized_name") or metric.get("name"))
+            reported_value = _number(metric.get("reported_value"))
+            if name is None or reported_value is None:
+                continue
+            item = {"name": name, "reported_value": reported_value}
+            for field in _COMPARE_FIELDS[1:]:
+                value = metric.get(field)
+                if value is not None:
+                    item[field] = value
+            reported.append(item)
+    ok = isinstance(experiment_id, str) and bool(experiment_id.strip()) and bool(reported)
+    request = {"experiment_id": experiment_id, "reported_metrics": reported} if ok else {}
+    errors = [] if ok else [
+        {
+            "code": "invalid_suite_comparison_request",
+            "message": "Suite experiment ID and unambiguous metrics are required.",
+        }
+    ]
+    return {
+        "suite_comparison_request_ok": ok,
+        "suite_comparison_request_json": _json(request),
+        "suite_comparison_request_errors": _json(errors),
+    }
+
+
+def _suite_results(suite):
+    results = suite.get("results")
+    return [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+
+
+def _suite_result_map(suite):
+    mapped = {}
+    for item in _suite_results(suite):
+        model = item.get("model")
+        if isinstance(model, str) and model not in mapped:
+            mapped[model] = item
+    return mapped
+
+
+def _comparison_map(comparison):
+    mapped = {}
+    items = comparison.get("items")
+    if not isinstance(items, list):
+        return mapped
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model = item.get("model")
+        if isinstance(model, str) and model not in mapped:
+            mapped[model] = item
+    return mapped
+
+
+def _assessment_map(assessment):
+    mapped = {}
+    items = assessment.get("items")
+    if not isinstance(items, list):
+        return mapped
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model = item.get("model")
+        if isinstance(model, str) and model not in mapped:
+            mapped[model] = item
+    return mapped
+
+
+def _safe_message(value):
+    if not isinstance(value, str):
+        return "unavailable"
+    collapsed = " ".join(value.replace("\r", " ").replace("\n", " ").split())
+    return collapsed[:200] if collapsed else "unavailable"
+
+
+def _ranking_list(value):
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _suite_metric_value(metrics, key):
+    if not isinstance(metrics, dict):
+        return None
+    return metrics.get(key)
+
+
+def format_suite_comparison_report(
+    dossier_json,
+    validation_json,
+    suite_json,
+    comparison_json,
+    assessment_json,
+):
+    dossier_string, dossier = _report_json(dossier_json)
+    validation_string, validation = _report_json(validation_json)
+    suite_string, suite = _report_json(suite_json)
+    comparison_string, comparison = _report_json(comparison_json)
+    assessment_string, assessment = _report_json(assessment_json)
+
+    result_map = _suite_result_map(suite)
+    comparison_by_model = _comparison_map(comparison)
+    assessment_by_model = _assessment_map(assessment)
+    dataset = validation.get("dataset") if isinstance(validation.get("dataset"), dict) else {}
+    if not dataset and isinstance(suite.get("dataset"), dict):
+        dataset = suite.get("dataset")
+    split = suite.get("split_provenance") if isinstance(suite.get("split_provenance"), dict) else {}
+    config = suite.get("config") if isinstance(suite.get("config"), dict) else {}
+    performance_ranking = _ranking_list(suite.get("performance_ranking"))
+    paper_distance_ranking = _ranking_list(
+        comparison.get("paper_distance_ranking") or assessment.get("paper_distance_ranking")
+    )
+    experiment_id = suite.get("experiment_id") or comparison.get("experiment_id") or "unavailable"
+    title = dossier.get("title") if isinstance(dossier.get("title"), str) else "Unnamed paper"
+
+    lines = [
+        "# Multi-model comparison report",
+        "",
+        f"paper: {_report_value(title)}",
+        f"suite experiment id: {_report_value(experiment_id)}",
+        "shared dataset/split summary:",
+        f"- rows={_report_value(dataset.get('rows'))}, effective_rows={_report_value(dataset.get('effective_rows'))}, features={_report_value(dataset.get('features'))}, target={_report_value(dataset.get('target') or config.get('target_column'))}",
+        f"- test_size={_report_value(split.get('test_size', config.get('test_size')))}, random_state={_report_value(split.get('random_state', config.get('random_state')))}, train_rows={_report_value(split.get('train_rows'))}, test_rows={_report_value(split.get('test_rows'))}",
+        f"- cv_folds={_report_value(config.get('cv_folds'))}, optimization_metric={_report_value(config.get('optimization_metric'))}, n_iter={_report_value(config.get('n_iter'))}, use_gpu={_report_value(config.get('use_gpu'))}",
+        "",
+    ]
+    if performance_ranking:
+        lines.append("performance ranking: " + " > ".join(performance_ranking))
+    if paper_distance_ranking:
+        lines.append("paper-distance ranking: " + " > ".join(paper_distance_ranking))
+    if performance_ranking or paper_distance_ranking:
+        lines.append("")
+
+    lines.append("## model summaries")
+    for model in [item.get("model") for item in _suite_results(suite) if isinstance(item.get("model"), str)]:
+        result = result_map.get(model, {})
+        comparison_item = comparison_by_model.get(model, {})
+        assessment_item = assessment_by_model.get(model, {})
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        lines.extend(
+            [
+                f"### {model}",
+                f"- status: {_report_value(result.get('status'))}",
+                f"- cv_best_score: {_report_value(result.get('cv_best_score'))}",
+                f"- auc={_report_value(_suite_metric_value(metrics, 'roc_auc'))}, accuracy={_report_value(_suite_metric_value(metrics, 'accuracy'))}, f1={_report_value(_suite_metric_value(metrics, 'f1'))}, recall={_report_value(_suite_metric_value(metrics, 'recall'))}",
+                f"- paper_value={_report_value(comparison_item.get('paper_value'))}, absolute_difference={_report_value(comparison_item.get('absolute_difference'))}, relative_difference={_report_value(comparison_item.get('relative_difference'))}",
+                f"- comparison_reason={_report_value(comparison_item.get('reason'))}, approximate_grade={_report_value(assessment_item.get('grade'))}",
+            ]
+        )
+        if error:
+            lines.append(
+                f"- safe_error={_report_value(error.get('code'))}: {_safe_message(error.get('message'))}"
+            )
+    if not _suite_results(suite):
+        lines.append("- no suite results were available.")
+
+    if performance_ranking or paper_distance_ranking:
+        lines.extend(["", "## rankings"])
+        if performance_ranking:
+            lines.append("- performance ranking: " + " > ".join(performance_ranking))
+        if paper_distance_ranking:
+            lines.append("- paper-distance ranking: " + " > ".join(paper_distance_ranking))
+
+    incomparable = [
+        item.get("reason")
+        for item in comparison_by_model.values()
+        if isinstance(item.get("reason"), str) and item.get("comparable") is not True
+    ]
+    if incomparable:
+        lines.extend(
+            [
+                "",
+                "numeric similarity is not strict reproduction when provenance does not match.",
+                "not strict reproduction: " + "; ".join(sorted(set(incomparable))),
+            ]
+        )
+
+    return {
+        "dossier_json": dossier_string,
+        "validation_json": validation_string,
+        "experiment_json": suite_string,
+        "comparison_json": comparison_string,
+        "assessment_json": assessment_string,
+        "markdown_report": "\n".join(lines),
+    }
+
+
 def _safe_errors(value, fallback):
     errors = value.get("errors") if isinstance(value, dict) else None
     if not isinstance(errors, list):

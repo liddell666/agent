@@ -1,0 +1,2406 @@
+app:
+  description: 确定性比较论文指标与独立随机森林实验；严格可比性与近似相似度分别报告。
+  icon: 📊
+  icon_background: '#E4FBCC'
+  icon_type: emoji
+  mode: workflow
+  name: 论文对标复现 V3
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 50
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: http-request
+      id: 1900000000001-source-1900000000002-target
+      source: '1900000000001'
+      sourceHandle: source
+      target: '1900000000002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000002-source-1900000000003-target
+      source: '1900000000002'
+      sourceHandle: source
+      target: '1900000000003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1900000000003-source-1900000000004-target
+      source: '1900000000003'
+      sourceHandle: source
+      target: '1900000000004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000004-true-1900000000005-target
+      source: '1900000000004'
+      sourceHandle: 'true'
+      target: '1900000000005'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1900000000005-source-1900000000006-target
+      source: '1900000000005'
+      sourceHandle: source
+      target: '1900000000006'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: http-request
+      id: 1900000000006-true-1900000000007-target
+      source: '1900000000006'
+      sourceHandle: 'true'
+      target: '1900000000007'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000007-source-1900000000008-target
+      source: '1900000000007'
+      sourceHandle: source
+      target: '1900000000008'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1900000000008-source-1900000000009-target
+      source: '1900000000008'
+      sourceHandle: source
+      target: '1900000000009'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000009-true-1900000000010-target
+      source: '1900000000009'
+      sourceHandle: 'true'
+      target: '1900000000010'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: 1900000000010-source-1900000000011-target
+      source: '1900000000010'
+      sourceHandle: source
+      target: '1900000000011'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000011-source-1900000000012-target
+      source: '1900000000011'
+      sourceHandle: source
+      target: '1900000000012'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1900000000012-source-1900000000013-target
+      source: '1900000000012'
+      sourceHandle: source
+      target: '1900000000013'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000013-true-1900000000014-target
+      source: '1900000000013'
+      sourceHandle: 'true'
+      target: '1900000000014'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1900000000014-source-1900000000015-target
+      source: '1900000000014'
+      sourceHandle: source
+      target: '1900000000015'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: http-request
+      id: 1900000000015-true-1900000000016-target
+      source: '1900000000015'
+      sourceHandle: 'true'
+      target: '1900000000016'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000016-source-1900000000017-target
+      source: '1900000000016'
+      sourceHandle: source
+      target: '1900000000017'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 1900000000017-source-1900000000018-target
+      source: '1900000000017'
+      sourceHandle: source
+      target: '1900000000018'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000018-true-1900000000019-target
+      source: '1900000000018'
+      sourceHandle: 'true'
+      target: '1900000000019'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: 1900000000019-source-1900000000020-target
+      source: '1900000000019'
+      sourceHandle: source
+      target: '1900000000020'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000002-fail-branch-1900000000021-target
+      source: '1900000000002'
+      sourceHandle: fail-branch
+      target: '1900000000021'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000004-false-1900000000022-target
+      source: '1900000000004'
+      sourceHandle: 'false'
+      target: '1900000000022'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000006-false-1900000000023-target
+      source: '1900000000006'
+      sourceHandle: 'false'
+      target: '1900000000023'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000007-fail-branch-1900000000024-target
+      source: '1900000000007'
+      sourceHandle: fail-branch
+      target: '1900000000024'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000009-false-1900000000025-target
+      source: '1900000000009'
+      sourceHandle: 'false'
+      target: '1900000000025'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000011-fail-branch-1900000000026-target
+      source: '1900000000011'
+      sourceHandle: fail-branch
+      target: '1900000000026'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000013-false-1900000000027-target
+      source: '1900000000013'
+      sourceHandle: 'false'
+      target: '1900000000027'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000015-false-1900000000028-target
+      source: '1900000000015'
+      sourceHandle: 'false'
+      target: '1900000000028'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1900000000016-fail-branch-1900000000029-target
+      source: '1900000000016'
+      sourceHandle: fail-branch
+      target: '1900000000029'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: code
+      id: 1900000000018-false-1900000000030-target
+      source: '1900000000018'
+      sourceHandle: 'false'
+      target: '1900000000030'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000020-source-1900000000031-target
+      source: '1900000000020'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000021-source-1900000000031-target
+      source: '1900000000021'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000022-source-1900000000031-target
+      source: '1900000000022'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000023-source-1900000000031-target
+      source: '1900000000023'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000024-source-1900000000031-target
+      source: '1900000000024'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000025-source-1900000000031-target
+      source: '1900000000025'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000026-source-1900000000031-target
+      source: '1900000000026'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000027-source-1900000000031-target
+      source: '1900000000027'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000028-source-1900000000031-target
+      source: '1900000000028'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000029-source-1900000000031-target
+      source: '1900000000029'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: variable-aggregator
+      id: 1900000000030-source-1900000000031-target
+      source: '1900000000030'
+      sourceHandle: source
+      target: '1900000000031'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: variable-aggregator
+      id: 1900000000031-source-1900000000032-target
+      source: '1900000000031'
+      sourceHandle: source
+      target: '1900000000032'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: variable-aggregator
+      id: 1900000000032-source-1900000000033-target
+      source: '1900000000032'
+      sourceHandle: source
+      target: '1900000000033'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: variable-aggregator
+      id: 1900000000033-source-1900000000034-target
+      source: '1900000000033'
+      sourceHandle: source
+      target: '1900000000034'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: variable-aggregator
+      id: 1900000000034-source-1900000000035-target
+      source: '1900000000034'
+      sourceHandle: source
+      target: '1900000000035'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: variable-aggregator
+      id: 1900000000035-source-1900000000036-target
+      source: '1900000000035'
+      sourceHandle: source
+      target: '1900000000036'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: variable-aggregator
+        targetType: end
+      id: 1900000000036-source-1900000000037-target
+      source: '1900000000036'
+      sourceHandle: source
+      target: '1900000000037'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - allowed_file_extensions:
+          - .JSON
+          allowed_file_types:
+          - custom
+          allowed_file_upload_methods:
+          - local_file
+          default: ''
+          hide: false
+          hint: ''
+          label: paper_dossier_json
+          options: []
+          placeholder: ''
+          required: true
+          type: file
+          variable: paper_dossier_json
+        - allowed_file_extensions:
+          - .CSV
+          allowed_file_types:
+          - document
+          allowed_file_upload_methods:
+          - local_file
+          default: ''
+          hide: false
+          hint: ''
+          label: training_csv
+          options: []
+          placeholder: ''
+          required: true
+          type: file
+          variable: training_csv
+        - default: '[]'
+          hint: ''
+          label: metric_overrides_json
+          max_length: 100000
+          options: []
+          placeholder: ''
+          required: false
+          type: paragraph
+          variable: metric_overrides_json
+        - default: Y_cls
+          hint: ''
+          label: target_column
+          max_length: 100000
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: target_column
+        - default: 0.2
+          hint: ''
+          label: test_size
+          options: []
+          placeholder: ''
+          required: false
+          type: number
+          variable: test_size
+        - default: 42
+          hint: ''
+          label: random_state
+          options: []
+          placeholder: ''
+          required: false
+          type: number
+          variable: random_state
+        - default: '["logistic_regression", "random_forest", "xgboost", "lightgbm", "svm", "knn", "mlp"]'
+          hint: ''
+          label: models_json
+          max_length: 100000
+          options: []
+          placeholder: ''
+          required: false
+          type: paragraph
+          variable: models_json
+        - default: 5
+          hint: ''
+          label: cv_folds
+          options: []
+          placeholder: ''
+          required: false
+          type: number
+          variable: cv_folds
+        - default: roc_auc
+          hint: ''
+          label: optimization_metric
+          max_length: 100000
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: optimization_metric
+        - default: 8
+          hint: ''
+          label: n_iter
+          options: []
+          placeholder: ''
+          required: false
+          type: number
+          variable: n_iter
+        - default: false
+          hint: ''
+          label: use_gpu
+          options: []
+          placeholder: ''
+          required: false
+          type: checkbox
+          variable: use_gpu
+        - default: false
+          hint: ''
+          label: drop_duplicates
+          options: []
+          placeholder: ''
+          required: false
+          type: checkbox
+          variable: drop_duplicates
+        - default: 0.05
+          hint: ''
+          label: close_threshold
+          options: []
+          placeholder: ''
+          required: false
+          type: number
+          variable: close_threshold
+        - default: 0.1
+          hint: ''
+          label: partial_threshold
+          options: []
+          placeholder: ''
+          required: false
+          type: number
+          variable: partial_threshold
+      height: 316
+      id: '1900000000001'
+      position:
+        x: 0
+        y: 0
+      positionAbsolute:
+        x: 0
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - file:
+            - '1900000000001'
+            - paper_dossier_json
+            id: key-value-1
+            key: file
+            type: file
+            value: ''
+          - id: key-value-2
+            key: metric_overrides_json
+            type: text
+            value: '{{#1900000000001.metric_overrides_json#}}'
+          type: form-data
+        error_strategy: fail-branch
+        headers: ''
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 1000
+        selected: false
+        ssl_verify: true
+        timeout:
+          connect: 10
+          max_connect_timeout: 10
+          max_read_timeout: 60
+          max_write_timeout: 60
+          read: 60
+          write: 60
+        title: parse_dossier
+        type: http-request
+        url: http://repro-runner:8001/v1/parse-dossier
+        variables: []
+      height: 143
+      id: '1900000000002'
+      position:
+        x: 330
+        y: 0
+      positionAbsolute:
+        x: 330
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\n\ndef main(dossier_response_json: str) -> dict:\n    try:\n        dossier = json.loads(dossier_response_json)\n    except (TypeError, json.JSONDecodeError):\n        dossier = {}\n    ok = isinstance(dossier, dict) and dossier.get(\"valid\") is True and isinstance(dossier.get(\"metrics\"), list)\n    errors = dossier.get(\"errors\") if isinstance(dossier, dict) else None\n    if not isinstance(errors, list):\n        errors = [{\"code\": \"invalid_dossier_response\", \"message\": \"Dossier response is invalid.\"}]\n    return {\n        \"dossier_ok\": ok,\n        \"dossier_json\": json.dumps(dossier, ensure_ascii=False, separators=(\",\", \":\")) if ok else \"{}\",\n        \"dossier_errors\": json.dumps([] if ok else errors, ensure_ascii=False, separators=(\",\", \":\")),\n    }"
+        code_language: python3
+        outputs:
+          dossier_errors:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          dossier_ok:
+            children: null
+            type: boolean
+        selected: false
+        title: parse_dossier_response
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000002'
+          - body
+          value_type: string
+          variable: dossier_response_json
+      height: 51
+      id: '1900000000003'
+      position:
+        x: 660
+        y: 0
+      positionAbsolute:
+        x: 660
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: d656ab5e-617b-4105-9783-a9b0980be350
+            value: true
+            varType: boolean
+            variable_selector:
+            - '1900000000003'
+            - dossier_ok
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: dossier_ok?
+        type: if-else
+      height: 147
+      id: '1900000000004'
+      position:
+        x: 990
+        y: 0
+      positionAbsolute:
+        x: 990
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\nimport math\n\ndef main(close_threshold: float, partial_threshold: float) -> dict:\n    try:\n        close_value, partial_value = float(close_threshold), float(partial_threshold)\n    except (TypeError, ValueError):\n        close_value = partial_value = -1.0\n    ok = math.isfinite(close_value) and math.isfinite(partial_value) and 0 < close_value < partial_value <= 1\n    errors = [] if ok else [{\"code\": \"invalid_similarity_thresholds\", \"message\": \"Thresholds must satisfy 0 < close < partial <= 1.\"}]\n    return {\"thresholds_ok\": ok, \"close_threshold\": close_value, \"partial_threshold\": partial_value, \"threshold_errors\": json.dumps(errors, ensure_ascii=False, separators=(\",\", \":\"))}"
+        code_language: python3
+        outputs:
+          close_threshold:
+            children: null
+            type: number
+          partial_threshold:
+            children: null
+            type: number
+          threshold_errors:
+            children: null
+            type: string
+          thresholds_ok:
+            children: null
+            type: boolean
+        selected: false
+        title: validate_thresholds
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000001'
+          - close_threshold
+          value_type: number
+          variable: close_threshold
+        - value_selector:
+          - '1900000000001'
+          - partial_threshold
+          value_type: number
+          variable: partial_threshold
+      height: 51
+      id: '1900000000005'
+      position:
+        x: 1320
+        y: 0
+      positionAbsolute:
+        x: 1320
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: e9155453-7bef-4a05-b398-03664061089f
+            value: true
+            varType: boolean
+            variable_selector:
+            - '1900000000005'
+            - thresholds_ok
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: thresholds_ok?
+        type: if-else
+      height: 147
+      id: '1900000000006'
+      position:
+        x: 1650
+        y: 0
+      positionAbsolute:
+        x: 1650
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - file:
+            - '1900000000001'
+            - training_csv
+            id: key-value-1
+            key: file
+            type: file
+            value: ''
+          - id: key-value-2
+            key: target_column
+            type: text
+            value: '{{#1900000000001.target_column#}}'
+          type: form-data
+        error_strategy: fail-branch
+        headers: ''
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 1000
+        selected: false
+        ssl_verify: true
+        timeout:
+          connect: 10
+          max_connect_timeout: 10
+          max_read_timeout: 120
+          max_write_timeout: 120
+          read: 120
+          write: 120
+        title: validate_dataset
+        type: http-request
+        url: http://repro-runner:8001/v1/validate-dataset
+        variables: []
+      height: 143
+      id: '1900000000007'
+      position:
+        x: 1980
+        y: 0
+      positionAbsolute:
+        x: 1980
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        response = json.loads(body) if isinstance(body, str) else body\n    except (TypeError, json.JSONDecodeError):\n        response = {\"valid\": False, \"errors\": [{\"code\": \"invalid_validation_response\", \"message\": \"The validation service returned invalid JSON.\"}]}\n    if not isinstance(response, dict):\n        response = {\"valid\": False, \"errors\": [{\"code\": \"invalid_validation_response\", \"message\": \"The validation service response must be an object.\"}]}\n    errors = response.get(\"errors\", [])\n    if not isinstance(errors, list):\n        errors = [{\"code\": \"invalid_validation_response\", \"message\": \"The validation error list is invalid.\"}]\n    normalized = {**response, \"valid\": response.get(\"valid\") is True, \"errors\": errors}\n    return {\"validation_ok\": normalized[\"valid\"], \"validation_json\": json.dumps(normalized, ensure_ascii=False), \"validation_errors\": json.dumps(errors, ensure_ascii=False)}"
+        code_language: python3
+        outputs:
+          validation_errors:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+          validation_ok:
+            children: null
+            type: boolean
+        selected: false
+        title: parse_validation_response
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000007'
+          - body
+          value_type: string
+          variable: body
+      height: 51
+      id: '1900000000008'
+      position:
+        x: 2310
+        y: 0
+      positionAbsolute:
+        x: 2310
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 7adeb9a4-635f-4424-a6fa-bbbbd4850a40
+            value: true
+            varType: boolean
+            variable_selector:
+            - '1900000000008'
+            - validation_ok
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: validation_ok?
+        type: if-else
+      height: 147
+      id: '1900000000009'
+      position:
+        x: 2640
+        y: 0
+      positionAbsolute:
+        x: 2640
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\n\nKNOWN_MODELS = (\n    \"logistic_regression\",\n    \"random_forest\",\n    \"xgboost\",\n    \"lightgbm\",\n    \"svm\",\n    \"knn\",\n    \"mlp\",\n)\nKNOWN_METRICS = {\"roc_auc\", \"f1\", \"recall\", \"balanced_accuracy\"}\n\ndef safe_models_json(models_json):\n    default = json.dumps(list(KNOWN_MODELS), ensure_ascii=False)\n    try:\n        parsed = json.loads(models_json) if isinstance(models_json, str) else models_json\n    except (TypeError, json.JSONDecodeError):\n        return default\n    if not isinstance(parsed, list) or not parsed:\n        return default\n    values = []\n    seen = set()\n    for item in parsed:\n        if not isinstance(item, str):\n            return default\n        name = item.strip()\n        if name not in KNOWN_MODELS or name in seen:\n            return default\n        seen.add(name)\n        values.append(name)\n    return json.dumps(values, ensure_ascii=False)\n\ndef safe_int_text(value, default, minimum, maximum):\n    if isinstance(value, bool):\n        return str(default)\n    try:\n        if isinstance(value, float):\n            if not value.is_integer():\n                return str(default)\n            parsed = int(value)\n        elif isinstance(value, int):\n            parsed = value\n        elif isinstance(value, str):\n            text = value.strip()\n            if not text or text != str(int(text)):\n                return str(default)\n            parsed = int(text)\n        else:\n            return str(default)\n    except (TypeError, ValueError):\n        return str(default)\n    return str(parsed if minimum <= parsed <= maximum else default)\n\ndef safe_metric_text(value):\n    if not isinstance(value, str):\n        return \"roc_auc\"\n    metric = value.strip()\n    return metric if metric in KNOWN_METRICS else \"roc_auc\"\n\ndef safe_bool_text(value):\n    if value is True or (isinstance(value, str) and value.strip().casefold() == \"true\"):\n        return \"true\"\n    if value is False or (isinstance(value, str) and value.strip().casefold() == \"false\"):\n        return \"false\"\n    return \"false\"\n\ndef main(models_json, cv_folds, optimization_metric, n_iter, use_gpu, drop_duplicates):\n    return {\n        \"models_json_text\": safe_models_json(models_json),\n        \"cv_folds_text\": safe_int_text(cv_folds, 5, 3, 10),\n        \"optimization_metric_text\": safe_metric_text(optimization_metric),\n        \"n_iter_text\": safe_int_text(n_iter, 8, 1, 32),\n        \"use_gpu_text\": safe_bool_text(use_gpu),\n        \"drop_duplicates_text\": safe_bool_text(drop_duplicates),\n    }\n"
+        code_language: python3
+        outputs:
+          models_json_text:
+            children: null
+            type: string
+          cv_folds_text:
+            children: null
+            type: string
+          optimization_metric_text:
+            children: null
+            type: string
+          n_iter_text:
+            children: null
+            type: string
+          use_gpu_text:
+            children: null
+            type: string
+          drop_duplicates_text:
+            children: null
+            type: string
+        selected: false
+        title: normalize_suite_inputs
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000001'
+          - models_json
+          value_type: string
+          variable: models_json
+        - value_selector:
+          - '1900000000001'
+          - cv_folds
+          value_type: number
+          variable: cv_folds
+        - value_selector:
+          - '1900000000001'
+          - optimization_metric
+          value_type: string
+          variable: optimization_metric
+        - value_selector:
+          - '1900000000001'
+          - n_iter
+          value_type: number
+          variable: n_iter
+        - value_selector:
+          - '1900000000001'
+          - use_gpu
+          value_type: boolean
+          variable: use_gpu
+        - value_selector:
+          - '1900000000001'
+          - drop_duplicates
+          value_type: boolean
+          variable: drop_duplicates
+      height: 51
+      id: '1900000000010'
+      position:
+        x: 2970
+        y: 0
+      positionAbsolute:
+        x: 2970
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - file:
+            - '1900000000001'
+            - training_csv
+            id: key-value-1
+            key: file
+            type: file
+            value: ''
+          - id: key-value-2
+            key: target_column
+            type: text
+            value: '{{#1900000000001.target_column#}}'
+          - id: key-value-3
+            key: test_size
+            type: text
+            value: '{{#1900000000001.test_size#}}'
+          - id: key-value-4
+            key: random_state
+            type: text
+            value: '{{#1900000000001.random_state#}}'
+          - id: key-value-5
+            key: models_json
+            type: text
+            value: '{{#1900000000010.models_json_text#}}'
+          - id: key-value-6
+            key: cv_folds
+            type: text
+            value: '{{#1900000000010.cv_folds_text#}}'
+          - id: key-value-7
+            key: optimization_metric
+            type: text
+            value: '{{#1900000000010.optimization_metric_text#}}'
+          - id: key-value-8
+            key: n_iter
+            type: text
+            value: '{{#1900000000010.n_iter_text#}}'
+          - id: key-value-9
+            key: use_gpu
+            type: text
+            value: '{{#1900000000010.use_gpu_text#}}'
+          - id: key-value-10
+            key: drop_duplicates
+            type: text
+            value: '{{#1900000000010.drop_duplicates_text#}}'
+          - id: key-value-11
+            key: idempotency_key
+            type: text
+            value: '{{#sys.workflow_run_id#}}'
+          type: form-data
+        error_strategy: fail-branch
+        headers: ''
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 1000
+        selected: false
+        ssl_verify: true
+        timeout:
+          connect: 10
+          max_connect_timeout: 10
+          max_read_timeout: 600
+          max_write_timeout: 600
+          read: 600
+          write: 600
+        title: run_model_suite
+        type: http-request
+        url: http://repro-runner:8001/v1/run-model-suite
+        variables: []
+      height: 143
+      id: '1900000000011'
+      position:
+        x: 3300
+        y: 0
+      positionAbsolute:
+        x: 3300
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        experiment = json.loads(body) if isinstance(body, str) else body\n    except (TypeError, json.JSONDecodeError):\n        experiment = {\"status\": \"failed\", \"errors\": [{\"code\": \"invalid_suite_response\", \"message\": \"Suite response could not be read.\"}]}\n    if not isinstance(experiment, dict):\n        experiment = {\"status\": \"failed\", \"errors\": [{\"code\": \"invalid_suite_response\", \"message\": \"Suite response must be an object.\"}]}\n    errors = experiment.get(\"errors\")\n    if not isinstance(errors, list):\n        errors = []\n    ok = (\n        isinstance(experiment.get(\"experiment_id\"), str)\n        and bool(experiment.get(\"experiment_id\", \"\").strip())\n        and experiment.get(\"status\") in {\"succeeded\", \"partial\"}\n        and isinstance(experiment.get(\"results\"), list)\n    )\n    if not ok and not errors:\n        errors = [{\"code\": \"suite_experiment_rejected\", \"message\": \"The suite did not return a successful result.\"}]\n    normalized = {**experiment, \"errors\": errors}\n    return {\n        \"experiment_ok\": ok,\n        \"experiment_json\": json.dumps(normalized, ensure_ascii=False, separators=(\",\", \":\")),\n        \"experiment_errors\": json.dumps(errors, ensure_ascii=False, separators=(\",\", \":\")),\n    }\n"
+        code_language: python3
+        outputs:
+          experiment_errors:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          experiment_ok:
+            children: null
+            type: boolean
+        selected: false
+        title: parse_suite_response
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000011'
+          - body
+          value_type: string
+          variable: body
+      height: 51
+      id: '1900000000012'
+      position:
+        x: 3630
+        y: 0
+      positionAbsolute:
+        x: 3630
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 26161321-a292-4ad3-885a-4766d1a46924
+            value: true
+            varType: boolean
+            variable_selector:
+            - '1900000000012'
+            - experiment_ok
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: experiment_ok?
+        type: if-else
+      height: 147
+      id: '1900000000013'
+      position:
+        x: 3960
+        y: 0
+      positionAbsolute:
+        x: 3960
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\nimport math\n\nFIELDS = (\"dataset\", \"split\", \"dataset_id\", \"test_size\", \"random_state\", \"train_rows\", \"test_rows\", \"test_digest\")\nALIASES = {\"auc\": \"roc_auc\", \"roc_auc\": \"roc_auc\"}\nSUPPORTED = {\"roc_auc\", \"accuracy\", \"balanced_accuracy\", \"precision\", \"recall\", \"f1\"}\n\ndef object_or_empty(value):\n    try:\n        value = json.loads(value) if isinstance(value, str) else value\n    except (TypeError, json.JSONDecodeError):\n        return {}\n    return value if isinstance(value, dict) else {}\n\ndef safe_number(value):\n    if isinstance(value, bool):\n        return None\n    try:\n        parsed = float(value)\n    except (TypeError, ValueError):\n        return None\n    return parsed if math.isfinite(parsed) else None\n\ndef metric_name(metric):\n    candidate = metric.get(\"normalized_name\") or metric.get(\"name\")\n    if not isinstance(candidate, str):\n        return None\n    normalized = \"_\".join(candidate.strip().casefold().replace(\"-\", \" \").split())\n    normalized = ALIASES.get(normalized, normalized)\n    return normalized if normalized in SUPPORTED else None\n\ndef main(dossier_json: str, experiment_json: str) -> dict:\n    dossier = object_or_empty(dossier_json)\n    suite = object_or_empty(experiment_json)\n    reported = []\n    for metric in dossier.get(\"metrics\", []):\n        if (\n            not isinstance(metric, dict)\n            or metric.get(\"ambiguous\") is True\n            or metric.get(\"supported\") is not True\n        ):\n            continue\n        name = metric_name(metric)\n        reported_value = safe_number(metric.get(\"reported_value\"))\n        if name is None or reported_value is None:\n            continue\n        item = {\"name\": name, \"reported_value\": reported_value}\n        for field in FIELDS:\n            value = metric.get(field)\n            if value is not None:\n                item[field] = value\n        reported.append(item)\n    experiment_id = suite.get(\"experiment_id\")\n    ok = isinstance(experiment_id, str) and bool(experiment_id.strip()) and bool(reported)\n    request = {\"experiment_id\": experiment_id, \"reported_metrics\": reported} if ok else {}\n    errors = [] if ok else [{\"code\": \"invalid_suite_comparison_request\", \"message\": \"Suite experiment ID and unambiguous metrics are required.\"}]\n    return {\n        \"suite_comparison_request_ok\": ok,\n        \"suite_comparison_request_json\": json.dumps(request, ensure_ascii=False, separators=(\",\", \":\")),\n        \"suite_comparison_request_errors\": json.dumps(errors, ensure_ascii=False, separators=(\",\", \":\")),\n    }\n"
+        code_language: python3
+        outputs:
+          suite_comparison_request_ok:
+            children: null
+            type: boolean
+          suite_comparison_request_json:
+            children: null
+            type: string
+          suite_comparison_request_errors:
+            children: null
+            type: string
+        selected: false
+        title: build_suite_comparison_request
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000012'
+          - experiment_json
+          value_type: string
+          variable: experiment_json
+      height: 51
+      id: '1900000000014'
+      position:
+        x: 4290
+        y: 0
+      positionAbsolute:
+        x: 4290
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 628af21f-9c95-4d39-84bb-8ab2e7daaf9a
+            value: true
+            varType: boolean
+            variable_selector:
+            - '1900000000014'
+            - suite_comparison_request_ok
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: comparison_request_ok?
+        type: if-else
+      height: 147
+      id: '1900000000015'
+      position:
+        x: 4620
+        y: 0
+      positionAbsolute:
+        x: 4620
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - type: text
+            value: '{{#1900000000014.suite_comparison_request_json#}}'
+          type: raw-text
+        error_strategy: fail-branch
+        headers: 'Content-Type: application/json'
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 1000
+        selected: false
+        ssl_verify: true
+        timeout:
+          connect: 10
+          max_connect_timeout: 10
+          max_read_timeout: 60
+          max_write_timeout: 60
+          read: 60
+          write: 60
+        title: compare_model_suite_result
+        type: http-request
+        url: http://repro-runner:8001/v1/compare-model-suite-result
+        variables: []
+      height: 143
+      id: '1900000000016'
+      position:
+        x: 4950
+        y: 0
+      positionAbsolute:
+        x: 4950
+        y: 0
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\n\ndef main(comparison_response_json: str) -> dict:\n    try:\n        comparison = json.loads(comparison_response_json) if isinstance(comparison_response_json, str) else comparison_response_json\n    except (TypeError, json.JSONDecodeError):\n        comparison = {}\n    experiment_id = comparison.get(\"experiment_id\") if isinstance(comparison, dict) else None\n    ok = isinstance(experiment_id, str) and bool(experiment_id.strip()) and isinstance(comparison.get(\"items\"), list)\n    errors = comparison.get(\"errors\") if isinstance(comparison, dict) else None\n    if not isinstance(errors, list):\n        errors = [{\"code\": \"invalid_comparison_response\", \"message\": \"Comparison response is invalid.\"}]\n    return {\n        \"comparison_ok\": ok,\n        \"comparison_json\": json.dumps(comparison, ensure_ascii=False, separators=(\",\", \":\")) if ok else \"{}\",\n        \"comparison_errors\": json.dumps([] if ok else errors, ensure_ascii=False, separators=(\",\", \":\")),\n    }\n"
+        code_language: python3
+        outputs:
+          comparison_errors:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          comparison_ok:
+            children: null
+            type: boolean
+        selected: false
+        title: parse_suite_comparison_response
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000016'
+          - body
+          value_type: string
+          variable: comparison_response_json
+      height: 51
+      id: '1900000000017'
+      position:
+        x: 5280
+        y: 0
+      positionAbsolute:
+        x: 5280
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 563a5d5f-41fb-4d5f-9576-afb2515620eb
+            value: true
+            varType: boolean
+            variable_selector:
+            - '1900000000017'
+            - comparison_ok
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: comparison_ok?
+        type: if-else
+      height: 147
+      id: '1900000000018'
+      position:
+        x: 5610
+        y: 0
+      positionAbsolute:
+        x: 5610
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\nimport math\n\ndef main(comparison_json: str, close_threshold: float, partial_threshold: float) -> dict:\n    try:\n        comparison = json.loads(comparison_json)\n    except (TypeError, json.JSONDecodeError):\n        comparison = {\"items\": []}\n    try:\n        close, partial = float(close_threshold), float(partial_threshold)\n    except (TypeError, ValueError):\n        close = partial = -1.0\n    if not (math.isfinite(close) and math.isfinite(partial) and 0 < close < partial <= 1):\n        return {\"assessment_json\": json.dumps({\"strict_status\": \"not_comparable\", \"approximate_status\": \"insufficient_metrics\", \"close_threshold\": close, \"partial_threshold\": partial, \"items\": [], \"errors\": [{\"code\": \"invalid_similarity_thresholds\", \"message\": \"Thresholds must satisfy 0 < close < partial <= 1.\"}]}, ensure_ascii=False, separators=(\",\", \":\"))}\n    graded = []\n    for item in comparison.get(\"items\", []) if isinstance(comparison, dict) else []:\n        if not isinstance(item, dict) or item.get(\"paper_value\") is None or item.get(\"independent_value\") is None:\n            continue\n        try:\n            paper = float(item[\"paper_value\"])\n            independent = float(item[\"independent_value\"])\n            difference = abs(float(item.get(\"absolute_difference\") if paper == 0 else item.get(\"relative_difference\")))\n        except (TypeError, ValueError):\n            continue\n        if not all(math.isfinite(value) for value in (paper, independent, difference)):\n            continue\n        grade = \"highly_similar\" if difference <= close else \"partially_similar\" if difference <= partial else \"materially_different\"\n        graded.append({\"name\": item.get(\"name\"), \"paper_value\": paper, \"independent_value\": independent, \"difference_for_grade\": round(difference, 6), \"grade\": grade, \"comparable\": item.get(\"comparable\") is True, \"reason\": item.get(\"reason\")})\n    comparable = sum(item[\"comparable\"] for item in graded)\n    strict = \"not_comparable\" if not graded or comparable == 0 else \"strictly_comparable\" if comparable == len(graded) else \"partially_comparable\"\n    grades = [item[\"grade\"] for item in graded]\n    approximate = \"insufficient_metrics\" if not grades else \"materially_different\" if \"materially_different\" in grades else \"highly_similar\" if all(item == \"highly_similar\" for item in grades) else \"partially_similar\"\n    return {\"assessment_json\": json.dumps({\"strict_status\": strict, \"approximate_status\": approximate, \"close_threshold\": close, \"partial_threshold\": partial, \"items\": graded}, ensure_ascii=False, separators=(\",\", \":\"))}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+        selected: false
+        title: score_approximate_similarity
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000017'
+          - comparison_json
+          value_type: string
+          variable: comparison_json
+        - value_selector:
+          - '1900000000005'
+          - close_threshold
+          value_type: number
+          variable: close_threshold
+        - value_selector:
+          - '1900000000005'
+          - partial_threshold
+          value_type: number
+          variable: partial_threshold
+      height: 51
+      id: '1900000000019'
+      position:
+        x: 5940
+        y: 0
+      positionAbsolute:
+        x: 5940
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\n\ndef object_or_empty(value):\n    try:\n        parsed = json.loads(value) if isinstance(value, str) else value\n    except (TypeError, json.JSONDecodeError):\n        return {}\n    return parsed if isinstance(parsed, dict) else {}\n\ndef encoded(value):\n    return json.dumps(value, ensure_ascii=False, separators=(\",\", \":\"))\n\ndef report_json(value):\n    parsed = object_or_empty(value)\n    if isinstance(value, str) and (parsed or value.strip() == \"{}\"):\n        return value, parsed\n    return encoded(parsed), parsed\n\ndef report_value(value):\n    if value is None or value == \"\":\n        return \"unavailable\"\n    if isinstance(value, bool):\n        return \"true\" if value else \"false\"\n    return str(value).replace(\"\\r\", \" \").replace(\"\\n\", \" \")\n\ndef results_list(suite):\n    values = suite.get(\"results\")\n    return [item for item in values if isinstance(item, dict)] if isinstance(values, list) else []\n\ndef first_by_model(items):\n    mapped = {}\n    if not isinstance(items, list):\n        return mapped\n    for item in items:\n        if not isinstance(item, dict):\n            continue\n        model = item.get(\"model\")\n        if isinstance(model, str) and model not in mapped:\n            mapped[model] = item\n    return mapped\n\ndef ranking_list(value):\n    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []\n\ndef main(dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str, assessment_json: str) -> dict:\n    dossier_string, dossier = report_json(dossier_json)\n    validation_string, validation = report_json(validation_json)\n    experiment_string, experiment = report_json(experiment_json)\n    comparison_string, comparison = report_json(comparison_json)\n    assessment_string, assessment = report_json(assessment_json)\n    dataset = validation.get(\"dataset\") if isinstance(validation.get(\"dataset\"), dict) else {}\n    if not dataset and isinstance(experiment.get(\"dataset\"), dict):\n        dataset = experiment.get(\"dataset\")\n    split = experiment.get(\"split_provenance\") if isinstance(experiment.get(\"split_provenance\"), dict) else {}\n    config = experiment.get(\"config\") if isinstance(experiment.get(\"config\"), dict) else {}\n    title = dossier.get(\"title\") if isinstance(dossier.get(\"title\"), str) else \"Unnamed paper\"\n    performance_ranking = ranking_list(experiment.get(\"performance_ranking\"))\n    paper_distance_ranking = ranking_list(comparison.get(\"paper_distance_ranking\") or assessment.get(\"paper_distance_ranking\"))\n    comparison_by_model = first_by_model(comparison.get(\"items\"))\n    assessment_by_model = first_by_model(assessment.get(\"items\"))\n    lines = [\n        \"# Multi-model comparison report\",\n        \"\",\n        f\"paper: {report_value(title)}\",\n        f\"suite experiment id: {report_value(experiment.get('experiment_id') or comparison.get('experiment_id'))}\",\n        \"shared dataset/split summary:\",\n        f\"- rows={report_value(dataset.get('rows'))}, effective_rows={report_value(dataset.get('effective_rows'))}, features={report_value(dataset.get('features'))}, target={report_value(dataset.get('target') or config.get('target_column'))}\",\n        f\"- test_size={report_value(split.get('test_size', config.get('test_size')))}, random_state={report_value(split.get('random_state', config.get('random_state')))}, train_rows={report_value(split.get('train_rows'))}, test_rows={report_value(split.get('test_rows'))}\",\n        f\"- cv_folds={report_value(config.get('cv_folds'))}, optimization_metric={report_value(config.get('optimization_metric'))}, n_iter={report_value(config.get('n_iter'))}, use_gpu={report_value(config.get('use_gpu'))}\",\n        \"\",\n    ]\n    if performance_ranking:\n        lines.append(\"performance ranking: \" + \" > \".join(performance_ranking))\n    if paper_distance_ranking:\n        lines.append(\"paper-distance ranking: \" + \" > \".join(paper_distance_ranking))\n    if performance_ranking\
+          \ or paper_distance_ranking:\n        lines.append(\"\")\n    lines.append(\"## model summaries\")\n    for item in results_list(experiment):\n        model = item.get(\"model\")\n        if not isinstance(model, str):\n            continue\n        metrics = item.get(\"metrics\") if isinstance(item.get(\"metrics\"), dict) else {}\n        comparison_item = comparison_by_model.get(model, {})\n        assessment_item = assessment_by_model.get(model, {})\n        error = item.get(\"error\") if isinstance(item.get(\"error\"), dict) else {}\n        lines.extend([\n            f\"### {model}\",\n            f\"- status: {report_value(item.get('status'))}\",\n            f\"- cv_best_score: {report_value(item.get('cv_best_score'))}\",\n            f\"- auc={report_value(metrics.get('roc_auc'))}, accuracy={report_value(metrics.get('accuracy'))}, f1={report_value(metrics.get('f1'))}, recall={report_value(metrics.get('recall'))}\",\n            f\"- paper_value={report_value(comparison_item.get('paper_value'))}, absolute_difference={report_value(comparison_item.get('absolute_difference'))}, relative_difference={report_value(comparison_item.get('relative_difference'))}\",\n            f\"- comparison_reason={report_value(comparison_item.get('reason'))}, approximate_grade={report_value(assessment_item.get('grade'))}\",\n        ])\n        if error:\n            lines.append(f\"- safe_error={report_value(error.get('code'))}: {report_value(error.get('message'))}\")\n    if not results_list(experiment):\n        lines.append(\"- no suite results were available.\")\n    if performance_ranking or paper_distance_ranking:\n        lines.extend([\"\", \"## rankings\"])\n        if performance_ranking:\n            lines.append(\"- performance ranking: \" + \" > \".join(performance_ranking))\n        if paper_distance_ranking:\n            lines.append(\"- paper-distance ranking: \" + \" > \".join(paper_distance_ranking))\n    incomparable = sorted(\n        {\n            item.get(\"reason\")\n            for item in comparison_by_model.values()\n            if isinstance(item.get(\"reason\"), str) and item.get(\"comparable\") is not True\n        }\n    )\n    if incomparable:\n        lines.extend([\n            \"\",\n            \"numeric similarity is not strict reproduction when provenance does not match.\",\n            \"not strict reproduction: \" + \"; \".join(incomparable),\n        ])\n    return {\n        \"dossier_json\": dossier_string,\n        \"validation_json\": validation_string,\n        \"experiment_json\": experiment_string,\n        \"comparison_json\": comparison_string,\n        \"assessment_json\": assessment_string,\n        \"markdown_report\": \"\\n\".join(lines),\n    }\n"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: format_suite_comparison_report
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+        - value_selector:
+          - '1900000000012'
+          - experiment_json
+          value_type: string
+          variable: experiment_json
+        - value_selector:
+          - '1900000000017'
+          - comparison_json
+          value_type: string
+          variable: comparison_json
+        - value_selector:
+          - '1900000000019'
+          - assessment_json
+          value_type: string
+          variable: assessment_json
+      height: 51
+      id: '1900000000020'
+      position:
+        x: 6270
+        y: 0
+      positionAbsolute:
+        x: 6270
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef main() -> dict:\n    return {\"dossier_json\": json.dumps({\"valid\": False, \"errors\": [{\"code\": \"dossier_service_unavailable\", \"message\": \"Dossier service request failed.\", \"stage\": \"parse_dossier\"}]}, ensure_ascii=False), \"validation_json\": json.dumps({\"valid\": False, \"errors\": [{\"code\": \"validation_not_run\", \"message\": \"Dataset validation did not run.\", \"stage\": \"validate_dataset\"}]}, ensure_ascii=False), \"experiment_json\": json.dumps({\"status\": \"failed\", \"errors\": [{\"code\": \"experiment_not_run\", \"message\": \"Experiment did not run.\", \"stage\": \"run_experiment\"}]}, ensure_ascii=False), \"comparison_json\": json.dumps({\"items\": [], \"errors\": [{\"code\": \"comparison_not_run\", \"message\": \"Comparison did not run.\", \"stage\": \"compare_result\"}]}, ensure_ascii=False), \"assessment_json\": json.dumps({\"strict_status\": \"not_comparable\", \"approximate_status\": \"insufficient_metrics\", \"close_threshold\": 0.05, \"partial_threshold\": 0.10, \"items\": []}, ensure_ascii=False), \"markdown_report\": \"Dossier service is unavailable; later stages did not run.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: normalize_dossier_http_failure
+        type: code
+        variables: []
+      height: 51
+      id: '1900000000021'
+      position:
+        x: 660
+        y: 450
+      positionAbsolute:
+        x: 660
+        y: 450
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef main(dossier_json: str, dossier_errors: str) -> dict:\n    try: dossier = json.loads(dossier_json)\n    except (TypeError, json.JSONDecodeError): dossier = {}\n    dossier = dossier if isinstance(dossier, dict) else {}\n    dossier.update({\"valid\": False, \"errors\": [{\"code\": \"invalid_dossier\", \"message\": \"Dossier validation did not pass.\"}]})\n    return {\"dossier_json\": json.dumps(dossier, ensure_ascii=False), \"validation_json\": \"{}\", \"experiment_json\": \"{}\", \"comparison_json\": \"{}\", \"assessment_json\": json.dumps({\"strict_status\":\"not_comparable\",\"approximate_status\":\"insufficient_metrics\",\"items\":[]}), \"markdown_report\": \"Dossier validation did not pass.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: dossier_semantic_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000003'
+          - dossier_errors
+          value_type: string
+          variable: dossier_errors
+      height: 51
+      id: '1900000000022'
+      position:
+        x: 1320
+        y: 750
+      positionAbsolute:
+        x: 1320
+        y: 750
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef main(dossier_json: str, threshold_errors: str) -> dict:\n    try: dossier = json.loads(dossier_json)\n    except (TypeError, json.JSONDecodeError): dossier = {}\n    return {\"dossier_json\": json.dumps(dossier if isinstance(dossier, dict) else {}, ensure_ascii=False), \"validation_json\": \"{}\", \"experiment_json\": \"{}\", \"comparison_json\": \"{}\", \"assessment_json\": json.dumps({\"strict_status\":\"not_comparable\",\"approximate_status\":\"insufficient_metrics\",\"items\":[],\"errors\":[{\"code\":\"invalid_similarity_thresholds\",\"message\":\"Thresholds must satisfy 0 < close < partial <= 1.\"}]}, ensure_ascii=False), \"markdown_report\": \"Similarity thresholds are invalid.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: thresholds_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000005'
+          - threshold_errors
+          value_type: string
+          variable: threshold_errors
+      height: 51
+      id: '1900000000023'
+      position:
+        x: 1980
+        y: 1050
+      positionAbsolute:
+        x: 1980
+        y: 1050
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef main(dossier_json: str) -> dict:\n    try: dossier = json.loads(dossier_json)\n    except (TypeError, json.JSONDecodeError): dossier = {}\n    if not isinstance(dossier, dict): dossier = {}\n    return {\"dossier_json\": json.dumps(dossier, ensure_ascii=False), \"validation_json\": json.dumps({\"valid\": False, \"errors\": [{\"code\": \"validation_service_unavailable\", \"message\": \"Dataset validation service request failed.\", \"stage\": \"validate_dataset\"}]}, ensure_ascii=False), \"experiment_json\": json.dumps({\"status\": \"failed\", \"errors\": [{\"code\": \"experiment_not_run\", \"message\": \"Experiment did not run.\", \"stage\": \"run_experiment\"}]}, ensure_ascii=False), \"comparison_json\": json.dumps({\"items\": [], \"errors\": [{\"code\": \"comparison_not_run\", \"message\": \"Comparison did not run.\", \"stage\": \"compare_result\"}]}, ensure_ascii=False), \"assessment_json\": json.dumps({\"strict_status\": \"not_comparable\", \"approximate_status\": \"insufficient_metrics\", \"close_threshold\": 0.05, \"partial_threshold\": 0.10, \"items\": []}, ensure_ascii=False), \"markdown_report\": \"Dataset validation service is unavailable; later stages did not run.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: normalize_validation_http_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+      height: 51
+      id: '1900000000024'
+      position:
+        x: 2640
+        y: 1350
+      positionAbsolute:
+        x: 2640
+        y: 1350
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef obj(value):\n    try: value = json.loads(value)\n    except (TypeError, json.JSONDecodeError): return {}\n    return value if isinstance(value, dict) else {}\ndef main(dossier_json: str, validation_json: str) -> dict:\n    validation = obj(validation_json); validation.update({\"valid\":False, \"errors\":[{\"code\":\"dataset_validation_failed\",\"message\":\"Dataset validation did not pass.\"}]})\n    return {\"dossier_json\":json.dumps(obj(dossier_json), ensure_ascii=False), \"validation_json\":json.dumps(validation, ensure_ascii=False), \"experiment_json\":\"{}\", \"comparison_json\":\"{}\", \"assessment_json\":json.dumps({\"strict_status\":\"not_comparable\",\"approximate_status\":\"insufficient_metrics\",\"items\":[]}), \"markdown_report\":\"Dataset validation did not pass.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: validation_semantic_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+      height: 51
+      id: '1900000000025'
+      position:
+        x: 3300
+        y: 1650
+      positionAbsolute:
+        x: 3300
+        y: 1650
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef obj(value):\n    try: value = json.loads(value)\n    except (TypeError, json.JSONDecodeError): return {}\n    return value if isinstance(value, dict) else {}\ndef main(dossier_json: str, validation_json: str) -> dict:\n    return {\"dossier_json\": json.dumps(obj(dossier_json), ensure_ascii=False), \"validation_json\": json.dumps(obj(validation_json), ensure_ascii=False), \"experiment_json\": json.dumps({\"status\": \"failed\", \"errors\": [{\"code\": \"experiment_service_unavailable\", \"message\": \"Experiment service request failed.\", \"stage\": \"run_experiment\"}]}, ensure_ascii=False), \"comparison_json\": json.dumps({\"items\": [], \"errors\": [{\"code\": \"comparison_not_run\", \"message\": \"Comparison did not run.\", \"stage\": \"compare_result\"}]}, ensure_ascii=False), \"assessment_json\": json.dumps({\"strict_status\": \"not_comparable\", \"approximate_status\": \"insufficient_metrics\", \"close_threshold\": 0.05, \"partial_threshold\": 0.10, \"items\": []}, ensure_ascii=False), \"markdown_report\": \"Experiment service is unavailable; comparison did not run.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: normalize_experiment_http_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+      height: 51
+      id: '1900000000026'
+      position:
+        x: 3960
+        y: 1950
+      positionAbsolute:
+        x: 3960
+        y: 1950
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef obj(value):\n    try: value = json.loads(value)\n    except (TypeError, json.JSONDecodeError): return {}\n    return value if isinstance(value, dict) else {}\ndef main(dossier_json: str, validation_json: str, experiment_json: str) -> dict:\n    experiment = obj(experiment_json); experiment.update({\"status\":\"failed\", \"errors\":[{\"code\":\"experiment_failed\",\"message\":\"Experiment did not return a successful result.\"}]})\n    return {\"dossier_json\":json.dumps(obj(dossier_json), ensure_ascii=False), \"validation_json\":json.dumps(obj(validation_json), ensure_ascii=False), \"experiment_json\":json.dumps(experiment, ensure_ascii=False), \"comparison_json\":\"{}\", \"assessment_json\":json.dumps({\"strict_status\":\"not_comparable\",\"approximate_status\":\"insufficient_metrics\",\"items\":[]}), \"markdown_report\":\"Experiment did not return a successful result.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: experiment_semantic_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+        - value_selector:
+          - '1900000000012'
+          - experiment_json
+          value_type: string
+          variable: experiment_json
+      height: 51
+      id: '1900000000027'
+      position:
+        x: 4620
+        y: 2250
+      positionAbsolute:
+        x: 4620
+        y: 2250
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef obj(value):\n    try: value = json.loads(value)\n    except (TypeError, json.JSONDecodeError): return {}\n    return value if isinstance(value, dict) else {}\ndef main(dossier_json: str, validation_json: str, experiment_json: str) -> dict:\n    comparison = {\"experiment_id\":obj(experiment_json).get(\"experiment_id\"), \"items\":[], \"errors\":[{\"code\":\"invalid_comparison_request\",\"message\":\"Experiment ID and unambiguous metrics are required.\"}]}\n    return {\"dossier_json\":json.dumps(obj(dossier_json), ensure_ascii=False), \"validation_json\":json.dumps(obj(validation_json), ensure_ascii=False), \"experiment_json\":json.dumps(obj(experiment_json), ensure_ascii=False), \"comparison_json\":json.dumps(comparison, ensure_ascii=False), \"assessment_json\":json.dumps({\"strict_status\":\"not_comparable\",\"approximate_status\":\"insufficient_metrics\",\"items\":[]}), \"markdown_report\":\"Comparison request could not be built.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: request_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+        - value_selector:
+          - '1900000000012'
+          - experiment_json
+          value_type: string
+          variable: experiment_json
+      height: 51
+      id: '1900000000028'
+      position:
+        x: 5280
+        y: 2550
+      positionAbsolute:
+        x: 5280
+        y: 2550
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef obj(value):\n    try: value = json.loads(value)\n    except (TypeError, json.JSONDecodeError): return {}\n    return value if isinstance(value, dict) else {}\ndef main(dossier_json: str, validation_json: str, experiment_json: str) -> dict:\n    dossier, validation, experiment = obj(dossier_json), obj(validation_json), obj(experiment_json)\n    comparison = {\"experiment_id\": experiment.get(\"experiment_id\") if isinstance(experiment.get(\"experiment_id\"), str) else None, \"items\": [], \"errors\": [{\"code\": \"comparison_service_unavailable\", \"message\": \"Comparison service request failed.\", \"stage\": \"compare_result\"}]}\n    return {\"dossier_json\": json.dumps(dossier, ensure_ascii=False), \"validation_json\": json.dumps(validation, ensure_ascii=False), \"experiment_json\": json.dumps(experiment, ensure_ascii=False), \"comparison_json\": json.dumps(comparison, ensure_ascii=False), \"assessment_json\": json.dumps({\"strict_status\": \"not_comparable\", \"approximate_status\": \"insufficient_metrics\", \"close_threshold\": 0.05, \"partial_threshold\": 0.10, \"items\": []}, ensure_ascii=False), \"markdown_report\": \"Comparison service is unavailable; no approximate similarity conclusion was generated.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: normalize_comparison_http_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+        - value_selector:
+          - '1900000000012'
+          - experiment_json
+          value_type: string
+          variable: experiment_json
+      height: 51
+      id: '1900000000029'
+      position:
+        x: 5940
+        y: 2850
+      positionAbsolute:
+        x: 5940
+        y: 2850
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\ndef obj(value):\n    try: value = json.loads(value)\n    except (TypeError, json.JSONDecodeError): return {}\n    return value if isinstance(value, dict) else {}\ndef main(dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str) -> dict:\n    comparison = obj(comparison_json); comparison.update({\"items\":comparison.get(\"items\", []), \"errors\":[{\"code\":\"invalid_comparison_response\",\"message\":\"Comparison response did not pass validation.\"}]})\n    return {\"dossier_json\":json.dumps(obj(dossier_json), ensure_ascii=False), \"validation_json\":json.dumps(obj(validation_json), ensure_ascii=False), \"experiment_json\":json.dumps(obj(experiment_json), ensure_ascii=False), \"comparison_json\":json.dumps(comparison, ensure_ascii=False), \"assessment_json\":json.dumps({\"strict_status\":\"not_comparable\",\"approximate_status\":\"insufficient_metrics\",\"items\":[]}), \"markdown_report\":\"Comparison response did not pass validation.\"}"
+        code_language: python3
+        outputs:
+          assessment_json:
+            children: null
+            type: string
+          comparison_json:
+            children: null
+            type: string
+          dossier_json:
+            children: null
+            type: string
+          experiment_json:
+            children: null
+            type: string
+          markdown_report:
+            children: null
+            type: string
+          validation_json:
+            children: null
+            type: string
+        selected: false
+        title: comparison_semantic_failure
+        type: code
+        variables:
+        - value_selector:
+          - '1900000000003'
+          - dossier_json
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000008'
+          - validation_json
+          value_type: string
+          variable: validation_json
+        - value_selector:
+          - '1900000000012'
+          - experiment_json
+          value_type: string
+          variable: experiment_json
+        - value_selector:
+          - '1900000000017'
+          - comparison_json
+          value_type: string
+          variable: comparison_json
+      height: 51
+      id: '1900000000030'
+      position:
+        x: 6600
+        y: 3150
+      positionAbsolute:
+        x: 6600
+        y: 3150
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        output_type: string
+        selected: false
+        title: aggregate_dossier_json
+        type: variable-aggregator
+        variables:
+        - - '1900000000020'
+          - dossier_json
+        - - '1900000000021'
+          - dossier_json
+        - - '1900000000022'
+          - dossier_json
+        - - '1900000000023'
+          - dossier_json
+        - - '1900000000024'
+          - dossier_json
+        - - '1900000000025'
+          - dossier_json
+        - - '1900000000026'
+          - dossier_json
+        - - '1900000000027'
+          - dossier_json
+        - - '1900000000028'
+          - dossier_json
+        - - '1900000000029'
+          - dossier_json
+        - - '1900000000030'
+          - dossier_json
+      height: 367
+      id: '1900000000031'
+      position:
+        x: 6900
+        y: 1800
+      positionAbsolute:
+        x: 6900
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        output_type: string
+        selected: false
+        title: aggregate_validation_json
+        type: variable-aggregator
+        variables:
+        - - '1900000000020'
+          - validation_json
+        - - '1900000000021'
+          - validation_json
+        - - '1900000000022'
+          - validation_json
+        - - '1900000000023'
+          - validation_json
+        - - '1900000000024'
+          - validation_json
+        - - '1900000000025'
+          - validation_json
+        - - '1900000000026'
+          - validation_json
+        - - '1900000000027'
+          - validation_json
+        - - '1900000000028'
+          - validation_json
+        - - '1900000000029'
+          - validation_json
+        - - '1900000000030'
+          - validation_json
+      height: 367
+      id: '1900000000032'
+      position:
+        x: 7230
+        y: 1800
+      positionAbsolute:
+        x: 7230
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        output_type: string
+        selected: false
+        title: aggregate_experiment_json
+        type: variable-aggregator
+        variables:
+        - - '1900000000020'
+          - experiment_json
+        - - '1900000000021'
+          - experiment_json
+        - - '1900000000022'
+          - experiment_json
+        - - '1900000000023'
+          - experiment_json
+        - - '1900000000024'
+          - experiment_json
+        - - '1900000000025'
+          - experiment_json
+        - - '1900000000026'
+          - experiment_json
+        - - '1900000000027'
+          - experiment_json
+        - - '1900000000028'
+          - experiment_json
+        - - '1900000000029'
+          - experiment_json
+        - - '1900000000030'
+          - experiment_json
+      height: 367
+      id: '1900000000033'
+      position:
+        x: 7560
+        y: 1800
+      positionAbsolute:
+        x: 7560
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        output_type: string
+        selected: false
+        title: aggregate_comparison_json
+        type: variable-aggregator
+        variables:
+        - - '1900000000020'
+          - comparison_json
+        - - '1900000000021'
+          - comparison_json
+        - - '1900000000022'
+          - comparison_json
+        - - '1900000000023'
+          - comparison_json
+        - - '1900000000024'
+          - comparison_json
+        - - '1900000000025'
+          - comparison_json
+        - - '1900000000026'
+          - comparison_json
+        - - '1900000000027'
+          - comparison_json
+        - - '1900000000028'
+          - comparison_json
+        - - '1900000000029'
+          - comparison_json
+        - - '1900000000030'
+          - comparison_json
+      height: 367
+      id: '1900000000034'
+      position:
+        x: 7890
+        y: 1800
+      positionAbsolute:
+        x: 7890
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        output_type: string
+        selected: false
+        title: aggregate_assessment_json
+        type: variable-aggregator
+        variables:
+        - - '1900000000020'
+          - assessment_json
+        - - '1900000000021'
+          - assessment_json
+        - - '1900000000022'
+          - assessment_json
+        - - '1900000000023'
+          - assessment_json
+        - - '1900000000024'
+          - assessment_json
+        - - '1900000000025'
+          - assessment_json
+        - - '1900000000026'
+          - assessment_json
+        - - '1900000000027'
+          - assessment_json
+        - - '1900000000028'
+          - assessment_json
+        - - '1900000000029'
+          - assessment_json
+        - - '1900000000030'
+          - assessment_json
+      height: 367
+      id: '1900000000035'
+      position:
+        x: 8220
+        y: 1800
+      positionAbsolute:
+        x: 8220
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        output_type: string
+        selected: false
+        title: aggregate_markdown_report
+        type: variable-aggregator
+        variables:
+        - - '1900000000020'
+          - markdown_report
+        - - '1900000000021'
+          - markdown_report
+        - - '1900000000022'
+          - markdown_report
+        - - '1900000000023'
+          - markdown_report
+        - - '1900000000024'
+          - markdown_report
+        - - '1900000000025'
+          - markdown_report
+        - - '1900000000026'
+          - markdown_report
+        - - '1900000000027'
+          - markdown_report
+        - - '1900000000028'
+          - markdown_report
+        - - '1900000000029'
+          - markdown_report
+        - - '1900000000030'
+          - markdown_report
+      height: 367
+      id: '1900000000036'
+      position:
+        x: 8550
+        y: 1800
+      positionAbsolute:
+        x: 8550
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        outputs:
+        - value_selector:
+          - '1900000000031'
+          - output
+          value_type: string
+          variable: dossier_json
+        - value_selector:
+          - '1900000000032'
+          - output
+          value_type: string
+          variable: validation_json
+        - value_selector:
+          - '1900000000033'
+          - output
+          value_type: string
+          variable: experiment_json
+        - value_selector:
+          - '1900000000034'
+          - output
+          value_type: string
+          variable: comparison_json
+        - value_selector:
+          - '1900000000035'
+          - output
+          value_type: string
+          variable: assessment_json
+        - value_selector:
+          - '1900000000036'
+          - output
+          value_type: string
+          variable: markdown_report
+        selected: false
+        title: Output
+        type: end
+      height: 218
+      id: '1900000000037'
+      position:
+        x: 8880
+        y: 1800
+      positionAbsolute:
+        x: 8880
+        y: 1800
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: -1934.250000000001
+      y: -117.25000000000023
+      zoom: 0.2500000000000001
+  rag_pipeline_variables: []
+  name: paper-comparison-multimodel-workflow
