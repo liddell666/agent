@@ -19,6 +19,13 @@ from repro_runner.schemas import (
 )
 from repro_runner.split import ExperimentError, make_stratified_split, test_set_digest
 
+_SAFE_MISSING_DEPENDENCY_MESSAGES = frozenset(
+    {
+        "xgboost dependency is not installed",
+        "lightgbm dependency is not installed",
+    }
+)
+
 
 def run_model_suite(
     bundle: DatasetBundle,
@@ -104,7 +111,7 @@ def run_model_suite(
                     status="unavailable",
                     error=ValidationErrorItem(
                         code="missing_dependency",
-                        message=str(exc),
+                        message=_safe_import_error_message(model_name, exc),
                     ),
                 )
             )
@@ -115,7 +122,7 @@ def run_model_suite(
                     status="failed",
                     error=ValidationErrorItem(
                         code="model_training_failed",
-                        message=str(exc),
+                        message=_safe_model_failure_message(model_name, exc),
                     ),
                 )
             )
@@ -173,6 +180,17 @@ def _performance_ranking(results: Sequence[ModelRunResult]) -> list[str]:
         ),
     )
     return [result.model for result in ranked]
+
+
+def _safe_import_error_message(model_name: str, error: ImportError) -> str:
+    message = str(error).strip()
+    if message in _SAFE_MISSING_DEPENDENCY_MESSAGES:
+        return message
+    return f"{model_name} dependency is unavailable"
+
+
+def _safe_model_failure_message(model_name: str, error: ValueError | RuntimeError) -> str:
+    return f"{model_name} model training failed ({type(error).__name__})"
 
 
 def _json_safe_value(value):

@@ -174,21 +174,73 @@ def test_run_model_suite_marks_missing_dependency_unavailable_and_continues(
 
     def failing_get_model_spec(name, class_counts, random_state, use_gpu):
         if name == "random_forest":
-            raise ImportError("random_forest dependency is not installed")
+            raise ImportError(
+                "module missing while reading C:\\sensitive\\private-wheel.whl token=abc123"
+            )
         return real_get_model_spec(name, class_counts, random_state, use_gpu)
 
     monkeypatch.setattr(suite_engine, "RandomizedSearchCV", SpySearch)
     monkeypatch.setattr(suite_engine, "get_model_spec", failing_get_model_spec)
 
     result = suite_engine.run_model_suite(bundle, config)
+    payload = result.model_dump_json()
 
     assert result.status == "partial"
     assert [item.model for item in result.results] == config.models
     assert result.results[0].status == "unavailable"
     assert result.results[0].error is not None
     assert result.results[0].error.code == "missing_dependency"
+    assert result.results[0].error.message == "random_forest dependency is unavailable"
     assert result.results[1].status == "succeeded"
     assert result.performance_ranking == ["logistic_regression"]
+    assert "private-wheel.whl" not in payload
+    assert "abc123" not in payload
+
+
+def test_run_model_suite_preserves_safe_registry_dependency_message_and_sanitizes_model_failures(
+    monkeypatch,
+):
+    bundle = _bundle(_dataset())
+    config = ModelSuiteConfig(
+        models=["xgboost", "svm"],
+        cv_folds=3,
+        n_iter=1,
+    )
+
+    class FailingSearch:
+        def __init__(self, estimator, param_distributions, **_kwargs):
+            self.estimator = estimator
+            self.param_distributions = param_distributions
+
+        def fit(self, _x_train, _y_train):
+            raise RuntimeError(
+                "rows=[1, 2] feature_value=9.5 path=C:\\sensitive\\train.csv secret=shh"
+            )
+
+    def controlled_get_model_spec(name, class_counts, random_state, use_gpu):
+        if name == "xgboost":
+            raise ImportError("xgboost dependency is not installed")
+        return real_get_model_spec(name, class_counts, random_state, use_gpu)
+
+    monkeypatch.setattr(suite_engine, "RandomizedSearchCV", FailingSearch)
+    monkeypatch.setattr(suite_engine, "get_model_spec", controlled_get_model_spec)
+
+    result = suite_engine.run_model_suite(bundle, config)
+    payload = result.model_dump_json()
+
+    assert result.status == "failed"
+    assert result.performance_ranking == []
+    assert [item.status for item in result.results] == ["unavailable", "failed"]
+    assert result.results[0].error is not None
+    assert result.results[0].error.code == "missing_dependency"
+    assert result.results[0].error.message == "xgboost dependency is not installed"
+    assert result.results[1].error is not None
+    assert result.results[1].error.code == "model_training_failed"
+    assert result.results[1].error.message == "svm model training failed (RuntimeError)"
+    assert "rows=[1, 2]" not in payload
+    assert "feature_value=9.5" not in payload
+    assert "train.csv" not in payload
+    assert "secret=shh" not in payload
 
 
 def test_run_model_suite_rejects_invalid_cv_folds_before_search(monkeypatch):
