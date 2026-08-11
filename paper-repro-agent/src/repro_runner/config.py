@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     max_dossier_mb: int = Field(default=5, ge=1, le=20)
     max_metric_overrides_kb: int = Field(default=64, ge=1, le=256)
     max_columns: int = 256
+    max_diagnostic_rows: int = Field(default=50000, ge=1)
+    max_diagnostic_cardinality: int = Field(default=5000, ge=2)
     default_target_column: str = "Y_cls"
     storage_dir: Path = Path("/data/experiments")
     max_concurrent_experiments: int = Field(default=1, ge=1)

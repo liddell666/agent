@@ -244,6 +244,7 @@ def test_diagnose_dataset_returns_structured_warnings_without_echoing_rows(
 
     response = client.post(
         "/v1/diagnose-dataset",
+        data={"target_column": "Y_cls"},
         files={"file": ("data.csv", content, "text/csv")},
     )
 
@@ -260,6 +261,137 @@ def test_diagnose_dataset_returns_structured_warnings_without_echoing_rows(
         "constant",
         "Y_cls",
     }
+
+
+def test_diagnose_dataset_requires_target_confirmation_when_default_target_is_missing(
+    client: TestClient,
+):
+    content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
+
+    response = client.post(
+        "/v1/diagnose-dataset",
+        files={"file": ("data.csv", content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["dataset"]["target"] is None
+    assert body["target_candidates"] == ["label"]
+    assert body["errors"][0]["code"] == "target_column_confirmation_required"
+
+
+def test_diagnose_dataset_accepts_explicit_target_and_exclude_columns(
+    client: TestClient,
+):
+    content = b"id,score,label\n1,0.1,0\n2,0.2,0\n3,0.3,1\n4,0.4,1\n"
+
+    response = client.post(
+        "/v1/diagnose-dataset",
+        data={
+            "target_column": "label",
+            "exclude_columns": json.dumps(["id"]),
+        },
+        files={"file": ("data.csv", content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["dataset"]["target"] == "label"
+    assert body["recommended_options"]["exclude_columns"] == ["id"]
+
+
+def test_diagnose_dataset_rejects_conflicting_exclude_column_inputs(
+    client: TestClient,
+):
+    response = client.post(
+        "/v1/diagnose-dataset",
+        data={
+            "target_column": "label",
+            "exclude_columns": json.dumps(["id"]),
+            "exclude_columns_json": json.dumps(["score"]),
+        },
+        files={
+            "file": (
+                "data.csv",
+                b"id,score,label\n1,0.1,0\n2,0.2,0\n3,0.3,1\n4,0.4,1\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_request"
+
+
+def test_diagnose_dataset_reports_unknown_exclude_column_without_500(
+    client: TestClient,
+):
+    response = client.post(
+        "/v1/diagnose-dataset",
+        data={
+            "target_column": "label",
+            "exclude_columns": json.dumps(["missing"]),
+        },
+        files={
+            "file": (
+                "data.csv",
+                b"id,score,label\n1,0.1,0\n2,0.2,0\n3,0.3,1\n4,0.4,1\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "invalid_exclude_columns"
+    assert "1,0.1,0" not in response.text
+
+
+def test_diagnose_dataset_rejects_non_finite_numeric_feature_tokens(
+    client: TestClient,
+):
+    response = client.post(
+        "/v1/diagnose-dataset",
+        data={"target_column": "label"},
+        files={
+            "file": (
+                "data.csv",
+                b"score,label\nInfinity,0\n1.0,0\n2.0,1\n3.0,1\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "non_finite_numeric_feature"
+
+
+def test_diagnose_dataset_returns_structured_error_when_rows_exceed_limit(tmp_path):
+    settings = Settings(storage_dir=tmp_path, max_upload_mb=1, max_diagnostic_rows=3)
+    api.app.dependency_overrides[get_settings] = lambda: settings
+    with TestClient(api.app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/diagnose-dataset",
+            data={"target_column": "label"},
+            files={
+                "file": (
+                    "data.csv",
+                    b"x1,label\n1,0\n2,0\n3,1\n4,1\n",
+                    "text/csv",
+                )
+            },
+        )
+    api.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["errors"][0]["code"] == "too_many_rows"
 
 
 def test_run_experiment_returns_id_and_metrics_and_persists_it(client: TestClient):

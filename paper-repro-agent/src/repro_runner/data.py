@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from repro_runner.config import Settings
-from repro_runner.preprocessing import build_column_plan
+from repro_runner.preprocessing import ColumnPlan, build_column_plan
 from repro_runner.schemas import (
     ColumnProfile,
     DatasetDiagnosticResponse,
@@ -118,31 +118,35 @@ def diagnose_dataset(
         )
 
     frame = parsed.frame
-    confirmed_target = (
-        options.target_column if options.target_column in frame.columns else None
-    )
+    confirmed_target = _resolve_confirmed_target_column(frame, options)
     candidates = target_candidates(frame)
-    if confirmed_target is None and options.target_column == settings.default_target_column:
-        summary_target = candidates[0] if candidates else None
-    else:
-        summary_target = confirmed_target
-
     columns = profile_columns(frame, confirmed_target)
+    plan, plan_errors = _resolve_diagnostic_plan(frame, options, confirmed_target)
     flags = risk_flags(frame, confirmed_target)
     warnings = _diagnostic_warnings(frame, columns, flags)
-    errors = _diagnostic_errors(
+    errors = _diagnostic_resource_errors(frame, columns, settings)
+    errors.extend(
+        _diagnostic_numeric_errors(
+            frame=frame,
+            target_column=confirmed_target,
+        )
+    )
+    errors.extend(
+        _diagnostic_errors(
         frame=frame,
         options=options,
         settings=settings,
         confirmed_target=confirmed_target,
         target_candidates_list=candidates,
+        )
     )
+    errors.extend(plan_errors)
     recommended_options = _recommended_options(
-        frame=frame,
         options=options,
-        target_column=summary_target,
+        confirmed_target=confirmed_target,
         target_candidates_list=candidates,
         flags=flags,
+        plan=plan,
     )
 
     return DatasetDiagnosticResponse(
@@ -151,7 +155,7 @@ def diagnose_dataset(
             frame,
             columns,
             dataset_id=parsed.dataset_id,
-            target_column=summary_target,
+            target_column=confirmed_target,
         ),
         columns=columns,
         target_candidates=candidates,
@@ -435,11 +439,9 @@ def _diagnostic_summary(
     for column in frame.columns:
         if column == target_column:
             continue
-        if pd.api.types.is_numeric_dtype(frame[column]):
-            numeric_ranges[str(column)] = (
-                float(frame[column].min()),
-                float(frame[column].max()),
-            )
+        bounds = _finite_numeric_range(frame[column])
+        if bounds is not None:
+            numeric_ranges[str(column)] = bounds
 
     return DatasetDiagnosticSummary(
         rows=rows,
@@ -467,8 +469,21 @@ def _diagnostic_errors(
 ) -> list[ValidationErrorItem]:
     errors: list[ValidationErrorItem] = []
     if confirmed_target is None:
-        explicit_nondefault_target = options.target_column != settings.default_target_column
-        if explicit_nondefault_target or not target_candidates_list:
+        if options.target_column_confirmed:
+            errors.append(
+                ValidationErrorItem(
+                    code="missing_target_column",
+                    message="the configured target column is missing",
+                )
+            )
+        elif target_candidates_list:
+            errors.append(
+                ValidationErrorItem(
+                    code="target_column_confirmation_required",
+                    message="target column confirmation is required before running experiments",
+                )
+            )
+        else:
             errors.append(
                 ValidationErrorItem(
                     code="missing_target_column",
@@ -476,30 +491,6 @@ def _diagnostic_errors(
                 )
             )
         return errors
-
-    try:
-        plan = build_column_plan(
-            list(frame.columns),
-            target_column=confirmed_target,
-            feature_columns=options.feature_columns,
-            exclude_columns=options.exclude_columns,
-        )
-    except ValueError:
-        errors.append(
-            ValidationErrorItem(
-                code="missing_feature_columns",
-                message="at least one feature is required",
-            )
-        )
-        return errors
-
-    if not plan.feature_columns:
-        errors.append(
-            ValidationErrorItem(
-                code="missing_feature_columns",
-                message="at least one feature is required",
-            )
-        )
     if (
         options.missing_policy == "reject"
         and _dataset_missing_count(frame, confirmed_target) > 0
@@ -519,27 +510,16 @@ def _diagnostic_errors(
 
 def _recommended_options(
     *,
-    frame: pd.DataFrame,
     options: DatasetOptions,
-    target_column: str | None,
+    confirmed_target: str | None,
     target_candidates_list: list[str],
     flags: list[str],
+    plan: ColumnPlan | None,
 ) -> DatasetOptions:
-    recommended_target = target_column or (target_candidates_list[0] if target_candidates_list else options.target_column)
-    if recommended_target in frame.columns:
-        feature_columns = build_column_plan(
-            list(frame.columns),
-            target_column=recommended_target,
-            feature_columns=options.feature_columns,
-            exclude_columns=options.exclude_columns,
-        ).feature_columns
-    else:
-        feature_columns = []
-    missing_policy = (
-        "impute"
-        if _dataset_missing_count(frame, recommended_target if recommended_target in frame.columns else None) > 0
-        else options.missing_policy
+    recommended_target = confirmed_target or (
+        target_candidates_list[0] if target_candidates_list else options.target_column
     )
+    feature_columns = [] if plan is None else list(plan.feature_columns)
     sampling_strategy = (
         "class_weight"
         if any(flag.startswith("severe_class_imbalance:") for flag in flags)
@@ -547,13 +527,115 @@ def _recommended_options(
     )
     return DatasetOptions(
         target_column=recommended_target,
+        target_column_confirmed=confirmed_target is not None,
         drop_duplicates=options.drop_duplicates,
-        missing_policy=missing_policy,
+        missing_policy=options.missing_policy,
         sampling_strategy=sampling_strategy,
         comparison_mode=options.comparison_mode,
         feature_columns=feature_columns,
         exclude_columns=list(options.exclude_columns),
     )
+
+
+def _resolve_confirmed_target_column(
+    frame: pd.DataFrame, options: DatasetOptions
+) -> str | None:
+    if not options.target_column_confirmed:
+        return None
+    if options.target_column not in frame.columns:
+        return None
+    return options.target_column
+
+
+def _resolve_diagnostic_plan(
+    frame: pd.DataFrame,
+    options: DatasetOptions,
+    confirmed_target: str | None,
+) -> tuple[ColumnPlan | None, list[ValidationErrorItem]]:
+    if confirmed_target is None:
+        return None, []
+    try:
+        plan = build_column_plan(
+            list(frame.columns),
+            target_column=confirmed_target,
+            feature_columns=options.feature_columns,
+            exclude_columns=options.exclude_columns,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "exclude_columns" in message:
+            return None, [
+                ValidationErrorItem(
+                    code="invalid_exclude_columns",
+                    message="exclude columns must reference known columns without duplicates",
+                )
+            ]
+        if "feature_columns" in message:
+            return None, [
+                ValidationErrorItem(
+                    code="invalid_feature_columns",
+                    message="feature columns must reference known columns without duplicates",
+                )
+            ]
+        return None, [
+            ValidationErrorItem(
+                code="missing_feature_columns",
+                message="at least one feature is required",
+            )
+        ]
+    if not plan.feature_columns:
+        return None, [
+            ValidationErrorItem(
+                code="missing_feature_columns",
+                message="at least one feature is required",
+            )
+        ]
+    return plan, []
+
+
+def _diagnostic_numeric_errors(
+    *,
+    frame: pd.DataFrame,
+    target_column: str | None,
+) -> list[ValidationErrorItem]:
+    for column_name in frame.columns:
+        if column_name == target_column:
+            continue
+        if _contains_non_finite_numeric_token(frame[column_name]):
+            return [
+                ValidationErrorItem(
+                    code="non_finite_numeric_feature",
+                    message="feature values must be finite numeric values",
+                )
+            ]
+    return []
+
+
+def _diagnostic_resource_errors(
+    frame: pd.DataFrame,
+    columns: list[ColumnProfile],
+    settings: Settings,
+) -> list[ValidationErrorItem]:
+    errors: list[ValidationErrorItem] = []
+    if len(frame) > settings.max_diagnostic_rows:
+        errors.append(
+            ValidationErrorItem(
+                code="too_many_rows",
+                message="dataset exceeds the configured diagnostic row limit",
+            )
+        )
+    if any(
+        column.inferred_type in {"categorical", "text"}
+        and column.unique_count > settings.max_diagnostic_cardinality
+        for column in columns
+    ):
+        errors.append(
+            ValidationErrorItem(
+                code="diagnostic_cardinality_limit_exceeded",
+                message="one or more columns exceed the configured diagnostic cardinality limit",
+            )
+        )
+    return errors
 
 
 def _diagnostic_warnings(
@@ -600,7 +682,7 @@ def _column_risk_flags(
 def _infer_column_type(series: pd.Series) -> str:
     if _nonmissing_unique_count(series, treat_target_tokens=False) <= 1:
         return "constant"
-    if pd.api.types.is_numeric_dtype(series):
+    if _coerce_finite_numeric_series(series) is not None:
         return "numeric"
     if isinstance(series.dtype, pd.CategoricalDtype):
         return "categorical"
@@ -632,6 +714,65 @@ def _is_high_cardinality_text(series: pd.Series) -> bool:
         return False
     unique_count = int(nonmissing.nunique(dropna=True))
     return unique_count >= 4 and (unique_count / len(nonmissing)) >= 0.8
+
+
+def _coerce_finite_numeric_series(series: pd.Series) -> pd.Series | None:
+    nonmissing = _nonmissing_series(series, treat_target_tokens=False)
+    if nonmissing.empty:
+        return None
+    if pd.api.types.is_numeric_dtype(nonmissing):
+        numeric = pd.to_numeric(nonmissing, errors="coerce")
+        if numeric.isna().any():
+            return None
+        if not all(math.isfinite(float(value)) for value in numeric.tolist()):
+            return None
+        return numeric
+
+    text_values = nonmissing.map(str)
+    token_mask = text_values.map(_is_non_finite_token)
+    if token_mask.any():
+        remainder = text_values[~token_mask]
+        if remainder.empty:
+            return None
+        coerced_remainder = pd.to_numeric(remainder, errors="coerce")
+        if coerced_remainder.notna().all():
+            return None
+    numeric = pd.to_numeric(text_values, errors="coerce")
+    if numeric.isna().any():
+        return None
+    if not all(math.isfinite(float(value)) for value in numeric.tolist()):
+        return None
+    return numeric
+
+
+def _contains_non_finite_numeric_token(series: pd.Series) -> bool:
+    nonmissing = _nonmissing_series(series, treat_target_tokens=False)
+    if nonmissing.empty:
+        return False
+    if pd.api.types.is_numeric_dtype(nonmissing):
+        numeric = pd.to_numeric(nonmissing, errors="coerce")
+        return any(not math.isfinite(float(value)) for value in numeric.tolist())
+
+    text_values = nonmissing.map(str)
+    token_mask = text_values.map(_is_non_finite_token)
+    if not token_mask.any():
+        return False
+    remainder = text_values[~token_mask]
+    if remainder.empty:
+        return True
+    coerced_remainder = pd.to_numeric(remainder, errors="coerce")
+    return coerced_remainder.notna().all()
+
+
+def _finite_numeric_range(series: pd.Series) -> tuple[float, float] | None:
+    numeric = _coerce_finite_numeric_series(series)
+    if numeric is None or numeric.empty:
+        return None
+    minimum = float(numeric.min())
+    maximum = float(numeric.max())
+    if not math.isfinite(minimum) or not math.isfinite(maximum):
+        return None
+    return (minimum, maximum)
 
 
 def _looks_id_like(column_name: str) -> bool:

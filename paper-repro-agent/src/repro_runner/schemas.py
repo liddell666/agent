@@ -14,6 +14,7 @@ class DatasetOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_column: str = "Y_cls"
+    target_column_confirmed: bool = False
     drop_duplicates: bool = False
     missing_policy: MissingPolicy = "reject"
     sampling_strategy: SamplingStrategy = "original"

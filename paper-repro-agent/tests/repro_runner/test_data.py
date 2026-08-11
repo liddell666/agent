@@ -163,12 +163,12 @@ def test_diagnose_dataset_supports_utf8_bom_and_tab_delimited_content():
 
     first = diagnose_dataset(
         content,
-        DatasetOptions(target_column="Y_cls"),
+        DatasetOptions(target_column="Y_cls", target_column_confirmed=True),
         Settings(),
     )
     second = diagnose_dataset(
         content,
-        DatasetOptions(target_column="Y_cls"),
+        DatasetOptions(target_column="Y_cls", target_column_confirmed=True),
         Settings(),
     )
 
@@ -200,3 +200,101 @@ def test_diagnose_dataset_rejects_malformed_rows_without_echoing_source_data():
     assert response.valid is False
     assert response.errors[0].code == "invalid_csv"
     assert "secret" not in response.errors[0].message
+
+
+def test_diagnose_dataset_keeps_target_unconfirmed_when_not_explicit():
+    content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
+
+    response = diagnose_dataset(content, DatasetOptions(), Settings())
+
+    assert response.valid is False
+    assert response.dataset is not None
+    assert response.dataset.target is None
+    assert response.target_candidates == ["label"]
+    assert response.errors[0].code == "target_column_confirmation_required"
+    assert response.recommended_options is not None
+    assert response.recommended_options.target_column == "label"
+    assert response.recommended_options.target_column_confirmed is False
+
+
+def test_diagnose_dataset_accepts_explicit_target_column():
+    content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(target_column="label", target_column_confirmed=True),
+        Settings(),
+    )
+
+    assert response.valid is True
+    assert response.dataset is not None
+    assert response.dataset.target == "label"
+    assert response.errors == []
+
+
+def test_diagnose_dataset_rejects_unknown_exclude_column_safely():
+    content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(
+            target_column="label",
+            target_column_confirmed=True,
+            exclude_columns=["missing"],
+        ),
+        Settings(),
+    )
+
+    assert response.valid is False
+    assert response.errors[0].code == "invalid_exclude_columns"
+    assert "1,0" not in response.errors[0].message
+
+
+def test_diagnose_dataset_rejects_non_finite_numeric_values():
+    content = b"score,label\nNaN,0\n1.0,0\n2.0,1\n3.0,1\n"
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(target_column="label", target_column_confirmed=True),
+        Settings(),
+    )
+
+    assert response.valid is False
+    assert response.errors[0].code == "non_finite_numeric_feature"
+    assert response.dataset is not None
+    assert all(
+        all(value == value and value not in {float("inf"), float("-inf")} for value in bounds)
+        for bounds in response.dataset.numeric_ranges.values()
+    )
+
+
+def test_diagnose_dataset_applies_row_limit():
+    content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(target_column="label", target_column_confirmed=True),
+        Settings(max_diagnostic_rows=3),
+    )
+
+    assert response.valid is False
+    assert response.errors[0].code == "too_many_rows"
+
+
+def test_diagnose_dataset_applies_cardinality_limit():
+    content = (
+        "segment,label\n"
+        "alpha,0\n"
+        "beta,0\n"
+        "gamma,1\n"
+        "delta,1\n"
+    ).encode()
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(target_column="label", target_column_confirmed=True),
+        Settings(max_diagnostic_cardinality=3),
+    )
+
+    assert response.valid is False
+    assert response.errors[0].code == "diagnostic_cardinality_limit_exceeded"

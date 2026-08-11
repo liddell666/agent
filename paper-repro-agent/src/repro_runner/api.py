@@ -184,14 +184,19 @@ async def validate_dataset(
 async def diagnose_dataset_route(
     file: Annotated[UploadFile, File()],
     target_column: Annotated[str | None, Form()] = None,
+    exclude_columns: Annotated[str | None, Form()] = None,
     exclude_columns_json: Annotated[str | None, Form()] = None,
     settings: Settings = Depends(get_settings),
 ) -> DatasetDiagnosticResponse:
     content = await _read_upload(file, settings)
-    exclude_columns = _parse_exclude_columns(exclude_columns_json)
+    parsed_exclude_columns = _parse_exclude_columns_inputs(
+        exclude_columns=exclude_columns,
+        exclude_columns_json=exclude_columns_json,
+    )
     options = DatasetOptions(
         target_column=target_column or settings.default_target_column,
-        exclude_columns=exclude_columns,
+        target_column_confirmed=target_column is not None,
+        exclude_columns=parsed_exclude_columns,
     )
     try:
         return await run_in_threadpool(diagnose_dataset, content, options, settings)
@@ -698,11 +703,23 @@ def _invalid_request_exception() -> HTTPException:
     )
 
 
-def _parse_exclude_columns(exclude_columns_json: str | None) -> list[str]:
-    if exclude_columns_json in {None, ""}:
+def _parse_exclude_columns_inputs(
+    *,
+    exclude_columns: str | None,
+    exclude_columns_json: str | None,
+) -> list[str]:
+    primary = _parse_exclude_columns_value(exclude_columns)
+    legacy = _parse_exclude_columns_value(exclude_columns_json)
+    if primary and legacy and primary != legacy:
+        raise _invalid_request_exception()
+    return primary or legacy
+
+
+def _parse_exclude_columns_value(raw_value: str | None) -> list[str]:
+    if raw_value in {None, ""}:
         return []
     try:
-        value = json.loads(exclude_columns_json)
+        value = json.loads(raw_value)
     except json.JSONDecodeError:
         raise _invalid_request_exception() from None
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):

@@ -68,10 +68,8 @@ def _resolve_target_column(
     diagnostic: DatasetDiagnosticResponse,
     options: DatasetOptions,
 ) -> str:
-    if options.target_column in available_columns:
+    if options.target_column_confirmed and options.target_column in available_columns:
         return options.target_column
-    if diagnostic.dataset and diagnostic.dataset.target in available_columns:
-        return str(diagnostic.dataset.target)
     raise ValueError("target column must be confirmed before creating a manifest")
 
 
