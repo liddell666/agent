@@ -33,19 +33,25 @@ from repro_runner.idempotency import (
 )
 from repro_runner.schemas import (
     ComparisonResponse,
+    DEFAULT_MODEL_NAMES,
     DatasetOptions,
     DossierParseResponse,
     ExperimentConfig,
     ExperimentResult,
+    ExperimentSuiteResult,
+    ModelSuiteConfig,
     ReportedMetricInput,
     ValidationErrorItem,
     ValidationResponse,
 )
+from repro_runner.suite_engine import run_model_suite
 from repro_runner.storage import (
     ResultFormatError,
     ResultNotFoundError,
     load_result,
+    load_suite_result,
     save_result,
+    save_suite_result,
 )
 
 
@@ -55,6 +61,10 @@ app = FastAPI(title="Reproduction Runner", version="0.2.0")
 
 class ExperimentIdempotencyRegistry(IdempotencyRegistry[ExperimentResult]):
     """Idempotency registry specialized for experiment results."""
+
+
+class ModelSuiteIdempotencyRegistry(IdempotencyRegistry[ExperimentSuiteResult]):
+    """Idempotency registry specialized for model suite results."""
 
 
 class ComparisonRequest(BaseModel):
@@ -234,6 +244,87 @@ async def run_experiment(
         raise _idempotency_capacity_error() from None
 
 
+@app.post("/v1/run-model-suite", response_model=ExperimentSuiteResult)
+async def run_model_suite_route(
+    file: Annotated[UploadFile, File()],
+    target_column: Annotated[str | None, Form()] = None,
+    models_json: Annotated[str, Form()] = json.dumps(list(DEFAULT_MODEL_NAMES)),
+    test_size: Annotated[float, Form(ge=0.1, le=0.5)] = 0.2,
+    random_state: Annotated[int, Form(ge=0)] = 42,
+    drop_duplicates: Annotated[bool, Form()] = False,
+    cv_folds: Annotated[int, Form(ge=3, le=10)] = 5,
+    optimization_metric: Annotated[
+        Literal["roc_auc", "f1", "recall", "balanced_accuracy"], Form()
+    ] = "roc_auc",
+    threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.5,
+    n_iter: Annotated[int, Form(ge=1, le=32)] = 8,
+    use_gpu: Annotated[bool, Form()] = False,
+    n_jobs: Annotated[int, Form(ge=1, le=16)] = 4,
+    idempotency_key: Annotated[str | None, Form(min_length=1, max_length=128)] = None,
+    settings: Settings = Depends(get_settings),
+) -> ExperimentSuiteResult:
+    options = DatasetOptions(
+        target_column=target_column or settings.default_target_column,
+        drop_duplicates=drop_duplicates,
+    )
+    config = _parse_model_suite_config(
+        models_json=models_json,
+        test_size=test_size,
+        random_state=random_state,
+        drop_duplicates=drop_duplicates,
+        cv_folds=cv_folds,
+        optimization_metric=optimization_metric,
+        threshold=threshold,
+        n_iter=n_iter,
+        use_gpu=use_gpu,
+        n_jobs=n_jobs,
+    )
+    if idempotency_key is None:
+        async with _admit_experiment(settings):
+            content = await _read_experiment_upload(file, settings)
+            return await _run_model_suite_request_content(content, options, config, settings)
+
+    registry = _get_model_suite_idempotency_registry()
+    try:
+        while True:
+            reservation = registry.reserve(idempotency_key)
+            try:
+                if reservation.owner:
+                    try:
+                        async with _admit_experiment(settings):
+                            content = await _read_experiment_upload(file, settings)
+                            fingerprint = _model_suite_request_fingerprint(
+                                content, options, config
+                            )
+                            result = await _run_model_suite_request_content(
+                                content, options, config, settings
+                            )
+                            registry.complete(reservation, fingerprint, result)
+                            return result
+                    except BaseException:
+                        registry.abort(reservation)
+                        raise
+
+                if not await registry.wait(reservation):
+                    continue
+                await registry.acquire_verification(reservation)
+                try:
+                    async with _admit_experiment(settings):
+                        content = await _read_experiment_upload(file, settings)
+                        fingerprint = _model_suite_request_fingerprint(
+                            content, options, config
+                        )
+                        return registry.replay(reservation, fingerprint)
+                finally:
+                    registry.release_verification(reservation)
+            finally:
+                registry.release(reservation)
+    except IdempotencyConflictError:
+        raise _idempotency_conflict_error() from None
+    except IdempotencyCapacityError:
+        raise _idempotency_capacity_error() from None
+
+
 @app.get("/v1/experiments/{experiment_id}", response_model=ExperimentResult)
 async def get_experiment(
     experiment_id: str, settings: Settings = Depends(get_settings)
@@ -247,6 +338,22 @@ async def get_experiment(
     except Exception:
         request_id = _request_id()
         logger.exception("experiment retrieval failed request_id=%s", request_id)
+        raise _internal_error("experiment_lookup_failed", request_id) from None
+
+
+@app.get("/v1/model-suites/{experiment_id}", response_model=ExperimentSuiteResult)
+async def get_model_suite(
+    experiment_id: str, settings: Settings = Depends(get_settings)
+) -> ExperimentSuiteResult:
+    try:
+        return await run_in_threadpool(load_suite_result, experiment_id, settings)
+    except ResultNotFoundError:
+        raise _not_found_error() from None
+    except ResultFormatError:
+        raise _result_format_error() from None
+    except Exception:
+        request_id = _request_id()
+        logger.exception("model suite retrieval failed request_id=%s", request_id)
         raise _internal_error("experiment_lookup_failed", request_id) from None
 
 
@@ -341,8 +448,45 @@ async def _run_experiment_content(
         raise _internal_error("experiment_failed", request_id) from None
 
 
+async def _run_model_suite_request_content(
+    content: bytes,
+    options: DatasetOptions,
+    config: ModelSuiteConfig,
+    settings: Settings,
+) -> ExperimentSuiteResult:
+    try:
+        return await run_in_threadpool(
+            _run_model_suite_content, content, options, config, settings
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        request_id = _request_id()
+        logger.exception("model suite execution failed request_id=%s", request_id)
+        raise _internal_error("experiment_failed", request_id) from None
+
+
 def _experiment_request_fingerprint(
     content: bytes, options: DatasetOptions, config: ExperimentConfig
+) -> str:
+    metadata = json.dumps(
+        {
+            "options": options.model_dump(mode="json"),
+            "config": config.model_dump(mode="json"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(content)
+    digest.update(b"\x00")
+    digest.update(metadata)
+    return digest.hexdigest()
+
+
+def _model_suite_request_fingerprint(
+    content: bytes, options: DatasetOptions, config: ModelSuiteConfig
 ) -> str:
     metadata = json.dumps(
         {
@@ -383,6 +527,14 @@ def _get_experiment_idempotency_registry() -> ExperimentIdempotencyRegistry:
     return registry
 
 
+def _get_model_suite_idempotency_registry() -> ModelSuiteIdempotencyRegistry:
+    registry = getattr(app.state, "model_suite_idempotency_registry", None)
+    if registry is None:
+        registry = ModelSuiteIdempotencyRegistry()
+        app.state.model_suite_idempotency_registry = registry
+    return registry
+
+
 @asynccontextmanager
 async def _admit_experiment(settings: Settings):
     """Serialize the entire read, parse, train, and save lifecycle per process."""
@@ -409,6 +561,57 @@ def _execute_experiment(bundle: object, config: object, settings: Settings) -> E
     return result
 
 
+def _run_model_suite_content(
+    content: bytes,
+    options: DatasetOptions,
+    config: ModelSuiteConfig,
+    settings: Settings,
+) -> ExperimentSuiteResult:
+    try:
+        bundle = load_dataset(content, options, settings)
+        result = run_model_suite(bundle, config)
+        save_suite_result(result, settings)
+        return result
+    except (DatasetError, ExperimentError) as exc:
+        raise _dataset_error(exc) from None
+
+
+def _parse_model_suite_config(
+    *,
+    models_json: str,
+    test_size: float,
+    random_state: int,
+    drop_duplicates: bool,
+    cv_folds: int,
+    optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"],
+    threshold: float,
+    n_iter: int,
+    use_gpu: bool,
+    n_jobs: int,
+) -> ModelSuiteConfig:
+    try:
+        models = json.loads(models_json)
+    except json.JSONDecodeError:
+        raise _invalid_request_exception() from None
+    if not isinstance(models, list) or any(not isinstance(model, str) for model in models):
+        raise _invalid_request_exception()
+    try:
+        return ModelSuiteConfig(
+            models=models,
+            test_size=test_size,
+            random_state=random_state,
+            drop_duplicates=drop_duplicates,
+            cv_folds=cv_folds,
+            optimization_metric=optimization_metric,
+            threshold=threshold,
+            n_iter=n_iter,
+            use_gpu=use_gpu,
+            n_jobs=n_jobs,
+        )
+    except Exception:
+        raise _invalid_request_exception() from None
+
+
 def _not_found_error() -> HTTPException:
     request_id = _request_id()
     return HTTPException(
@@ -428,6 +631,18 @@ def _idempotency_conflict_error() -> HTTPException:
             "code": "idempotency_conflict",
             "message": "the idempotency key was already used for a different request",
             "request_id": _request_id(),
+        },
+    )
+
+
+def _invalid_request_exception() -> HTTPException:
+    request_id = _request_id()
+    return HTTPException(
+        status_code=422,
+        detail={
+            "code": "invalid_request",
+            "message": "request parameters are invalid",
+            "request_id": request_id,
         },
     )
 

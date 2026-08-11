@@ -12,7 +12,7 @@ import shutil
 from pydantic import ValidationError
 
 from repro_runner.config import Settings
-from repro_runner.schemas import ExperimentResult
+from repro_runner.schemas import ExperimentResult, ExperimentSuiteResult
 from repro_runner import __version__
 
 
@@ -57,6 +57,32 @@ def save_result(result: ExperimentResult, settings: Settings) -> str:
     return experiment_id
 
 
+def save_suite_result(result: ExperimentSuiteResult, settings: Settings) -> str:
+    """Store only the public suite result contract and aggregate metadata."""
+    experiment_id = _validate_experiment_id(result.experiment_id)
+    root = settings.storage_dir.resolve()
+    directory = _experiment_directory(experiment_id, settings)
+    temporary = root / f".{experiment_id}.{secrets.token_hex(8)}.tmp"
+    root.mkdir(parents=True, exist_ok=True)
+    if directory.exists():
+        raise FileExistsError("experiment result already exists")
+
+    temporary.mkdir()
+    try:
+        _write_json_atomic(temporary / "result.json", _suite_result_payload(result))
+        _write_json_atomic(
+            temporary / "config.json", _stored_suite_config_payload(result)
+        )
+        _write_json_atomic(
+            temporary / "dataset_profile.json", _suite_dataset_profile_payload(result)
+        )
+        temporary.replace(directory)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return experiment_id
+
+
 def load_result(experiment_id: str, settings: Settings) -> ExperimentResult:
     """Load a persisted result without permitting paths outside the result root."""
     try:
@@ -78,6 +104,33 @@ def load_result(experiment_id: str, settings: Settings) -> ExperimentResult:
         ) from exc
     try:
         return ExperimentResult.model_validate(payload)
+    except ValidationError as exc:
+        raise ResultFormatError(
+            "experiment result uses an unsupported or corrupted result format"
+        ) from exc
+
+
+def load_suite_result(experiment_id: str, settings: Settings) -> ExperimentSuiteResult:
+    """Load a persisted suite result without permitting paths outside the root."""
+    try:
+        directory = _experiment_directory(_validate_experiment_id(experiment_id), settings)
+        content = (directory / "result.json").read_text(encoding="utf-8")
+    except ResultNotFoundError:
+        raise
+    except OSError as exc:
+        raise ResultNotFoundError("experiment result was not found") from exc
+    except UnicodeDecodeError as exc:
+        raise ResultFormatError(
+            "experiment result uses an unsupported or corrupted result format"
+        ) from exc
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ResultFormatError(
+            "experiment result uses an unsupported or corrupted result format"
+        ) from exc
+    try:
+        return ExperimentSuiteResult.model_validate(payload)
     except ValidationError as exc:
         raise ResultFormatError(
             "experiment result uses an unsupported or corrupted result format"
@@ -171,4 +224,96 @@ def _dataset_profile_payload(result: ExperimentResult) -> dict[str, object]:
         "column_types": dataset.column_types,
         "numeric_ranges": dataset.numeric_ranges,
         "dataset_id": dataset.dataset_id,
+    }
+
+
+def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
+    return {
+        "experiment_id": result.experiment_id,
+        "status": result.status,
+        "config": _suite_config_payload(result),
+        "dataset": _suite_dataset_profile_payload(result),
+        "split_provenance": _split_provenance_payload(result),
+        "results": [_model_run_payload(item) for item in result.results],
+        "performance_ranking": list(result.performance_ranking),
+        "reproducibility_status": result.reproducibility_status,
+    }
+
+
+def _suite_config_payload(result: ExperimentSuiteResult) -> dict[str, object]:
+    config = result.config
+    return {
+        "models": list(config.models),
+        "test_size": config.test_size,
+        "random_state": config.random_state,
+        "drop_duplicates": config.drop_duplicates,
+        "cv_folds": config.cv_folds,
+        "optimization_metric": config.optimization_metric,
+        "threshold": config.threshold,
+        "n_iter": config.n_iter,
+        "use_gpu": config.use_gpu,
+        "n_jobs": config.n_jobs,
+    }
+
+
+def _stored_suite_config_payload(result: ExperimentSuiteResult) -> dict[str, object]:
+    return {**_suite_config_payload(result), "service_version": __version__}
+
+
+def _suite_dataset_profile_payload(result: ExperimentSuiteResult) -> dict[str, object]:
+    dataset = result.dataset
+    return {
+        "rows": dataset.rows,
+        "effective_rows": dataset.effective_rows,
+        "features": dataset.features,
+        "target": dataset.target,
+        "missing_values": dataset.missing_values,
+        "duplicate_rows": dataset.duplicate_rows,
+        "class_counts": dataset.class_counts,
+        "class_ratios": dataset.class_ratios,
+        "column_names": dataset.column_names,
+        "column_types": dataset.column_types,
+        "numeric_ranges": dataset.numeric_ranges,
+        "dataset_id": dataset.dataset_id,
+    }
+
+
+def _split_provenance_payload(result: ExperimentSuiteResult) -> dict[str, object]:
+    split = result.split_provenance
+    return {
+        "test_size": split.test_size,
+        "random_state": split.random_state,
+        "train_rows": split.train_rows,
+        "test_rows": split.test_rows,
+        "test_digest": split.test_digest,
+    }
+
+
+def _model_run_payload(item) -> dict[str, object]:
+    metrics = None
+    if item.metrics is not None:
+        metrics = {
+            "roc_auc": item.metrics.roc_auc,
+            "accuracy": item.metrics.accuracy,
+            "balanced_accuracy": item.metrics.balanced_accuracy,
+            "precision": item.metrics.precision,
+            "recall": item.metrics.recall,
+            "f1": item.metrics.f1,
+            "confusion_matrix": item.metrics.confusion_matrix,
+        }
+    error = None
+    if item.error is not None:
+        error = {"code": item.error.code, "message": item.error.message}
+    return {
+        "model": item.model,
+        "status": item.status,
+        "cv_best_score": item.cv_best_score,
+        "best_params": item.best_params,
+        "metrics": metrics,
+        "feature_importance": [
+            {"feature": feature.feature, "importance": feature.importance}
+            for feature in item.feature_importance
+        ],
+        "fit_seconds": item.fit_seconds,
+        "error": error,
     }
