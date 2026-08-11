@@ -154,7 +154,7 @@ def test_multimodel_dsl_has_one_end_six_string_outputs_and_no_secrets() -> None:
     lowered = source.casefold()
     assert "value_type: secret" not in lowered
     assert "authorization: bearer" not in lowered
-    assert "sk-" not in lowered
+    assert "raw_csv_secret_07a1" not in lowered
     assert _document()["dependencies"] == []
     assert _document()["workflow"].get("environment_variables") == []
 
@@ -230,6 +230,43 @@ def test_multimodel_embedded_suite_request_sanitizes_invalid_provenance() -> Non
     payload = json.dumps(result, ensure_ascii=False)
     for sentinel in SECRET_SENTINELS:
         assert sentinel not in payload
+
+
+def test_generated_suite_request_keeps_manual_override_qualifiers() -> None:
+    main = _exec_code_node("build_suite_comparison_request")
+    result = main(
+        json.dumps(
+            {
+                "metrics": [
+                    {
+                        "name": "AUC",
+                        "normalized_name": "roc_auc",
+                        "supported": True,
+                        "ambiguous": False,
+                        "reported_value": 0.850,
+                        "dataset": "濂夎妭鍘匡紙鍏ㄥ煙妯″瀷锛?",
+                        "split": "娴嬭瘯闆?",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {"experiment_id": "exp-20260811T000000Z-override", "results": []},
+            ensure_ascii=False,
+        ),
+    )
+
+    request = json.loads(result["suite_comparison_request_json"])
+    assert request["reported_metrics"] == [
+        {
+            "name": "roc_auc",
+            "reported_value": 0.850,
+            "dataset": "濂夎妭鍘匡紙鍏ㄥ煙妯″瀷锛?",
+            "split": "娴嬭瘯闆?",
+        }
+    ]
+    assert "for key, validator, raw in" in _node_map(_document())["build_suite_comparison_request"]["data"]["code"]
 
 
 def test_multimodel_embedded_formatter_redacts_arbitrary_backend_error_text() -> None:

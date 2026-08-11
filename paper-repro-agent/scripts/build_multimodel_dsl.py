@@ -182,7 +182,16 @@ def safe_qualifier(value):
     if not isinstance(value, str):
         return None
     candidate = value.strip()
-    return candidate if QUALIFIER_RE.fullmatch(candidate) else None
+    if not candidate or len(candidate) > 80:
+        return None
+    if any(ord(char) < 32 for char in candidate):
+        return None
+    lowered = candidate.casefold()
+    if lowered.startswith("sk-") or "secret_token" in lowered:
+        return None
+    if "traceback (most recent call last):" in lowered:
+        return None
+    return candidate
 
 def safe_digest(value):
     if not isinstance(value, str):
@@ -241,22 +250,19 @@ def main(dossier_json: str, experiment_json: str) -> dict:
         if name is None or reported_value is None:
             continue
         item = {"name": name, "reported_value": reported_value}
-        if (dataset := safe_qualifier(metric.get("dataset"))) is not None:
-            item["dataset"] = dataset
-        if (split := safe_qualifier(metric.get("split"))) is not None:
-            item["split"] = split
-        if (dataset_id := safe_digest(metric.get("dataset_id"))) is not None:
-            item["dataset_id"] = dataset_id
-        if (test_size := safe_fraction(metric.get("test_size"))) is not None:
-            item["test_size"] = test_size
-        if (random_state := safe_int(metric.get("random_state"), 0, 2147483647)) is not None:
-            item["random_state"] = random_state
-        if (train_rows := safe_int(metric.get("train_rows"), 1, 1000000000)) is not None:
-            item["train_rows"] = train_rows
-        if (test_rows := safe_int(metric.get("test_rows"), 1, 1000000000)) is not None:
-            item["test_rows"] = test_rows
-        if (test_digest := safe_digest(metric.get("test_digest"))) is not None:
-            item["test_digest"] = test_digest
+        for key, validator, raw in (
+            ("dataset", safe_qualifier, metric.get("dataset")),
+            ("split", safe_qualifier, metric.get("split")),
+            ("dataset_id", safe_digest, metric.get("dataset_id")),
+            ("test_size", safe_fraction, metric.get("test_size")),
+            ("random_state", lambda value: safe_int(value, 0, 2147483647), metric.get("random_state")),
+            ("train_rows", lambda value: safe_int(value, 1, 1000000000), metric.get("train_rows")),
+            ("test_rows", lambda value: safe_int(value, 1, 1000000000), metric.get("test_rows")),
+            ("test_digest", safe_digest, metric.get("test_digest")),
+        ):
+            value = validator(raw)
+            if value is not None:
+                item[key] = value
         reported.append(item)
     experiment_id = safe_experiment_id(suite.get("experiment_id"))
     ok = isinstance(experiment_id, str) and bool(experiment_id.strip()) and bool(reported)

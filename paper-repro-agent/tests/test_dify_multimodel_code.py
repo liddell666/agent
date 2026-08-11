@@ -214,6 +214,44 @@ def test_suite_request_sanitizes_invalid_provenance_fields_without_echoing_raw_p
         assert sentinel not in payload
 
 
+def test_suite_request_keeps_manual_override_qualifiers() -> None:
+    dossier = json.dumps(
+        {
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.850,
+                    "dataset": "濂夎妭鍘匡紙鍏ㄥ煙妯″瀷锛?",
+                    "split": "娴嬭瘯闆?",
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    suite = json.dumps(
+        {"experiment_id": "exp-20260811T000000Z-override", "results": []},
+        ensure_ascii=False,
+    )
+
+    result = build_suite_comparison_request(dossier, suite)
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"]) == {
+        "experiment_id": "exp-20260811T000000Z-override",
+        "reported_metrics": [
+            {
+                "name": "roc_auc",
+                "reported_value": 0.85,
+                "dataset": "濂夎妭鍘匡紙鍏ㄥ煙妯″瀷锛?",
+                "split": "娴嬭瘯闆?",
+            }
+        ],
+    }
+
+
 def test_suite_request_returns_stable_error_without_echoing_invalid_input() -> None:
     bad_suite = json.dumps(
         {"experiment_id": "exp-SECRET_TOKEN-sk-123456", "results": RAW_SENTINEL},
