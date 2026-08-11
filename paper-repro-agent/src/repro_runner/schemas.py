@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -107,6 +107,74 @@ class ExperimentResult(BaseModel):
         return self
 
 
+ModelName = Literal[
+    "logistic_regression",
+    "random_forest",
+    "xgboost",
+    "lightgbm",
+    "svm",
+    "knn",
+    "mlp",
+]
+
+DEFAULT_MODEL_NAMES: tuple[ModelName, ...] = (
+    "logistic_regression",
+    "random_forest",
+    "xgboost",
+    "lightgbm",
+    "svm",
+    "knn",
+    "mlp",
+)
+
+
+class ModelSuiteConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    models: list[ModelName] = Field(default_factory=lambda: list(DEFAULT_MODEL_NAMES), min_length=1)
+    test_size: float = Field(default=0.2, ge=0.1, le=0.5)
+    random_state: int = Field(default=42, ge=0)
+    drop_duplicates: bool = False
+    cv_folds: int = Field(default=5, ge=3, le=10)
+    optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"] = "roc_auc"
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    n_iter: int = Field(default=8, ge=1, le=32)
+    use_gpu: bool = False
+    n_jobs: int = Field(default=4, ge=1, le=16)
+
+    @model_validator(mode="after")
+    def reject_duplicate_models(self) -> "ModelSuiteConfig":
+        if len(self.models) != len(set(self.models)):
+            raise ValueError("models must not contain duplicates")
+        return self
+
+
+class ModelRunResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: ModelName
+    status: Literal["succeeded", "unavailable", "failed"]
+    cv_best_score: float | None = None
+    best_params: dict[str, Any] = Field(default_factory=dict)
+    metrics: ExperimentMetrics | None = None
+    feature_importance: list[FeatureImportance] = Field(default_factory=list)
+    fit_seconds: float | None = None
+    error: ValidationErrorItem | None = None
+
+
+class ExperimentSuiteResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    experiment_id: str
+    status: Literal["succeeded", "partial", "failed"]
+    config: ModelSuiteConfig
+    dataset: DatasetProfile
+    split_provenance: SplitProvenance
+    results: list[ModelRunResult] = Field(default_factory=list)
+    performance_ranking: list[ModelName] = Field(default_factory=list)
+    reproducibility_status: Literal["cv_tuned"] = "cv_tuned"
+
+
 class ReportedMetricInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -122,6 +190,13 @@ class ReportedMetricInput(BaseModel):
     test_digest: str | None = Field(
         default=None, pattern=r"^sha256:[0-9a-f]{64}$"
     )
+
+
+class SuiteComparisonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    experiment_id: str
+    reported_metrics: list[ReportedMetricInput] = Field(default_factory=list)
 
 
 class ComparisonItem(BaseModel):
@@ -141,6 +216,18 @@ class ComparisonResponse(BaseModel):
 
     experiment_id: str
     items: list[ComparisonItem] = Field(default_factory=list)
+
+
+class SuiteComparisonItem(ComparisonItem):
+    model: ModelName
+
+
+class SuiteComparisonResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    experiment_id: str
+    items: list[SuiteComparisonItem] = Field(default_factory=list)
+    paper_reference_metric: str | None = None
 
 
 class DossierEvidence(BaseModel):
