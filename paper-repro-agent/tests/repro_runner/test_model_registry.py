@@ -137,6 +137,75 @@ def test_boosting_models_use_safe_finite_class_imbalance_ratio(monkeypatch):
         assert math.isfinite(kwargs["scale_pos_weight"])
 
 
+def test_boosting_models_use_sorted_binary_labels_for_scale_pos_weight(monkeypatch):
+    created = {}
+
+    class FakeXGBClassifier:
+        def __init__(self, **kwargs):
+            created["xgboost"] = kwargs
+
+    class FakeLGBMClassifier:
+        def __init__(self, **kwargs):
+            created["lightgbm"] = kwargs
+
+    xgboost_module = ModuleType("xgboost")
+    xgboost_module.XGBClassifier = FakeXGBClassifier
+    lightgbm_module = ModuleType("lightgbm")
+    lightgbm_module.LGBMClassifier = FakeLGBMClassifier
+
+    monkeypatch.setitem(sys.modules, "xgboost", xgboost_module)
+    monkeypatch.setitem(sys.modules, "lightgbm", lightgbm_module)
+    reloaded = importlib.reload(model_registry)
+
+    xgboost_spec = reloaded.get_model_spec(
+        "xgboost",
+        {"2": 9, "3": 3},
+        random_state=42,
+        use_gpu=True,
+    )
+    lightgbm_spec = reloaded.get_model_spec(
+        "lightgbm",
+        {"no": 9, "yes": 3},
+        random_state=42,
+        use_gpu=True,
+    )
+
+    assert xgboost_spec.search_space
+    assert created["xgboost"]["scale_pos_weight"] == pytest.approx(3.0)
+    assert created["xgboost"]["device"] == "cuda"
+    assert lightgbm_spec.search_space
+    assert created["lightgbm"]["scale_pos_weight"] == pytest.approx(3.0)
+    assert created["lightgbm"]["device_type"] == "gpu"
+
+
+@pytest.mark.parametrize(
+    "class_counts",
+    (
+        {"0": 9},
+        {"0": 9, "1": 3, "2": 1},
+        {"0": 9, "1": -1},
+    ),
+)
+def test_boosting_models_reject_malformed_binary_class_counts(monkeypatch, class_counts):
+    class FakeXGBClassifier:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    xgboost_module = ModuleType("xgboost")
+    xgboost_module.XGBClassifier = FakeXGBClassifier
+
+    monkeypatch.setitem(sys.modules, "xgboost", xgboost_module)
+    reloaded = importlib.reload(model_registry)
+
+    with pytest.raises(ValueError, match="binary class_counts"):
+        reloaded.get_model_spec(
+            "xgboost",
+            class_counts,
+            random_state=42,
+            use_gpu=False,
+        )
+
+
 def test_knn_and_mlp_use_bounded_runtime_settings():
     knn = model_registry.get_model_spec(
         "knn",

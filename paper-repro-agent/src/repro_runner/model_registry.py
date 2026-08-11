@@ -262,9 +262,28 @@ def _mlp_spec(
 
 
 def _scale_pos_weight(class_counts: Mapping[str, int]) -> float:
-    negative = max(int(class_counts.get("0", 0)), 0)
-    positive = max(int(class_counts.get("1", 0)), 0)
+    negative, positive = _binary_label_counts(class_counts)
     return float(max(negative, 1) / max(positive, 1))
+
+
+def _binary_label_counts(class_counts: Mapping[str, int]) -> tuple[int, int]:
+    if len(class_counts) != 2:
+        raise ValueError(
+            "binary class_counts must contain exactly two labels with "
+            "non-negative integer counts"
+        )
+
+    sorted_items = sorted(class_counts.items())
+    counts: list[int] = []
+    for _, raw_count in sorted_items:
+        if not isinstance(raw_count, int) or raw_count < 0:
+            raise ValueError(
+                "binary class_counts must contain exactly two labels with "
+                "non-negative integer counts"
+            )
+        counts.append(raw_count)
+
+    return counts[0], counts[1]
 
 
 _MODEL_FACTORIES = {

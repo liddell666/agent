@@ -44,11 +44,11 @@ def test_repro_requirements_input_is_kept_with_lock_file():
     requirements_lock = Path("requirements-repro.lock").read_text(encoding="utf-8")
 
     assert "scikit-learn==1.9.0" in requirements_input
-    assert "xgboost" in requirements_input
-    assert "lightgbm" in requirements_input
+    assert "xgboost==3.4.0" in requirements_input
+    assert "lightgbm==4.7.0" in requirements_input
     assert "requirements-repro.in" in requirements_lock
-    assert "xgboost==" in requirements_lock
-    assert "lightgbm==" in requirements_lock
+    assert "xgboost==3.4.0" in requirements_lock
+    assert "lightgbm==4.7.0" in requirements_lock
 
 
 def test_dify_workflow_parses_http_body_before_branching():

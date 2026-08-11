@@ -4,6 +4,6 @@ pandas==3.0.5
 pydantic-settings==2.14.2
 python-multipart==0.0.32
 scikit-learn==1.9.0
-xgboost
-lightgbm
+xgboost==3.4.0
+lightgbm==4.7.0
 uvicorn[standard]==0.52.1
