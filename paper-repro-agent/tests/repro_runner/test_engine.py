@@ -94,16 +94,18 @@ def test_config_controls_split_and_fixed_forest_parameters():
     config = ExperimentConfig(test_size=0.25, random_state=7)
 
     with (
-        patch.object(engine, "train_test_split", wraps=engine.train_test_split) as split,
+        patch.object(
+            engine, "make_stratified_split", wraps=engine.make_stratified_split
+        ) as split,
         patch.object(
             engine, "RandomForestClassifier", wraps=RandomForestClassifier
         ) as forest,
     ):
         run_random_forest(bundle, config)
 
+    assert split.call_args.args[0].tolist() == bundle.frame["Y_cls"].tolist()
     assert split.call_args.kwargs["test_size"] == 0.25
     assert split.call_args.kwargs["random_state"] == 7
-    assert split.call_args.kwargs["stratify"].tolist() == bundle.frame["Y_cls"].tolist()
     assert forest.call_args.kwargs == {
         "n_estimators": 300,
         "class_weight": "balanced",
