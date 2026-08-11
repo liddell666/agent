@@ -73,3 +73,56 @@ Note:
 
 - `safe_qualifier` is intentionally broader now so it can preserve real manual override labels. It still blocks control characters and a few obvious secret-like patterns, but it is less restrictive than the original ASCII-only filter.
 - The test environment needs the package directory as the working directory for the full suite. Running from the repository root without that path setup will fail collection.
+
+## Fix follow-up
+
+### Findings addressed
+
+- Tightened `_safe_suite_qualifier` in both `paper-repro-agent/dify/code/comparison_workflow.py` and `paper-repro-agent/scripts/build_multimodel_dsl.py` so it keeps the real manual override labels:
+  - `奉节县（全域模型）`
+  - `测试集`
+- Preserved rejection of:
+  - control characters and multiline input
+  - secret-like prefixes and traceback text
+  - raw CSV-like or long untrusted qualifier strings
+- Kept the runtime helper and generated DSL source identical by regenerating `paper-repro-agent/dify/paper-comparison-multimodel-workflow.yml`.
+- Updated `paper-repro-agent/dify/paper-comparison-multimodel-workflow.md` with an explicit manual-override verification step and retained the V3 rollback guidance.
+- Removed the dead `QUALIFIER_RE` declarations from the earlier regex-based version by replacing the qualifier check with a simpler label-style character gate.
+
+### RED / GREEN evidence
+
+RED:
+
+- `pytest -q paper-repro-agent/tests/test_dify_multimodel_code.py::test_suite_request_keeps_manual_override_qualifiers_and_rejects_noise`
+- Result: failed because the generated request dropped the expected manual override qualifiers and preserved noise in the comparison request.
+
+GREEN:
+
+- After tightening the qualifier gate and regenerating the YAML:
+  - `pytest -q paper-repro-agent/tests/test_dify_multimodel_code.py paper-repro-agent/tests/test_dify_multimodel_dsl.py`
+  - Result: `16 passed`
+
+### Files changed in this follow-up
+
+- `paper-repro-agent/dify/code/comparison_workflow.py`
+- `paper-repro-agent/scripts/build_multimodel_dsl.py`
+- `paper-repro-agent/dify/paper-comparison-multimodel-workflow.yml`
+- `paper-repro-agent/dify/paper-comparison-multimodel-workflow.md`
+- `paper-repro-agent/tests/test_dify_multimodel_code.py`
+- `paper-repro-agent/tests/test_dify_multimodel_dsl.py`
+
+### Commands and results
+
+- Focused Dify tests:
+  - `pytest -q paper-repro-agent/tests/test_dify_multimodel_code.py paper-repro-agent/tests/test_dify_multimodel_dsl.py`
+  - Result: `16 passed`
+- Full suite from `paper-repro-agent`:
+  - `PYTHONPATH=src pytest -q`
+  - Result: `258 passed, 1 warning`
+
+### Self-review and concerns
+
+- The comparison request now forwards only approved qualifier fields and the numeric provenance fields already permitted by the task.
+- The manual override labels are preserved exactly in both the runtime helper and the generated workflow.
+- The only remaining suite warning is the pre-existing FastAPI/httpx deprecation warning from the broader test environment.
+- Pre-existing task reports in `paper-repro-agent/.superpowers/sdd/` were left untouched.

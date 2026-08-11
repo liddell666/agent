@@ -74,7 +74,7 @@ _SUITE_SUPPORTED_METRICS = {
 }
 _SAFE_SUITE_ERROR_MESSAGES = {"bounded_failure"}
 _SAFE_SUITE_ERROR_REDACTION = "details redacted for privacy."
-_SAFE_SUITE_QUALIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}$")
+_SAFE_SUITE_MANUAL_QUALIFIERS = {"\u5949\u8282\u53bf\uff08\u5168\u57df\u6a21\u578b\uff09", "\u6d4b\u8bd5\u96c6"}
 _SAFE_SUITE_EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
 _SAFE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -99,7 +99,7 @@ def _safe_suite_qualifier(value):
     if not isinstance(value, str):
         return None
     candidate = value.strip()
-    if not candidate or len(candidate) > 80:
+    if not candidate or len(candidate) > 32:
         return None
     if any(ord(char) < 32 for char in candidate):
         return None
@@ -108,7 +108,10 @@ def _safe_suite_qualifier(value):
         return None
     if "traceback (most recent call last):" in lowered:
         return None
-    return candidate
+    if candidate in _SAFE_SUITE_MANUAL_QUALIFIERS:
+        return candidate
+    allowed_punctuation = " ._()/-\uff08\uff09"
+    return candidate if all(char.isalnum() or char in allowed_punctuation for char in candidate) else None
 
 
 def _safe_suite_digest(value):

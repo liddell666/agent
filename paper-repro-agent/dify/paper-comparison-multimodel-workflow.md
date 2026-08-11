@@ -130,13 +130,20 @@ Interpretation / 解释:
    - `http://repro-runner:8001/v1/compare-model-suite-result`
 4. Confirm the workflow still ends in one Output node with six string outputs:
    `dossier_json`, `validation_json`, `experiment_json`, `comparison_json`, `assessment_json`, `markdown_report`
-5. Run the local smoke check from the project root with a safe placeholder path:
+5. Run a manual-override verification in the generated comparison request. Use this exact metric payload:
+
+```json
+[{"name":"AUC","dataset":"奉节县（全域模型）","split":"测试集","reported_value":0.850}]
+```
+
+   Then confirm the generated comparison request preserves both `dataset` and `split` in `suite_comparison_request_json` instead of dropping them.
+6. Run the local smoke check from the project root with a safe placeholder path:
 
 ```powershell
 .\scripts\smoke_multimodel.ps1 -CsvPath 'C:\safe-placeholder\training.csv' -BaseUrl 'http://localhost:8001'
 ```
 
-6. Review only safe summaries and structured JSON outputs. Do not paste API keys, tokens, raw CSV rows, or paper/PDF text into the workflow.
+7. Review only safe summaries and structured JSON outputs. Do not paste API keys, tokens, raw CSV rows, or paper/PDF text into the workflow.
 
 ## 8. Rollback / 回滚
 

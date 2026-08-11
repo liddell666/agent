@@ -214,7 +214,7 @@ def test_suite_request_sanitizes_invalid_provenance_fields_without_echoing_raw_p
         assert sentinel not in payload
 
 
-def test_suite_request_keeps_manual_override_qualifiers() -> None:
+def test_suite_request_keeps_manual_override_qualifiers_and_rejects_noise() -> None:
     dossier = json.dumps(
         {
             "metrics": [
@@ -224,8 +224,26 @@ def test_suite_request_keeps_manual_override_qualifiers() -> None:
                     "supported": True,
                     "ambiguous": False,
                     "reported_value": 0.850,
-                    "dataset": "濂夎妭鍘匡紙鍏ㄥ煙妯″瀷锛?",
-                    "split": "娴嬭瘯闆?",
+                    "dataset": "奉节县（全域模型）",
+                    "split": "测试集",
+                },
+                {
+                    "name": "Recall",
+                    "normalized_name": "recall",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.720,
+                    "dataset": "col_a,col_b\n1,2",
+                    "split": "Traceback (most recent call last):",
+                },
+                {
+                    "name": "F1",
+                    "normalized_name": "f1",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.610,
+                    "dataset": "untrusted label " + "x" * 80,
+                    "split": "row_1,row_2,row_3,row_4,row_5,row_6,row_7,row_8,row_9,row_10,row_11",
                 }
             ]
         },
@@ -245,8 +263,16 @@ def test_suite_request_keeps_manual_override_qualifiers() -> None:
             {
                 "name": "roc_auc",
                 "reported_value": 0.85,
-                "dataset": "濂夎妭鍘匡紙鍏ㄥ煙妯″瀷锛?",
-                "split": "娴嬭瘯闆?",
+                "dataset": "奉节县（全域模型）",
+                "split": "测试集",
+            },
+            {
+                "name": "recall",
+                "reported_value": 0.72,
+            },
+            {
+                "name": "f1",
+                "reported_value": 0.61,
             }
         ],
     }

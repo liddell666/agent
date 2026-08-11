@@ -150,7 +150,7 @@ import re
 
 ALIASES = {"auc": "roc_auc", "roc_auc": "roc_auc"}
 SUPPORTED = {"roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"}
-QUALIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}$")
+MANUAL_OVERRIDE_QUALIFIERS = {"\u5949\u8282\u53bf\uff08\u5168\u57df\u6a21\u578b\uff09", "\u6d4b\u8bd5\u96c6"}
 EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -182,7 +182,7 @@ def safe_qualifier(value):
     if not isinstance(value, str):
         return None
     candidate = value.strip()
-    if not candidate or len(candidate) > 80:
+    if not candidate or len(candidate) > 32:
         return None
     if any(ord(char) < 32 for char in candidate):
         return None
@@ -191,7 +191,10 @@ def safe_qualifier(value):
         return None
     if "traceback (most recent call last):" in lowered:
         return None
-    return candidate
+    if candidate in MANUAL_OVERRIDE_QUALIFIERS:
+        return candidate
+    allowed_punctuation = " ._()/-\uff08\uff09"
+    return candidate if all(char.isalnum() or char in allowed_punctuation for char in candidate) else None
 
 def safe_digest(value):
     if not isinstance(value, str):
