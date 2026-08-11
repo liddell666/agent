@@ -9,6 +9,13 @@ from scripts.build_multimodel_dsl import build_multimodel_dsl, write_multimodel_
 PROJECT_ROOT = Path(__file__).parents[1]
 SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
 GENERATED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
+SECRET_SENTINELS = (
+    "RAW_CSV_SECRET_07a1",
+    "SECRET_TOKEN",
+    "Traceback (most recent call last):",
+    "sk-123456",
+    "col_a,col_b\n1,2",
+)
 
 
 def _document(path: Path = GENERATED_DSL) -> dict:
@@ -21,6 +28,13 @@ def _nodes(document: dict) -> list[dict]:
 
 def _node_map(document: dict) -> dict[str, dict]:
     return {node["data"]["title"]: node for node in _nodes(document)}
+
+
+def _exec_code_node(title: str):
+    node = _node_map(_document())[title]
+    namespace: dict[str, object] = {}
+    exec(compile(node["data"]["code"], f"<dify:{title}>", "exec"), namespace)
+    return namespace["main"]
 
 
 def test_generator_output_is_deterministic_and_keeps_source_workflow_unchanged(tmp_path) -> None:
@@ -174,3 +188,87 @@ def test_build_multimodel_dsl_returns_the_generated_document_contract() -> None:
     stored = _document()
 
     assert built == stored
+
+
+def test_multimodel_embedded_suite_request_sanitizes_invalid_provenance() -> None:
+    main = _exec_code_node("build_suite_comparison_request")
+
+    result = main(
+        json.dumps(
+            {
+                "metrics": [
+                    {
+                        "name": "Recall",
+                        "normalized_name": "recall",
+                        "supported": True,
+                        "ambiguous": False,
+                        "reported_value": 0.73,
+                        "dataset": "col_a,col_b\n1,2",
+                        "split": "Traceback (most recent call last):",
+                        "dataset_id": "sha256:" + "A" * 64,
+                        "test_size": "nan",
+                        "random_state": "sk-123456",
+                        "train_rows": -1,
+                        "test_rows": 0,
+                        "test_digest": "SECRET_TOKEN",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {"experiment_id": "exp-20260811t000000z-sanitized", "results": []},
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"]) == {
+        "experiment_id": "exp-20260811t000000z-sanitized",
+        "reported_metrics": [{"name": "recall", "reported_value": 0.73}],
+    }
+    payload = json.dumps(result, ensure_ascii=False)
+    for sentinel in SECRET_SENTINELS:
+        assert sentinel not in payload
+
+
+def test_multimodel_embedded_formatter_redacts_arbitrary_backend_error_text() -> None:
+    main = _exec_code_node("format_suite_comparison_report")
+
+    result = main(
+        json.dumps({"title": "Sentinel paper"}, ensure_ascii=False),
+        json.dumps({"valid": True}, ensure_ascii=False),
+        json.dumps(
+            {
+                "experiment_id": "exp-suite-redaction",
+                "status": "partial",
+                "results": [
+                    {
+                        "model": "xgboost",
+                        "status": "failed",
+                        "error": {
+                            "code": "model_failed",
+                            "message": "Traceback (most recent call last): SECRET_TOKEN sk-123456 col_a,col_b\n1,2 C:\\secrets\\rows.csv",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps({"experiment_id": "exp-suite-redaction", "items": []}, ensure_ascii=False),
+        json.dumps(
+            {
+                "strict_status": "not_comparable",
+                "approximate_status": "insufficient_metrics",
+                "items": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    report = result["markdown_report"]
+
+    assert "safe_error=model_failed:" in report
+    assert "details redacted for privacy" in report
+    for sentinel in SECRET_SENTINELS[1:]:
+        assert sentinel not in report

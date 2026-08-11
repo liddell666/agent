@@ -146,10 +146,13 @@ def main(body: str) -> dict:
 def _suite_request_code() -> str:
     return """import json
 import math
+import re
 
-FIELDS = ("dataset", "split", "dataset_id", "test_size", "random_state", "train_rows", "test_rows", "test_digest")
 ALIASES = {"auc": "roc_auc", "roc_auc": "roc_auc"}
 SUPPORTED = {"roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"}
+QUALIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}$")
+EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
+SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 def object_or_empty(value):
     try:
@@ -175,6 +178,53 @@ def metric_name(metric):
     normalized = ALIASES.get(normalized, normalized)
     return normalized if normalized in SUPPORTED else None
 
+def safe_qualifier(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if QUALIFIER_RE.fullmatch(candidate) else None
+
+def safe_digest(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if SHA256_RE.fullmatch(candidate) else None
+
+def safe_experiment_id(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if EXPERIMENT_ID_RE.fullmatch(candidate) else None
+
+def safe_score(value):
+    parsed = safe_number(value)
+    return parsed if parsed is not None and 0 <= parsed <= 1 else None
+
+def safe_fraction(value):
+    parsed = safe_number(value)
+    return parsed if parsed is not None and 0 < parsed < 1 else None
+
+def safe_int(value, minimum, maximum):
+    if isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, float):
+            if not value.is_integer():
+                return None
+            parsed = int(value)
+        elif isinstance(value, int):
+            parsed = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            parsed = int(text)
+        else:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return parsed if minimum <= parsed <= maximum else None
+
 def main(dossier_json: str, experiment_json: str) -> dict:
     dossier = object_or_empty(dossier_json)
     suite = object_or_empty(experiment_json)
@@ -187,16 +237,28 @@ def main(dossier_json: str, experiment_json: str) -> dict:
         ):
             continue
         name = metric_name(metric)
-        reported_value = safe_number(metric.get("reported_value"))
+        reported_value = safe_score(metric.get("reported_value"))
         if name is None or reported_value is None:
             continue
         item = {"name": name, "reported_value": reported_value}
-        for field in FIELDS:
-            value = metric.get(field)
-            if value is not None:
-                item[field] = value
+        if (dataset := safe_qualifier(metric.get("dataset"))) is not None:
+            item["dataset"] = dataset
+        if (split := safe_qualifier(metric.get("split"))) is not None:
+            item["split"] = split
+        if (dataset_id := safe_digest(metric.get("dataset_id"))) is not None:
+            item["dataset_id"] = dataset_id
+        if (test_size := safe_fraction(metric.get("test_size"))) is not None:
+            item["test_size"] = test_size
+        if (random_state := safe_int(metric.get("random_state"), 0, 2147483647)) is not None:
+            item["random_state"] = random_state
+        if (train_rows := safe_int(metric.get("train_rows"), 1, 1000000000)) is not None:
+            item["train_rows"] = train_rows
+        if (test_rows := safe_int(metric.get("test_rows"), 1, 1000000000)) is not None:
+            item["test_rows"] = test_rows
+        if (test_digest := safe_digest(metric.get("test_digest"))) is not None:
+            item["test_digest"] = test_digest
         reported.append(item)
-    experiment_id = suite.get("experiment_id")
+    experiment_id = safe_experiment_id(suite.get("experiment_id"))
     ok = isinstance(experiment_id, str) and bool(experiment_id.strip()) and bool(reported)
     request = {"experiment_id": experiment_id, "reported_metrics": reported} if ok else {}
     errors = [] if ok else [{"code": "invalid_suite_comparison_request", "message": "Suite experiment ID and unambiguous metrics are required."}]
@@ -231,6 +293,11 @@ def main(comparison_response_json: str) -> dict:
 
 def _suite_report_code() -> str:
     return """import json
+import re
+
+SAFE_ERROR_MESSAGES = {"bounded_failure"}
+SAFE_ERROR_REDACTION = "details redacted for privacy."
+SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 def object_or_empty(value):
     try:
@@ -254,6 +321,18 @@ def report_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value).replace("\\r", " ").replace("\\n", " ")
+
+def safe_error_code(value):
+    if not isinstance(value, str):
+        return "unavailable"
+    candidate = value.strip()
+    return candidate if SAFE_ERROR_CODE_RE.fullmatch(candidate) else "unavailable"
+
+def safe_error_message(value):
+    if not isinstance(value, str):
+        return SAFE_ERROR_REDACTION
+    candidate = value.strip()
+    return candidate if candidate in SAFE_ERROR_MESSAGES else SAFE_ERROR_REDACTION
 
 def results_list(suite):
     values = suite.get("results")
@@ -325,7 +404,7 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
             f"- comparison_reason={report_value(comparison_item.get('reason'))}, approximate_grade={report_value(assessment_item.get('grade'))}",
         ])
         if error:
-            lines.append(f"- safe_error={report_value(error.get('code'))}: {report_value(error.get('message'))}")
+            lines.append(f"- safe_error={safe_error_code(error.get('code'))}: {safe_error_message(error.get('message'))}")
     if not results_list(experiment):
         lines.append("- no suite results were available.")
     if performance_ranking or paper_distance_ranking:

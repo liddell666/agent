@@ -8,6 +8,13 @@ from dify.code.experiment_workflow import normalize_suite_inputs
 
 
 RAW_SENTINEL = "RAW_CSV_SECRET_07a1"
+SECRET_SENTINELS = (
+    RAW_SENTINEL,
+    "SECRET_TOKEN",
+    "Traceback (most recent call last):",
+    "sk-123456",
+    "col_a,col_b\n1,2",
+)
 
 
 def test_normalize_suite_inputs_returns_exact_safe_form_defaults() -> None:
@@ -132,8 +139,86 @@ def test_suite_request_only_forwards_experiment_id_and_supported_metric_provenan
     assert RAW_SENTINEL not in result["suite_comparison_request_json"]
 
 
+def test_suite_request_sanitizes_invalid_provenance_fields_without_echoing_raw_payloads() -> None:
+    dossier = json.dumps(
+        {
+            "metrics": [
+                {
+                    "name": "F1",
+                    "normalized_name": "f1",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.81,
+                    "dataset": "full sample",
+                    "split": "test",
+                    "dataset_id": "sha256:" + "3" * 64,
+                    "test_size": 0.25,
+                    "random_state": 7,
+                    "train_rows": 75,
+                    "test_rows": 25,
+                    "test_digest": "sha256:" + "4" * 64,
+                },
+                {
+                    "name": "Recall",
+                    "normalized_name": "recall",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.73,
+                    "dataset": "col_a,col_b\n1,2",
+                    "split": "Traceback (most recent call last):",
+                    "dataset_id": "sha256:" + "A" * 64,
+                    "test_size": "nan",
+                    "random_state": "sk-123456",
+                    "train_rows": -1,
+                    "test_rows": 0,
+                    "test_digest": "SECRET_TOKEN",
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+    suite = json.dumps(
+        {
+            "experiment_id": "exp-20260811t000000z-sanitized",
+            "results": [{"model": "random_forest", "status": "succeeded"}],
+        },
+        ensure_ascii=False,
+    )
+
+    result = build_suite_comparison_request(dossier, suite)
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"]) == {
+        "experiment_id": "exp-20260811t000000z-sanitized",
+        "reported_metrics": [
+            {
+                "name": "f1",
+                "reported_value": 0.81,
+                "dataset": "full sample",
+                "split": "test",
+                "dataset_id": "sha256:" + "3" * 64,
+                "test_size": 0.25,
+                "random_state": 7,
+                "train_rows": 75,
+                "test_rows": 25,
+                "test_digest": "sha256:" + "4" * 64,
+            },
+            {
+                "name": "recall",
+                "reported_value": 0.73,
+            },
+        ],
+    }
+    payload = json.dumps(result, ensure_ascii=False)
+    for sentinel in SECRET_SENTINELS:
+        assert sentinel not in payload
+
+
 def test_suite_request_returns_stable_error_without_echoing_invalid_input() -> None:
-    bad_suite = json.dumps({"experiment_id": "", "results": RAW_SENTINEL}, ensure_ascii=False)
+    bad_suite = json.dumps(
+        {"experiment_id": "exp-SECRET_TOKEN-sk-123456", "results": RAW_SENTINEL},
+        ensure_ascii=False,
+    )
     bad_dossier = json.dumps(
         {"metrics": [{"name": "accuracy", "supported": True, "ambiguous": False}]},
         ensure_ascii=False,
@@ -149,7 +234,9 @@ def test_suite_request_returns_stable_error_without_echoing_invalid_input() -> N
             "message": "Suite experiment ID and unambiguous metrics are required.",
         }
     ]
-    assert RAW_SENTINEL not in json.dumps(result, ensure_ascii=False)
+    payload = json.dumps(result, ensure_ascii=False)
+    for sentinel in SECRET_SENTINELS:
+        assert sentinel not in payload
 
 
 def test_format_suite_comparison_report_returns_six_strings_with_rankings_and_safe_failures() -> None:
@@ -316,9 +403,42 @@ def test_format_suite_comparison_report_returns_six_strings_with_rankings_and_sa
         "performance ranking",
         "paper-distance ranking",
         "cv_best_score",
-        "bounded_failure",
+        "safe_error=model_failed: bounded_failure",
         "paper metric is missing dataset identity",
         "not strict reproduction",
     ):
         assert required in report
     assert RAW_SENTINEL not in report
+
+
+def test_format_suite_comparison_report_redacts_arbitrary_backend_error_text() -> None:
+    result = format_suite_comparison_report(
+        json.dumps({"title": "Sentinel paper"}, ensure_ascii=False),
+        json.dumps({"valid": True}, ensure_ascii=False),
+        json.dumps(
+            {
+                "experiment_id": "exp-suite-redaction",
+                "status": "partial",
+                "results": [
+                    {
+                        "model": "xgboost",
+                        "status": "failed",
+                        "error": {
+                            "code": "model_failed",
+                            "message": "Traceback (most recent call last): SECRET_TOKEN sk-123456 col_a,col_b\n1,2 C:\\secrets\\rows.csv",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps({"experiment_id": "exp-suite-redaction", "items": []}, ensure_ascii=False),
+        json.dumps({"strict_status": "not_comparable", "approximate_status": "insufficient_metrics", "items": []}, ensure_ascii=False),
+    )
+
+    report = result["markdown_report"]
+
+    assert "safe_error=model_failed:" in report
+    assert "details redacted for privacy" in report
+    for sentinel in SECRET_SENTINELS[1:]:
+        assert sentinel not in report

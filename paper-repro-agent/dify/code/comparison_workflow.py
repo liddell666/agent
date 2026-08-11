@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 
 
 _COMPARE_FIELDS = (
@@ -71,6 +72,12 @@ _SUITE_SUPPORTED_METRICS = {
     "recall",
     "f1",
 }
+_SAFE_SUITE_ERROR_MESSAGES = {"bounded_failure"}
+_SAFE_SUITE_ERROR_REDACTION = "details redacted for privacy."
+_SAFE_SUITE_QUALIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}$")
+_SAFE_SUITE_EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
+_SAFE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _normalized_metric_name(value):
@@ -81,10 +88,70 @@ def _normalized_metric_name(value):
     return normalized if normalized in _SUITE_SUPPORTED_METRICS else None
 
 
+def _safe_suite_experiment_id(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _SAFE_SUITE_EXPERIMENT_ID_RE.fullmatch(candidate) else None
+
+
+def _safe_suite_qualifier(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _SAFE_SUITE_QUALIFIER_RE.fullmatch(candidate) else None
+
+
+def _safe_suite_digest(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _SAFE_SHA256_RE.fullmatch(candidate) else None
+
+
+def _safe_suite_score(value):
+    parsed = _number(value)
+    return parsed if parsed is not None and 0 <= parsed <= 1 else None
+
+
+def _safe_suite_fraction(value):
+    parsed = _number(value)
+    return parsed if parsed is not None and 0 < parsed < 1 else None
+
+
+def _safe_suite_int(value, minimum, maximum):
+    if isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, float):
+            if not value.is_integer():
+                return None
+            parsed = int(value)
+        elif isinstance(value, int):
+            parsed = value
+        elif isinstance(value, str):
+            candidate = value.strip()
+            if not candidate:
+                return None
+            parsed = int(candidate)
+        else:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return parsed if minimum <= parsed <= maximum else None
+
+
+def _safe_suite_error_code(value):
+    if not isinstance(value, str):
+        return "unavailable"
+    candidate = value.strip()
+    return candidate if _SAFE_ERROR_CODE_RE.fullmatch(candidate) else "unavailable"
+
+
 def build_suite_comparison_request(dossier_json, suite_json):
     dossier = _object(dossier_json, {})
     suite = _object(suite_json, {})
-    experiment_id = suite.get("experiment_id")
+    experiment_id = _safe_suite_experiment_id(suite.get("experiment_id"))
     reported = []
     metrics = dossier.get("metrics")
     if isinstance(metrics, list):
@@ -96,14 +163,28 @@ def build_suite_comparison_request(dossier_json, suite_json):
             ):
                 continue
             name = _normalized_metric_name(metric.get("normalized_name") or metric.get("name"))
-            reported_value = _number(metric.get("reported_value"))
+            reported_value = _safe_suite_score(metric.get("reported_value"))
             if name is None or reported_value is None:
                 continue
             item = {"name": name, "reported_value": reported_value}
-            for field in _COMPARE_FIELDS[1:]:
-                value = metric.get(field)
-                if value is not None:
-                    item[field] = value
+            if (dataset := _safe_suite_qualifier(metric.get("dataset"))) is not None:
+                item["dataset"] = dataset
+            if (split := _safe_suite_qualifier(metric.get("split"))) is not None:
+                item["split"] = split
+            if (dataset_id := _safe_suite_digest(metric.get("dataset_id"))) is not None:
+                item["dataset_id"] = dataset_id
+            if (test_size := _safe_suite_fraction(metric.get("test_size"))) is not None:
+                item["test_size"] = test_size
+            if (
+                random_state := _safe_suite_int(metric.get("random_state"), 0, 2_147_483_647)
+            ) is not None:
+                item["random_state"] = random_state
+            if (train_rows := _safe_suite_int(metric.get("train_rows"), 1, 1_000_000_000)) is not None:
+                item["train_rows"] = train_rows
+            if (test_rows := _safe_suite_int(metric.get("test_rows"), 1, 1_000_000_000)) is not None:
+                item["test_rows"] = test_rows
+            if (test_digest := _safe_suite_digest(metric.get("test_digest"))) is not None:
+                item["test_digest"] = test_digest
             reported.append(item)
     ok = isinstance(experiment_id, str) and bool(experiment_id.strip()) and bool(reported)
     request = {"experiment_id": experiment_id, "reported_metrics": reported} if ok else {}
@@ -164,9 +245,9 @@ def _assessment_map(assessment):
 
 def _safe_message(value):
     if not isinstance(value, str):
-        return "unavailable"
-    collapsed = " ".join(value.replace("\r", " ").replace("\n", " ").split())
-    return collapsed[:200] if collapsed else "unavailable"
+        return _SAFE_SUITE_ERROR_REDACTION
+    candidate = value.strip()
+    return candidate if candidate in _SAFE_SUITE_ERROR_MESSAGES else _SAFE_SUITE_ERROR_REDACTION
 
 
 def _ranking_list(value):
@@ -244,7 +325,7 @@ def format_suite_comparison_report(
         )
         if error:
             lines.append(
-                f"- safe_error={_report_value(error.get('code'))}: {_safe_message(error.get('message'))}"
+                f"- safe_error={_safe_suite_error_code(error.get('code'))}: {_safe_message(error.get('message'))}"
             )
     if not _suite_results(suite):
         lines.append("- no suite results were available.")
