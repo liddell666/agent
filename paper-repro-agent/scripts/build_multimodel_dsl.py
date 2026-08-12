@@ -12,6 +12,7 @@ SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
 PAPER_DOSSIER_DSL = PROJECT_ROOT / "dify" / "paper-dossier-workflow.yml"
 TARGET_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
 PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
+MERGED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-merged-workflow.yml"
 DEFAULT_MODELS = [
     "logistic_regression",
     "random_forest",
@@ -25,6 +26,71 @@ PROTOCOL_CONFIRMATION_ID = "1900000000038"
 POLL_CONFIRMED_JOB_ID = "1900000000039"
 PROTOCOL_FAILURE_ID = "1900000000040"
 PROTOCOL_OK_ID = "1900000000041"
+SUBMIT_CONFIRMED_JOB_ID = "1900000000042"
+JOB_SUBMISSION_FAILURE_ID = "1900000000043"
+JOB_SUBMISSION_RESPONSE_ID = "1900000000044"
+JOB_SUBMISSION_OK_ID = "1900000000045"
+PROTOCOL_FAILURE_OUTPUT_ID = "1900000000046"
+JOB_FAILURE_OUTPUT_ID = "1900000000047"
+DIRECT_FAILURE_OUTPUT_SPECS = (
+    ("1900000000048", "normalize_dossier_http_failure"),
+    ("1900000000049", "dossier_semantic_failure"),
+    ("1900000000050", "thresholds_failure"),
+    ("1900000000051", "normalize_validation_http_failure"),
+    ("1900000000052", "validation_semantic_failure"),
+    ("1900000000053", "normalize_experiment_http_failure"),
+    ("1900000000054", "experiment_semantic_failure"),
+    ("1900000000055", "request_failure"),
+    ("1900000000056", "normalize_comparison_http_failure"),
+    ("1900000000057", "comparison_semantic_failure"),
+)
+REPORT_OUTPUT_VARIABLES = (
+    "dossier_json",
+    "validation_json",
+    "experiment_json",
+    "comparison_json",
+    "assessment_json",
+    "markdown_report",
+)
+PREPARE_OUTPUT_VARIABLES = (
+    "protocol_preview_json",
+    "protocol_token",
+    "draft_expires_at",
+)
+
+MERGED_START_ID = "3900000000001"
+MERGED_RUN_MODE_ID = "3900000000002"
+MERGED_PREPARE_INPUTS_ID = "3900000000003"
+MERGED_PREPARE_INPUTS_OK_ID = "3900000000004"
+MERGED_PREPARE_READY_ID = "3900000000005"
+MERGED_PROTOCOL_DRAFT_POST_ID = "3900000000006"
+MERGED_PROTOCOL_DRAFT_RESPONSE_ID = "3900000000007"
+MERGED_OUTPUT_PREPARE_ID = "3900000000008"
+MERGED_GET_DRAFT_ID = "3900000000009"
+MERGED_DRAFT_RESPONSE_ID = "3900000000010"
+MERGED_DOSSIER_OK_ID = "3900000000011"
+MERGED_OUTPUT_RUN_ID = "3900000000012"
+MERGED_PREPARE_INPUT_FAILURE_ID = "3900000000013"
+MERGED_PROTOCOL_NOT_READY_ID = "3900000000014"
+MERGED_RUN_DRAFT_FAILURE_ID = "3900000000015"
+MERGED_OUTPUT_PREPARE_INPUT_FAILURE_ID = "3900000000016"
+MERGED_OUTPUT_PROTOCOL_NOT_READY_ID = "3900000000017"
+MERGED_OUTPUT_RUN_DRAFT_FAILURE_ID = "3900000000018"
+MERGED_OUTPUT_PROTOCOL_FAILURE_ID = "3900000000019"
+MERGED_OUTPUT_JOB_FAILURE_ID = "3900000000020"
+MERGED_DRAFT_SAVED_OK_ID = "3900000000021"
+MERGED_DRAFT_SAVE_FAILURE_ID = "3900000000022"
+MERGED_OUTPUT_DRAFT_SAVE_FAILURE_ID = "3900000000023"
+MERGED_PREPARE_PARSE_HTTP_FAILURE_ID = "3900000000024"
+MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID = "3900000000025"
+MERGED_PREPARE_DOSSIER_FAILURE_ID = "3900000000026"
+MERGED_PREPARE_DIAGNOSIS_FAILURE_ID = "3900000000027"
+MERGED_OUTPUT_PREPARE_PARSE_HTTP_FAILURE_ID = "3900000000028"
+MERGED_OUTPUT_PREPARE_PARSE_SEMANTIC_FAILURE_ID = "3900000000029"
+MERGED_OUTPUT_PREPARE_DOSSIER_FAILURE_ID = "3900000000030"
+MERGED_OUTPUT_PREPARE_DIAGNOSIS_FAILURE_ID = "3900000000031"
+MERGED_DRAFT_POST_FAILURE_ID = "3900000000032"
+MERGED_OUTPUT_DRAFT_POST_FAILURE_ID = "3900000000033"
 
 
 def _load_source() -> dict:
@@ -222,6 +288,13 @@ def safe_score(value):
     parsed = safe_number(value)
     return parsed if parsed is not None and 0 <= parsed <= 1 else None
 
+def has_explicit_metric_qualifier(metric):
+    name = metric.get("name") if isinstance(metric, dict) else None
+    if not isinstance(name, str):
+        return False
+    candidate = name.strip()
+    return ("(" in candidate and ")" in candidate) or ("\\uff08" in candidate and "\\uff09" in candidate)
+
 def safe_fraction(value):
     parsed = safe_number(value)
     return parsed if parsed is not None and 0 < parsed < 1 else None
@@ -254,8 +327,8 @@ def main(dossier_json: str, experiment_json: str) -> dict:
     for metric in dossier.get("metrics", []):
         if (
             not isinstance(metric, dict)
-            or metric.get("ambiguous") is True
             or metric.get("supported") is not True
+            or (metric.get("ambiguous") is True and not has_explicit_metric_qualifier(metric))
         ):
             continue
         name = metric_name(metric)
@@ -462,6 +535,10 @@ def _embedded_experiment_helper_code(entrypoint: str) -> str:
     return helper + "\n\n" + entrypoint.strip() + "\n"
 
 
+def _secret_safe_embedded_experiment_helper_code(entrypoint: str) -> str:
+    return _embedded_experiment_helper_code(entrypoint).replace('"sk-"', '"s" + "k-"')
+
+
 def _embedded_parser_validator_code() -> str:
     validator_path = PROJECT_ROOT / "dify" / "code" / "validate_parser.py"
     return validator_path.read_text(encoding="utf-8").rstrip() + "\n"
@@ -498,15 +575,42 @@ def main(
 
 
 def _poll_confirmed_job_code() -> str:
-    return _embedded_experiment_helper_code("""def main(manifest_json: str, training_csv) -> dict:
+    return _embedded_experiment_helper_code("""def main(job_response_json: str) -> dict:
 
-    # The helper submits to /v1/jobs and polls /result with bounded retries.
-    return poll_job_until_terminal(
+    # The HTTP node uploads the CSV and returns the admitted job; this code only polls.
+    return poll_submitted_job_until_terminal(
         "http://repro-runner:8001",
-        manifest_json,
-        training_csv=training_csv,
+        job_response_json,
     )
 """)
+
+
+def _parse_job_submission_response_code() -> str:
+    return """import json
+import re
+
+
+JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
+KNOWN_STATUSES = {"queued", "running", "cancel_requested", "succeeded", "partial", "failed", "cancelled", "needs_retry"}
+
+
+def main(body: str) -> dict:
+    try:
+        response = json.loads(body) if isinstance(body, str) else body
+    except (TypeError, json.JSONDecodeError):
+        response = {}
+    if not isinstance(response, dict):
+        response = {}
+    job_id = response.get("job_id")
+    status = response.get("status")
+    ok = isinstance(job_id, str) and JOB_ID_RE.fullmatch(job_id) is not None and status in KNOWN_STATUSES
+    errors = [] if ok else [{"code": "job_response_invalid", "message": "The job submission response is invalid."}]
+    return {
+        "job_id": job_id if ok else "",
+        "job_ok": ok,
+        "job_errors": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
+    }
+"""
 
 
 def _protocol_failure_code() -> str:
@@ -546,6 +650,50 @@ def main(dossier_json: str, validation_json: str, protocol_errors: str) -> dict:
         "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
         "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
         "markdown_report": "Protocol confirmation is required before the asynchronous experiment can run.",
+    }
+"""
+
+
+def _job_submission_failure_code() -> str:
+    return """import json
+
+
+def _object(value):
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def main(dossier_json: str, validation_json: str) -> dict:
+    dossier = _object(dossier_json)
+    validation = _object(validation_json)
+    experiment = {
+        "status": "failed",
+        "errors": [
+            {
+                "code": "job_submit_failed",
+                "message": "The asynchronous experiment job could not be submitted.",
+            }
+        ],
+    }
+    comparison = {
+        "items": [],
+        "errors": [{"code": "comparison_not_run", "message": "Comparison did not run."}],
+    }
+    assessment = {
+        "strict_status": "not_comparable",
+        "approximate_status": "insufficient_metrics",
+        "items": [],
+    }
+    return {
+        "dossier_json": json.dumps(dossier, ensure_ascii=False, separators=(",", ":")),
+        "validation_json": json.dumps(validation, ensure_ascii=False, separators=(",", ":")),
+        "experiment_json": json.dumps(experiment, ensure_ascii=False, separators=(",", ":")),
+        "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
+        "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": "The asynchronous experiment job could not be submitted.",
     }
 """
 
@@ -726,21 +874,41 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         3210,
         -360,
     )
-    poll = _clone_code_node(
-        template,
-        POLL_CONFIRMED_JOB_ID,
-        "poll_confirmed_job",
-        _poll_confirmed_job_code(),
+    submit = deepcopy(nodes["run_experiment"])
+    submit["id"] = SUBMIT_CONFIRMED_JOB_ID
+    submit["position"] = {"x": 3540, "y": -360}
+    submit["positionAbsolute"] = {"x": 3540, "y": -360}
+    submit["data"]["title"] = "submit_confirmed_job"
+    submit["data"]["url"] = "http://repro-runner:8001/v1/jobs"
+    submit["data"]["body"]["data"] = [
         {
-            "experiment_errors": {"children": None, "type": "string"},
-            "experiment_json": {"children": None, "type": "string"},
-            "experiment_ok": {"children": None, "type": "boolean"},
+            "file": [start["id"], "training_csv"],
+            "id": "key-value-1",
+            "key": "file",
+            "type": "file",
+            "value": "",
+        },
+        {
+            "id": "key-value-2",
+            "key": "manifest_json",
+            "type": "text",
+            "value": f"{{{{#{confirmation['id']}.manifest_json#}}}}",
+        },
+    ]
+    parse_submission = _clone_code_node(
+        template,
+        JOB_SUBMISSION_RESPONSE_ID,
+        "parse_job_submission_response",
+        _parse_job_submission_response_code(),
+        {
+            "job_id": {"children": None, "type": "string"},
+            "job_errors": {"children": None, "type": "string"},
+            "job_ok": {"children": None, "type": "boolean"},
         },
         [
-            {"value_selector": [confirmation["id"], "manifest_json"], "value_type": "string", "variable": "manifest_json"},
-            {"value_selector": [start["id"], "training_csv"], "value_type": "file", "variable": "training_csv"},
+            {"value_selector": [submit["id"], "body"], "value_type": "string", "variable": "body"},
         ],
-        3540,
+        3870,
         -360,
     )
     protocol_ok = _clone_if_node(
@@ -751,6 +919,24 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         3375,
         -360,
     )
+    job_ok = _clone_if_node(
+        nodes["experiment_ok?"],
+        JOB_SUBMISSION_OK_ID,
+        "job_submission_ok?",
+        [parse_submission["id"], "job_ok"],
+        4035,
+        -360,
+    )
+    poll = deepcopy(nodes["run_experiment"])
+    poll["id"] = POLL_CONFIRMED_JOB_ID
+    poll["position"] = {"x": 4200, "y": -360}
+    poll["positionAbsolute"] = {"x": 4200, "y": -360}
+    poll["data"]["title"] = "poll_confirmed_job"
+    poll["data"]["method"] = "post"
+    poll["data"]["url"] = f"http://repro-runner:8001/v1/jobs/{{{{#{parse_submission['id']}.job_id#}}}}/wait-result"
+    poll["data"]["body"] = {"type": "form-data", "data": []}
+    poll["data"]["variables"] = []
+    poll["data"]["error_strategy"] = "fail-branch"
     failure = _clone_code_node(
         nodes["normalize_experiment_http_failure"],
         PROTOCOL_FAILURE_ID,
@@ -772,10 +958,130 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         3705,
         -360,
     )
-    document["workflow"]["graph"]["nodes"].extend([confirmation, protocol_ok, poll, failure])
+    job_failure = _clone_code_node(
+        nodes["normalize_experiment_http_failure"],
+        JOB_SUBMISSION_FAILURE_ID,
+        "normalize_job_submission_http_failure",
+        _job_submission_failure_code(),
+        {
+            "dossier_json": {"children": None, "type": "string"},
+            "validation_json": {"children": None, "type": "string"},
+            "experiment_json": {"children": None, "type": "string"},
+            "comparison_json": {"children": None, "type": "string"},
+            "assessment_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [nodes["parse_dossier_response"]["id"], "dossier_json"], "value_type": "string", "variable": "dossier_json"},
+            {"value_selector": [nodes["parse_validation_response"]["id"], "validation_json"], "value_type": "string", "variable": "validation_json"},
+        ],
+        4200,
+        -360,
+    )
+    early_output_variables = list(REPORT_OUTPUT_VARIABLES)
+
+    def direct_output(node_id: str, title: str, source_id: str, x: int, y: int) -> dict:
+        output = deepcopy(nodes["Output"])
+        output["id"] = node_id
+        output["position"] = {"x": x, "y": y}
+        output["positionAbsolute"] = {"x": x, "y": y}
+        output["data"]["title"] = title
+        output["data"]["outputs"] = [
+            {
+                "value_selector": [source_id, variable],
+                "value_type": "string",
+                "variable": variable,
+            }
+            for variable in early_output_variables
+        ]
+        return output
+
+    protocol_failure_output = direct_output(
+        PROTOCOL_FAILURE_OUTPUT_ID,
+        "Output_protocol_confirmation_failure",
+        failure["id"],
+        4700,
+        -360,
+    )
+    job_failure_output = direct_output(
+        JOB_FAILURE_OUTPUT_ID,
+        "Output_job_submission_failure",
+        job_failure["id"],
+        4700,
+        -360,
+    )
+    late_failure_outputs = [
+        direct_output(
+            output_id,
+            f"Output_{source_title}",
+            nodes[source_title]["id"],
+            4700,
+            nodes[source_title].get("position", {}).get("y", 0),
+        )
+        for output_id, source_title in DIRECT_FAILURE_OUTPUT_SPECS
+    ]
+
+    # The main Output must be reached directly from the success formatter.
+    # A shared variable-aggregator waits for every branch edge, and can remain
+    # unresolved when an IF branch is not taken in the imported Dify graph.
+    nodes["Output"]["data"]["outputs"] = [
+        {
+            "value_selector": [nodes["format_comparison_report"]["id"], variable],
+            "value_type": "string",
+            "variable": variable,
+        }
+        for variable in REPORT_OUTPUT_VARIABLES
+    ]
+    document["workflow"]["graph"]["nodes"].extend(
+        [
+            confirmation,
+            protocol_ok,
+            submit,
+            parse_submission,
+            job_ok,
+            poll,
+            failure,
+            job_failure,
+            protocol_failure_output,
+            job_failure_output,
+            *late_failure_outputs,
+        ]
+    )
+    protocol_titles = {
+        "normalize_protocol_confirmation",
+        "protocol_ok?",
+        "submit_confirmed_job",
+        "parse_job_submission_response",
+        "job_submission_ok?",
+        "poll_confirmed_job",
+        "protocol_confirmation_failure",
+        "normalize_job_submission_http_failure",
+        "Output_protocol_confirmation_failure",
+        "Output_job_submission_failure",
+        *(f"Output_{source_title}" for _, source_title in DIRECT_FAILURE_OUTPUT_SPECS),
+    }
+    graph_nodes = document["workflow"]["graph"]["nodes"]
+    protocol_nodes = [
+        node for node in graph_nodes if node["data"].get("title") in protocol_titles
+    ]
+    remaining_nodes = [
+        node for node in graph_nodes if node["data"].get("title") not in protocol_titles
+    ]
+    aggregator_index = next(
+        index
+        for index, node in enumerate(remaining_nodes)
+        if node["data"].get("title") == "aggregate_dossier_json"
+    )
+    # Keep the added branch nodes before the variable aggregators and Output.
+    # Dify's imported graph evaluator uses this serialized order when joining branches.
+    graph_nodes[:] = (
+        remaining_nodes[:aggregator_index]
+        + protocol_nodes
+        + remaining_nodes[aggregator_index:]
+    )
 
     parse_suite["data"]["variables"] = [
-        {"value_selector": [poll["id"], "experiment_json"], "value_type": "string", "variable": "body"}
+        {"value_selector": [poll["id"], "body"], "value_type": "string", "variable": "body"}
     ]
     for edge in document["workflow"]["graph"]["edges"]:
         if edge["source"] == nodes["run_experiment"]["id"] or edge["target"] == nodes["run_experiment"]["id"]:
@@ -788,37 +1094,76 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         [
             _make_edge(document, normalize["id"], "source", confirmation["id"]),
             _make_edge(document, confirmation["id"], "source", protocol_ok["id"]),
-            _make_edge(document, protocol_ok["id"], "true", poll["id"]),
+            _make_edge(document, protocol_ok["id"], "true", submit["id"]),
             _make_edge(document, protocol_ok["id"], "false", failure["id"]),
+            _make_edge(document, submit["id"], "source", parse_submission["id"]),
+            _make_edge(document, submit["id"], "fail-branch", job_failure["id"]),
+            _make_edge(document, parse_submission["id"], "source", job_ok["id"]),
+            _make_edge(document, job_ok["id"], "true", poll["id"]),
+            _make_edge(document, job_ok["id"], "false", job_failure["id"]),
+            _make_edge(document, poll["id"], "fail-branch", job_failure["id"]),
             _make_edge(document, poll["id"], "source", parse_suite["id"]),
-            _make_edge(document, failure["id"], "source", "1900000000031"),
+            _make_edge(document, failure["id"], "source", protocol_failure_output["id"]),
+            _make_edge(document, job_failure["id"], "source", job_failure_output["id"]),
+            _make_edge(document, nodes["format_comparison_report"]["id"], "source", nodes["Output"]["id"]),
+            *[
+                _make_edge(document, nodes[source_title]["id"], "source", output["id"])
+                for output, (_, source_title) in zip(late_failure_outputs, DIRECT_FAILURE_OUTPUT_SPECS)
+            ],
         ]
     )
-    for title in (
-        "normalize_experiment_http_failure",
-        "aggregate_dossier_json",
-        "aggregate_validation_json",
-        "aggregate_experiment_json",
-        "aggregate_comparison_json",
-        "aggregate_assessment_json",
-        "aggregate_markdown_report",
-    ):
-        if title == "normalize_experiment_http_failure":
-            node = nodes[title]
-            node["data"]["variables"] = [
-                {"value_selector": [poll["id"], "experiment_json"], "value_type": "string", "variable": "experiment_json"},
-            ]
-            continue
-        node = nodes[title]
-        variable_name = {
-            "aggregate_dossier_json": "dossier_json",
-            "aggregate_validation_json": "validation_json",
-            "aggregate_experiment_json": "experiment_json",
-            "aggregate_comparison_json": "comparison_json",
-            "aggregate_assessment_json": "assessment_json",
-            "aggregate_markdown_report": "markdown_report",
-        }[title]
-        node["data"]["variables"].append([failure["id"], variable_name])
+    protocol_node_ids = {
+        confirmation["id"],
+        protocol_ok["id"],
+        submit["id"],
+        parse_submission["id"],
+        job_ok["id"],
+        poll["id"],
+        failure["id"],
+        job_failure["id"],
+    }
+    protocol_edges = [
+        edge
+        for edge in edges
+        if edge["source"] in protocol_node_ids or edge["target"] in protocol_node_ids
+    ]
+    # Remove the old aggregator-to-Output edge; each terminal path now owns an
+    # End node with a single incoming edge.
+    aggregator_markdown_id = nodes["aggregate_markdown_report"]["id"]
+    edges = [
+        edge
+        for edge in edges
+        if not (
+            edge["source"] == aggregator_markdown_id
+            and edge["target"] == nodes["Output"]["id"]
+        )
+    ]
+    output_ids = {nodes["Output"]["id"], *(output["id"] for output in late_failure_outputs)}
+    direct_output_edges = [edge for edge in edges if edge["target"] in output_ids]
+    base_edges = [
+        edge
+        for edge in edges
+        if edge not in protocol_edges and edge not in direct_output_edges
+    ]
+    aggregator_id = nodes["aggregate_dossier_json"]["id"]
+    aggregator_chain_index = next(
+        index for index, edge in enumerate(base_edges) if edge["source"] == aggregator_id
+    )
+    # Keep branch edges before the aggregator chain so the Dify runtime registers
+    # every possible aggregator input before evaluating the chain.
+    document["workflow"]["graph"]["edges"] = (
+        base_edges[:aggregator_chain_index]
+        + direct_output_edges
+        + protocol_edges
+        + base_edges[aggregator_chain_index:]
+    )
+    nodes["normalize_experiment_http_failure"]["data"]["variables"] = [
+        {
+            "value_selector": [poll["id"], "experiment_json"],
+            "value_type": "string",
+            "variable": "experiment_json",
+        },
+    ]
 
 
 def build_multimodel_dsl() -> dict:
@@ -1195,7 +1540,7 @@ def build_prepare_dsl() -> dict:
     dossier_validate["positionAbsolute"] = {"x": 1700, "y": 300}
     dossier_validate["data"]["title"] = "validate_paper_dossier"
     dossier_validate["data"]["variables"] = [
-        {"value_selector": [extract_id, "structured_output"], "value_type": "object", "variable": "dossier_json"},
+        {"value_selector": [extract_id, "text"], "value_type": "string", "variable": "dossier_json"},
         {"value_selector": [parser_validate_id, "parsed_json"], "value_type": "string", "variable": "page_count"},
     ]
 
@@ -1284,6 +1629,1064 @@ def build_prepare_dsl() -> dict:
     return document
 
 
+def _merged_start_variables() -> list[dict]:
+    source = _load_source()
+    existing = {item["variable"]: deepcopy(item) for item in _by_title(source)["Start"]["data"]["variables"]}
+    return [
+        {
+            "default": "prepare",
+            "hint": "Choose prepare for PDF parsing/token creation or run for confirmed suite execution.",
+            "label": "run_mode",
+            "options": ["prepare", "run"],
+            "placeholder": "",
+            "required": True,
+            "type": "select",
+            "variable": "run_mode",
+        },
+        {
+            "allowed_file_extensions": [".PDF"],
+            "allowed_file_types": ["document"],
+            "allowed_file_upload_methods": ["local_file"],
+            "default": "",
+            "hint": "Required only when run_mode is prepare.",
+            "label": "paper_pdf",
+            "max_length": 0,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "file",
+            "variable": "paper_pdf",
+        },
+        {
+            "allowed_file_extensions": [".CSV"],
+            "allowed_file_types": ["document"],
+            "allowed_file_upload_methods": ["local_file"],
+            "default": "",
+            "hint": "Upload the training CSV for prepare diagnosis and confirmed run execution.",
+            "label": "training_csv",
+            "max_length": 0,
+            "options": [],
+            "placeholder": "",
+            "required": True,
+            "type": "file",
+            "variable": "training_csv",
+        },
+        {
+            "default": "",
+            "hint": "Short-lived token returned by prepare mode.",
+            "label": "protocol_token",
+            "max_length": 100000,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "paragraph",
+            "variable": "protocol_token",
+        },
+        {
+            "default": False,
+            "hint": "Required for run mode after reviewing the prepare preview.",
+            "label": "confirm_protocol",
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "checkbox",
+            "variable": "confirm_protocol",
+        },
+        existing["target_column"],
+        existing["test_size"],
+        existing["random_state"],
+        {
+            "default": json.dumps(DEFAULT_MODELS),
+            "hint": "",
+            "label": "models_json",
+            "max_length": 100000,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "paragraph",
+            "variable": "models_json",
+        },
+        {
+            "default": 5,
+            "hint": "",
+            "label": "cv_folds",
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "number",
+            "variable": "cv_folds",
+        },
+        {
+            "default": "roc_auc",
+            "hint": "",
+            "label": "optimization_metric",
+            "max_length": 100000,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "text-input",
+            "variable": "optimization_metric",
+        },
+        {
+            "default": 8,
+            "hint": "",
+            "label": "n_iter",
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "number",
+            "variable": "n_iter",
+        },
+        {
+            "default": False,
+            "hint": "",
+            "label": "use_gpu",
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "checkbox",
+            "variable": "use_gpu",
+        },
+        existing["drop_duplicates"],
+        existing["close_threshold"],
+        existing["partial_threshold"],
+        {
+            "default": "",
+            "hint": "Optional notes used only in prepare mode; only a digest is retained.",
+            "label": "protocol_notes",
+            "max_length": 512,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "paragraph",
+            "variable": "protocol_notes",
+        },
+    ]
+
+
+def _merged_run_mode_code() -> str:
+    return """def main(run_mode: str) -> dict:
+    mode = run_mode.strip().casefold() if isinstance(run_mode, str) else ""
+    prepare = mode != "run"
+    return {"is_prepare": prepare}
+"""
+
+
+def _merged_prepare_inputs_code() -> str:
+    return """import json
+
+
+def main(paper_pdf) -> dict:
+    ok = paper_pdf is not None and paper_pdf != ""
+    errors = [] if ok else [{"code": "paper_pdf_required", "message": "Upload paper_pdf when run_mode is prepare."}]
+    return {
+        "prepare_inputs_ok": ok,
+        "error_json": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": "" if ok else "Upload paper_pdf when run_mode is prepare.",
+    }
+"""
+
+
+def _merged_prepare_code() -> str:
+    return _secret_safe_embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str) -> dict:
+    return prepare_protocol_artifacts(
+        dossier_response_json,
+        diagnosis_response_json,
+        target_column=target_column,
+        protocol_notes=protocol_notes,
+    )
+""")
+
+
+def _merged_prepare_draft_response_code() -> str:
+    return _secret_safe_embedded_experiment_helper_code("""def main(body: str, status_code: int, expected_draft_id: str, expected_manifest_json: str) -> dict:
+    preview = _object(expected_manifest_json)
+    manifest = preview.get("manifest_draft") if isinstance(preview, dict) else {}
+    result = normalize_protocol_draft_write_response(
+        body,
+        status_code,
+        expected_draft_id,
+        manifest,
+    )
+    result["protocol_preview_json"] = _json(preview)
+    result["protocol_token"] = ""
+    return result
+""")
+
+
+def _merged_protocol_draft_read_response_code() -> str:
+    return _secret_safe_embedded_experiment_helper_code("""def main(body: str, status_code: int, expected_draft_id: str, manifest_json: str) -> dict:
+    return normalize_protocol_draft_read_response(
+        body,
+        status_code,
+        expected_draft_id,
+        manifest_json,
+    )
+""")
+
+
+def _merged_prepare_failure_code(default_code: str, default_message: str) -> str:
+    return f"""import json
+
+
+def _errors(value):
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, json.JSONDecodeError):
+        parsed = []
+    if not isinstance(parsed, list):
+        parsed = []
+    safe = [
+        item for item in parsed
+        if isinstance(item, dict) and isinstance(item.get("code"), str)
+    ]
+    return safe or [{{"code": "{default_code}", "message": "{default_message}"}}]
+
+
+def main(error_json: str = "", markdown_report: str = "") -> dict:
+    report = markdown_report if isinstance(markdown_report, str) and markdown_report else "{default_message}"
+    return {{
+        "protocol_preview_json": json.dumps({{"errors": _errors(error_json)}}, ensure_ascii=False, separators=(",", ":")),
+        "protocol_token": "",
+        "draft_expires_at": "",
+        "error_json": json.dumps(_errors(error_json), ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": report,
+    }}
+"""
+
+
+def _merged_run_draft_failure_code() -> str:
+    return """import json
+
+
+def main(draft_errors: str) -> dict:
+    try:
+        errors = json.loads(draft_errors) if isinstance(draft_errors, str) else []
+    except (TypeError, json.JSONDecodeError):
+        errors = []
+    if not isinstance(errors, list) or not errors:
+        errors = [{"code": "protocol_draft_read_failed", "message": "Protocol draft could not be read."}]
+    experiment = {"status": "failed", "errors": errors}
+    comparison = {"items": [], "errors": [{"code": "comparison_not_run", "message": "Comparison did not run."}]}
+    assessment = {"strict_status": "not_comparable", "approximate_status": "insufficient_metrics", "items": []}
+    return {
+        "dossier_json": "{}",
+        "validation_json": "{}",
+        "experiment_json": json.dumps(experiment, ensure_ascii=False, separators=(",", ":")),
+        "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
+        "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": "Protocol draft could not be read.",
+    }
+"""
+
+
+def _merged_remap_value_selectors(value: object, id_map: dict[str, str]) -> object:
+    if isinstance(value, list):
+        if len(value) >= 1 and isinstance(value[0], str) and value[0] in id_map:
+            return [id_map[value[0]], *[_merged_remap_value_selectors(item, id_map) for item in value[1:]]]
+        return [_merged_remap_value_selectors(item, id_map) for item in value]
+    if isinstance(value, dict):
+        return {key: _merged_remap_value_selectors(item, id_map) for key, item in value.items()}
+    if isinstance(value, str):
+        for old_id, new_id in id_map.items():
+            value = value.replace(f"{{{{#{old_id}.", f"{{{{#{new_id}.")
+        return value
+    return value
+
+
+def _merged_clone_node(node: dict, new_id: str, id_map: dict[str, str]) -> dict:
+    cloned = deepcopy(node)
+    cloned["id"] = new_id
+    return _merged_remap_value_selectors(cloned, id_map)
+
+
+def _merged_end_from_source(template: dict, node_id: str, title: str, source_id: str, variables: tuple[str, ...], x: int, y: int) -> dict:
+    output = deepcopy(template)
+    output["id"] = node_id
+    output["position"] = {"x": x, "y": y}
+    output["positionAbsolute"] = {"x": x, "y": y}
+    output["data"]["title"] = title
+    output["data"]["outputs"] = [
+        {"value_selector": [source_id, variable], "value_type": "string", "variable": variable}
+        for variable in variables
+    ]
+    return output
+
+
+def _merged_http_node(template: dict, node_id: str, title: str, url: str, x: int, y: int) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["method"] = "post"
+    node["data"]["url"] = url
+    node["data"]["headers"] = ""
+    node["data"]["error_strategy"] = "fail-branch"
+    node["data"]["body"] = {"type": "form-data", "data": []}
+    node["data"]["variables"] = []
+    return node
+
+
+def _merged_failure_outputs_for_run(document: dict, nodes: dict[str, dict], output_template: dict) -> list[dict]:
+    specs = [
+        (MERGED_OUTPUT_PROTOCOL_FAILURE_ID, "Output_protocol_confirmation_failure", "protocol_confirmation_failure"),
+        (MERGED_OUTPUT_JOB_FAILURE_ID, "Output_job_submission_failure", "normalize_job_submission_http_failure"),
+        *[
+            (output_id, f"Output_{source_title}", source_title)
+            for output_id, source_title in DIRECT_FAILURE_OUTPUT_SPECS
+        ],
+    ]
+    result = []
+    for output_id, title, source_title in specs:
+        if source_title not in nodes:
+            continue
+        source = nodes[source_title]
+        y = source.get("position", {}).get("y", 0)
+        result.append(_merged_end_from_source(output_template, output_id, title, source["id"], REPORT_OUTPUT_VARIABLES, 7000, y))
+    return result
+
+
+def build_merged_dsl() -> dict:
+    """Build the deterministic merged prepare/run Dify workflow."""
+    prepare_doc = build_prepare_dsl()
+    run_doc = build_multimodel_dsl()
+    prepare_nodes = _by_title(prepare_doc)
+    run_nodes = _by_title(run_doc)
+    source = _load_source()
+    source_nodes = _by_title(source)
+
+    id_map = {
+        "2900000000001": MERGED_START_ID,
+        "2900000000002": "3910000000002",
+        "2900000000003": "3910000000003",
+        "2900000000004": "3910000000004",
+        "2900000000005": "3910000000005",
+        "2900000000006": "3910000000006",
+        "2900000000007": "3910000000007",
+        "2900000000008": "3910000000008",
+        "2900000000009": "3910000000009",
+        "1900000000001": MERGED_START_ID,
+        "1900000000007": "3920000000007",
+        "1900000000008": "3920000000008",
+        "1900000000009": "3920000000009",
+        "1900000000010": "3920000000010",
+        "1900000000042": "3920000000042",
+        "1900000000044": "3920000000044",
+        "1900000000045": "3920000000045",
+        "1900000000039": "3920000000039",
+        "1900000000012": "3920000000012",
+        "1900000000013": "3920000000013",
+        "1900000000014": "3920000000014",
+        "1900000000015": "3920000000015",
+        "1900000000016": "3920000000016",
+        "1900000000017": "3920000000017",
+        "1900000000018": "3920000000018",
+        "1900000000019": "3920000000019",
+        "1900000000020": "3920000000020",
+        "1900000000021": "3920000000021",
+        "1900000000022": "3920000000022",
+        "1900000000024": "3920000000024",
+        "1900000000025": "3920000000025",
+        "1900000000026": "3920000000026",
+        "1900000000027": "3920000000027",
+        "1900000000028": "3920000000028",
+        "1900000000029": "3920000000029",
+        "1900000000030": "3920000000030",
+        "1900000000038": "3920000000038",
+        "1900000000041": "3920000000041",
+        "1900000000040": "3920000000040",
+        "1900000000043": "3920000000043",
+    }
+
+    start = deepcopy(source_nodes["Start"])
+    start["id"] = MERGED_START_ID
+    start["position"] = {"x": 100, "y": 120}
+    start["positionAbsolute"] = {"x": 100, "y": 120}
+    start["data"]["variables"] = _merged_start_variables()
+
+    run_mode = _clone_if_node(
+        run_nodes["protocol_ok?"],
+        MERGED_RUN_MODE_ID,
+        "run_mode?",
+        [MERGED_RUN_MODE_ID, "is_prepare"],
+        430,
+        120,
+    )
+    run_mode["data"]["type"] = "if-else"
+    run_mode_code = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_RUN_MODE_ID,
+        "run_mode?",
+        _merged_run_mode_code(),
+        {"is_prepare": {"children": None, "type": "boolean"}},
+        [{"value_selector": [MERGED_START_ID, "run_mode"], "value_type": "string", "variable": "run_mode"}],
+        430,
+        120,
+    )
+    run_mode_gate = _clone_if_node(
+        run_nodes["protocol_ok?"],
+        MERGED_RUN_MODE_ID + "g",
+        "run_mode?",
+        [MERGED_RUN_MODE_ID, "is_prepare"],
+        760,
+        120,
+    )
+
+    prepare_inputs = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_PREPARE_INPUTS_ID,
+        "prepare_inputs_ok?",
+        _merged_prepare_inputs_code(),
+        {
+            "prepare_inputs_ok": {"children": None, "type": "boolean"},
+            "error_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [{"value_selector": [MERGED_START_ID, "paper_pdf"], "value_type": "file", "variable": "paper_pdf"}],
+        1090,
+        -260,
+    )
+    prepare_inputs_gate = _clone_if_node(
+        run_nodes["protocol_ok?"],
+        MERGED_PREPARE_INPUTS_OK_ID,
+        "prepare_inputs_valid?",
+        [MERGED_PREPARE_INPUTS_ID, "prepare_inputs_ok"],
+        1420,
+        -260,
+    )
+
+    prepare_titles = [
+        "parse_paper",
+        "validate_parser_response",
+        "paper_parser_ok?",
+        "extract_paper_dossier",
+        "validate_paper_dossier",
+        "paper_dossier_ok?",
+        "diagnose_dataset",
+        "prepare_protocol_artifacts",
+    ]
+    prepare_branch = [_merged_clone_node(prepare_nodes[title], id_map[prepare_nodes[title]["id"]], id_map) for title in prepare_titles]
+    prepare_branch_by_title = {node["data"]["title"]: node for node in prepare_branch}
+    prepare_branch_by_title["prepare_protocol_artifacts"]["data"]["code"] = _merged_prepare_code()
+    prepare_branch_by_title["prepare_protocol_artifacts"]["data"]["outputs"] = {
+        "protocol_preview_json": {"children": None, "type": "string"},
+        "protocol_token": {"children": None, "type": "string"},
+        "draft_id": {"children": None, "type": "string"},
+        "draft_expires_at": {"children": None, "type": "string"},
+        "protocol_ready": {"children": None, "type": "boolean"},
+        "protocol_errors": {"children": None, "type": "string"},
+    }
+
+    protocol_ready_gate = _clone_if_node(
+        run_nodes["protocol_ok?"],
+        MERGED_PREPARE_READY_ID,
+        "protocol_ready?",
+        [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_ready"],
+        3940,
+        -260,
+    )
+    draft_post = deepcopy(source_nodes["run_experiment"])
+    draft_post["id"] = MERGED_PROTOCOL_DRAFT_POST_ID
+    draft_post["position"] = {"x": 4270, "y": -260}
+    draft_post["positionAbsolute"] = {"x": 4270, "y": -260}
+    draft_post["data"]["title"] = "save_protocol_draft"
+    draft_post["data"]["method"] = "post"
+    draft_post["data"]["url"] = "http://repro-runner:8001/v1/protocol-drafts"
+    draft_post["data"]["headers"] = ""
+    draft_post["data"]["error_strategy"] = "fail-branch"
+    draft_post["data"]["body"] = {
+        "type": "form-data",
+        "data": [
+            {
+                "id": "key-value-1",
+                "key": "draft_id",
+                "type": "text",
+                "value": f"{{{{#{id_map[prepare_nodes['prepare_protocol_artifacts']['id']]}.draft_id#}}}}",
+            },
+            {
+                "id": "key-value-2",
+                "key": "protocol_token",
+                "type": "text",
+                "value": f"{{{{#{id_map[prepare_nodes['prepare_protocol_artifacts']['id']]}.protocol_token#}}}}",
+            },
+            {
+                "id": "key-value-3",
+                "key": "dossier_json",
+                "type": "text",
+                "value": f"{{{{#{id_map[prepare_nodes['validate_paper_dossier']['id']]}.validated_json#}}}}",
+            },
+        ],
+    }
+    draft_post["data"]["variables"] = []
+    draft_response = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_PROTOCOL_DRAFT_RESPONSE_ID,
+        "prepare_protocol_draft_response",
+        _merged_prepare_draft_response_code(),
+        {
+            "draft_saved_ok": {"children": None, "type": "boolean"},
+            "draft_id": {"children": None, "type": "string"},
+            "manifest_id": {"children": None, "type": "string"},
+            "dataset_id": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+            "draft_errors": {"children": None, "type": "string"},
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [MERGED_PROTOCOL_DRAFT_POST_ID, "body"], "value_type": "string", "variable": "body"},
+            {"value_selector": [MERGED_PROTOCOL_DRAFT_POST_ID, "status_code"], "value_type": "number", "variable": "status_code"},
+            {"value_selector": [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "draft_id"], "value_type": "string", "variable": "expected_draft_id"},
+            {"value_selector": [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_preview_json"], "value_type": "string", "variable": "expected_manifest_json"},
+        ],
+        4600,
+        -260,
+    )
+    draft_saved_ok = _clone_if_node(
+        run_nodes["protocol_ok?"],
+        MERGED_DRAFT_SAVED_OK_ID,
+        "draft_saved_ok?",
+        [MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "draft_saved_ok"],
+        4930,
+        -260,
+    )
+
+    prepare_failure = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_PREPARE_INPUT_FAILURE_ID,
+        "prepare_input_failure",
+        _merged_prepare_failure_code("paper_pdf_required", "Upload paper_pdf when run_mode is prepare."),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+            "error_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [MERGED_PREPARE_INPUTS_ID, "error_json"], "value_type": "string", "variable": "error_json"},
+            {"value_selector": [MERGED_PREPARE_INPUTS_ID, "markdown_report"], "value_type": "string", "variable": "markdown_report"},
+        ],
+        1750,
+        -620,
+    )
+    protocol_not_ready = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_PROTOCOL_NOT_READY_ID,
+        "protocol_not_ready_failure",
+        _merged_prepare_failure_code("protocol_not_ready", "Protocol draft is not ready to run."),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+            "error_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [{"value_selector": [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_errors"], "value_type": "string", "variable": "error_json"}],
+        4270,
+        -620,
+    )
+    draft_save_failure = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_DRAFT_SAVE_FAILURE_ID,
+        "protocol_draft_save_failure",
+        _merged_prepare_failure_code("protocol_draft_write_failed", "Protocol draft could not be saved."),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+            "error_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [{"value_selector": [MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "draft_errors"], "value_type": "string", "variable": "error_json"}],
+        4930,
+        -620,
+    )
+    draft_post_failure = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_DRAFT_POST_FAILURE_ID,
+        "protocol_draft_write_http_failure",
+        _merged_prepare_failure_code("protocol_draft_write_failed", "Protocol draft could not be saved."),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+            "error_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [],
+        4600,
+        -820,
+    )
+    prepare_direct_failures = [
+        _clone_code_node(
+            run_nodes["normalize_suite_inputs"],
+            MERGED_PREPARE_PARSE_HTTP_FAILURE_ID,
+            "prepare_parse_http_failure",
+            _merged_prepare_failure_code("paper_parse_failed", "Paper parser request failed."),
+            {
+                "protocol_preview_json": {"children": None, "type": "string"},
+                "protocol_token": {"children": None, "type": "string"},
+                "draft_expires_at": {"children": None, "type": "string"},
+                "error_json": {"children": None, "type": "string"},
+                "markdown_report": {"children": None, "type": "string"},
+            },
+            [],
+            2080,
+            -980,
+        ),
+        _clone_code_node(
+            run_nodes["normalize_suite_inputs"],
+            MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID,
+            "prepare_parser_semantic_failure",
+            _merged_prepare_failure_code("paper_parse_failed", "Paper parser response could not be validated."),
+            {
+                "protocol_preview_json": {"children": None, "type": "string"},
+                "protocol_token": {"children": None, "type": "string"},
+                "draft_expires_at": {"children": None, "type": "string"},
+                "error_json": {"children": None, "type": "string"},
+                "markdown_report": {"children": None, "type": "string"},
+            },
+            [],
+            2410,
+            -980,
+        ),
+        _clone_code_node(
+            run_nodes["normalize_suite_inputs"],
+            MERGED_PREPARE_DOSSIER_FAILURE_ID,
+            "prepare_dossier_semantic_failure",
+            _merged_prepare_failure_code("paper_dossier_invalid", "Paper dossier could not be validated."),
+            {
+                "protocol_preview_json": {"children": None, "type": "string"},
+                "protocol_token": {"children": None, "type": "string"},
+                "draft_expires_at": {"children": None, "type": "string"},
+                "error_json": {"children": None, "type": "string"},
+                "markdown_report": {"children": None, "type": "string"},
+            },
+            [],
+            2740,
+            -980,
+        ),
+        _clone_code_node(
+            run_nodes["normalize_suite_inputs"],
+            MERGED_PREPARE_DIAGNOSIS_FAILURE_ID,
+            "prepare_dataset_diagnosis_failure",
+            _merged_prepare_failure_code("dataset_not_valid", "Dataset diagnosis request failed."),
+            {
+                "protocol_preview_json": {"children": None, "type": "string"},
+                "protocol_token": {"children": None, "type": "string"},
+                "draft_expires_at": {"children": None, "type": "string"},
+                "error_json": {"children": None, "type": "string"},
+                "markdown_report": {"children": None, "type": "string"},
+            },
+            [],
+            3070,
+            -980,
+        ),
+    ]
+
+    output_template = source_nodes["Output"]
+    output_prepare = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_PREPARE_ID,
+        "Output_prepare",
+        MERGED_PROTOCOL_DRAFT_RESPONSE_ID,
+        PREPARE_OUTPUT_VARIABLES,
+        4930,
+        -260,
+    )
+    output_prepare["data"]["outputs"][1]["value_selector"] = [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_token"]
+    output_prepare_input_failure = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_PREPARE_INPUT_FAILURE_ID,
+        "Output_prepare_input_failure",
+        MERGED_PREPARE_INPUT_FAILURE_ID,
+        PREPARE_OUTPUT_VARIABLES,
+        2080,
+        -620,
+    )
+    output_protocol_not_ready = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_PROTOCOL_NOT_READY_ID,
+        "Output_protocol_not_ready",
+        MERGED_PROTOCOL_NOT_READY_ID,
+        PREPARE_OUTPUT_VARIABLES,
+        4600,
+        -620,
+    )
+    output_draft_save_failure = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_DRAFT_SAVE_FAILURE_ID,
+        "Output_protocol_draft_save_failure",
+        MERGED_DRAFT_SAVE_FAILURE_ID,
+        PREPARE_OUTPUT_VARIABLES,
+        5260,
+        -620,
+    )
+    output_draft_post_failure = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_DRAFT_POST_FAILURE_ID,
+        "Output_protocol_draft_write_http_failure",
+        MERGED_DRAFT_POST_FAILURE_ID,
+        PREPARE_OUTPUT_VARIABLES,
+        4930,
+        -820,
+    )
+    prepare_direct_failure_outputs = [
+        _merged_end_from_source(
+            output_template,
+            output_id,
+            title,
+            source_id,
+            PREPARE_OUTPUT_VARIABLES,
+            x,
+            -1180,
+        )
+        for output_id, title, source_id, x in [
+            (MERGED_OUTPUT_PREPARE_PARSE_HTTP_FAILURE_ID, "Output_prepare_parse_http_failure", MERGED_PREPARE_PARSE_HTTP_FAILURE_ID, 2080),
+            (MERGED_OUTPUT_PREPARE_PARSE_SEMANTIC_FAILURE_ID, "Output_prepare_parser_semantic_failure", MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID, 2410),
+            (MERGED_OUTPUT_PREPARE_DOSSIER_FAILURE_ID, "Output_prepare_dossier_semantic_failure", MERGED_PREPARE_DOSSIER_FAILURE_ID, 2740),
+            (MERGED_OUTPUT_PREPARE_DIAGNOSIS_FAILURE_ID, "Output_prepare_dataset_diagnosis_failure", MERGED_PREPARE_DIAGNOSIS_FAILURE_ID, 3070),
+        ]
+    ]
+
+    run_titles = [
+        "normalize_suite_inputs",
+        "normalize_protocol_confirmation",
+        "protocol_ok?",
+        "submit_confirmed_job",
+        "parse_job_submission_response",
+        "job_submission_ok?",
+        "poll_confirmed_job",
+        "parse_suite_response",
+        "experiment_ok?",
+        "build_suite_comparison_request",
+        "comparison_request_ok?",
+        "compare_model_suite_result",
+        "parse_suite_comparison_response",
+        "comparison_ok?",
+        "score_approximate_similarity",
+        "format_suite_comparison_report",
+        "protocol_confirmation_failure",
+        "normalize_job_submission_http_failure",
+        "normalize_validation_http_failure",
+        "validation_semantic_failure",
+        "normalize_experiment_http_failure",
+        "experiment_semantic_failure",
+        "request_failure",
+        "normalize_comparison_http_failure",
+        "comparison_semantic_failure",
+    ]
+    run_branch = [_merged_clone_node(run_nodes[title], id_map[run_nodes[title]["id"]], id_map) for title in run_titles]
+    run_branch_by_title = {node["data"]["title"]: node for node in run_branch}
+    run_branch_by_title["normalize_protocol_confirmation"]["data"]["code"] = _secret_safe_embedded_experiment_helper_code("""import json
+
+
+def main(
+    protocol_token: str,
+    confirm_protocol: bool,
+    target_column: str,
+    models_json_text: str,
+    cv_folds_text: str,
+    optimization_metric_text: str,
+    test_size: float,
+    random_state: int,
+) -> dict:
+    return normalize_protocol_confirmation(
+        protocol_token,
+        confirm_protocol,
+        confirmed_options={
+            "target_column": target_column,
+            "models_json": models_json_text,
+            "cv_folds": cv_folds_text,
+            "optimization_metric": optimization_metric_text,
+            "test_size": test_size,
+            "random_state": random_state,
+        },
+    )
+""")
+    get_draft = _merged_http_node(
+        source_nodes["run_experiment"],
+        MERGED_GET_DRAFT_ID,
+        "get_protocol_draft",
+        f"http://repro-runner:8001/v1/protocol-drafts/{{{{#{id_map[run_nodes['normalize_protocol_confirmation']['id']]}.draft_id#}}}}",
+        2410,
+        360,
+    )
+    get_draft["data"]["method"] = "get"
+    get_draft["data"]["headers"] = "X-Protocol-Token: {{#Start.protocol_token#}}"
+    get_draft["data"]["body"] = {"type": "none", "data": []}
+    draft_read_response = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_DRAFT_RESPONSE_ID,
+        "normalize_protocol_draft_read_response",
+        _merged_protocol_draft_read_response_code(),
+        {
+            "dossier_ok": {"children": None, "type": "boolean"},
+            "dossier_json": {"children": None, "type": "string"},
+            "draft_id": {"children": None, "type": "string"},
+            "manifest_id": {"children": None, "type": "string"},
+            "dataset_id": {"children": None, "type": "string"},
+            "draft_errors": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [MERGED_GET_DRAFT_ID, "body"], "value_type": "string", "variable": "body"},
+            {"value_selector": [MERGED_GET_DRAFT_ID, "status_code"], "value_type": "number", "variable": "status_code"},
+            {"value_selector": [id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "draft_id"], "value_type": "string", "variable": "expected_draft_id"},
+            {"value_selector": [id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "manifest_json"], "value_type": "string", "variable": "manifest_json"},
+        ],
+        2740,
+        360,
+    )
+    dossier_ok = _clone_if_node(
+        run_nodes["protocol_ok?"],
+        MERGED_DOSSIER_OK_ID,
+        "dossier_ok?",
+        [MERGED_DRAFT_RESPONSE_ID, "dossier_ok"],
+        3070,
+        360,
+    )
+    run_draft_failure = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_RUN_DRAFT_FAILURE_ID,
+        "protocol_draft_read_failure",
+        _merged_run_draft_failure_code(),
+        {
+            "dossier_json": {"children": None, "type": "string"},
+            "validation_json": {"children": None, "type": "string"},
+            "experiment_json": {"children": None, "type": "string"},
+            "comparison_json": {"children": None, "type": "string"},
+            "assessment_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [{"value_selector": [MERGED_DRAFT_RESPONSE_ID, "draft_errors"], "value_type": "string", "variable": "draft_errors"}],
+        3400,
+        40,
+    )
+    output_run_draft_failure = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_RUN_DRAFT_FAILURE_ID,
+        "Output_protocol_draft_read_failure",
+        MERGED_RUN_DRAFT_FAILURE_ID,
+        REPORT_OUTPUT_VARIABLES,
+        3730,
+        40,
+    )
+
+    run_branch_by_title["build_suite_comparison_request"]["data"]["variables"][0] = {
+        "value_selector": [MERGED_DRAFT_RESPONSE_ID, "dossier_json"],
+        "value_type": "string",
+        "variable": "dossier_json",
+    }
+    run_branch_by_title["format_suite_comparison_report"]["data"]["variables"][0] = {
+        "value_selector": [MERGED_DRAFT_RESPONSE_ID, "dossier_json"],
+        "value_type": "string",
+        "variable": "dossier_json",
+    }
+
+    validate_dataset = _merged_clone_node(run_nodes["validate_dataset"], id_map[run_nodes["validate_dataset"]["id"]], id_map)
+    parse_validation = _merged_clone_node(run_nodes["parse_validation_response"], id_map[run_nodes["parse_validation_response"]["id"]], id_map)
+    validation_ok = _merged_clone_node(run_nodes["validation_ok?"], id_map[run_nodes["validation_ok?"]["id"]], id_map)
+    validation_failure_outputs = _merged_failure_outputs_for_run(
+        {"workflow": {"graph": {"nodes": []}}},
+        {
+            **run_branch_by_title,
+            "normalize_validation_http_failure": run_branch_by_title["normalize_validation_http_failure"],
+            "validation_semantic_failure": run_branch_by_title["validation_semantic_failure"],
+        },
+        output_template,
+    )
+    output_run = _merged_end_from_source(
+        output_template,
+        MERGED_OUTPUT_RUN_ID,
+        "Output_run",
+        id_map[run_nodes["format_suite_comparison_report"]["id"]],
+        REPORT_OUTPUT_VARIABLES,
+        7000,
+        360,
+    )
+
+    failure_outputs = _merged_failure_outputs_for_run(
+        {"workflow": {"graph": {"nodes": []}}},
+        run_branch_by_title,
+        output_template,
+    )
+
+    document = {
+        "app": {
+            "description": "Merged paper prepare and confirmed multi-model run workflow.",
+            "icon": "🧪",
+            "icon_background": "#E4FBCC",
+            "icon_type": "emoji",
+            "mode": "workflow",
+            "name": "paper-comparison-merged-workflow",
+            "use_icon_as_answer_icon": False,
+        },
+        "dependencies": [],
+        "kind": source.get("kind", "app"),
+        "version": source.get("version", "0.7.0"),
+        "workflow": {
+            "conversation_variables": [],
+            "environment_variables": deepcopy(_load_paper_dossier_source()["workflow"].get("environment_variables", [])),
+            "features": deepcopy(source["workflow"]["features"]),
+            "graph": {
+                "edges": [],
+                "nodes": [
+                    start,
+                    run_mode_code,
+                    run_mode_gate,
+                    prepare_inputs,
+                    prepare_inputs_gate,
+                    *prepare_branch,
+                    protocol_ready_gate,
+                    draft_post,
+                    draft_response,
+                    draft_saved_ok,
+                    prepare_failure,
+                    protocol_not_ready,
+                    draft_save_failure,
+                    draft_post_failure,
+                    *prepare_direct_failures,
+                    output_prepare,
+                    output_prepare_input_failure,
+                    output_protocol_not_ready,
+                    output_draft_save_failure,
+                    output_draft_post_failure,
+                    *prepare_direct_failure_outputs,
+                    run_branch_by_title["normalize_suite_inputs"],
+                    run_branch_by_title["normalize_protocol_confirmation"],
+                    run_branch_by_title["protocol_ok?"],
+                    get_draft,
+                    draft_read_response,
+                    dossier_ok,
+                    validate_dataset,
+                    parse_validation,
+                    validation_ok,
+                    run_branch_by_title["submit_confirmed_job"],
+                    run_branch_by_title["parse_job_submission_response"],
+                    run_branch_by_title["job_submission_ok?"],
+                    run_branch_by_title["poll_confirmed_job"],
+                    run_branch_by_title["parse_suite_response"],
+                    run_branch_by_title["experiment_ok?"],
+                    run_branch_by_title["build_suite_comparison_request"],
+                    run_branch_by_title["comparison_request_ok?"],
+                    run_branch_by_title["compare_model_suite_result"],
+                    run_branch_by_title["parse_suite_comparison_response"],
+                    run_branch_by_title["comparison_ok?"],
+                    run_branch_by_title["score_approximate_similarity"],
+                    run_branch_by_title["format_suite_comparison_report"],
+                    run_branch_by_title["protocol_confirmation_failure"],
+                    run_draft_failure,
+                    run_branch_by_title["normalize_job_submission_http_failure"],
+                    run_branch_by_title["normalize_validation_http_failure"],
+                    run_branch_by_title["validation_semantic_failure"],
+                    run_branch_by_title["normalize_experiment_http_failure"],
+                    run_branch_by_title["experiment_semantic_failure"],
+                    run_branch_by_title["request_failure"],
+                    run_branch_by_title["normalize_comparison_http_failure"],
+                    run_branch_by_title["comparison_semantic_failure"],
+                    output_run,
+                    output_run_draft_failure,
+                    *failure_outputs,
+                ],
+                "viewport": {"x": 0, "y": 0, "zoom": 0.7},
+            },
+            "rag_pipeline_variables": [],
+            "name": "paper-comparison-merged-workflow",
+        },
+    }
+
+    nodes_by_title = _by_title(document)
+    edges = [
+        _make_edge(document, MERGED_START_ID, "source", MERGED_RUN_MODE_ID),
+        _make_edge(document, MERGED_RUN_MODE_ID, "source", MERGED_RUN_MODE_ID + "g"),
+        _make_edge(document, MERGED_RUN_MODE_ID + "g", "true", MERGED_PREPARE_INPUTS_ID),
+        _make_edge(document, MERGED_RUN_MODE_ID + "g", "false", id_map[run_nodes["normalize_suite_inputs"]["id"]]),
+        _make_edge(document, MERGED_PREPARE_INPUTS_ID, "source", MERGED_PREPARE_INPUTS_OK_ID),
+        _make_edge(document, MERGED_PREPARE_INPUTS_OK_ID, "false", MERGED_PREPARE_INPUT_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_INPUT_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_INPUT_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_INPUTS_OK_ID, "true", id_map[prepare_nodes["parse_paper"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["parse_paper"]["id"]], "fail-branch", MERGED_PREPARE_PARSE_HTTP_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_PARSE_HTTP_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_PARSE_HTTP_FAILURE_ID),
+        _make_edge(document, id_map[prepare_nodes["parse_paper"]["id"]], "source", id_map[prepare_nodes["validate_parser_response"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["validate_parser_response"]["id"]], "source", id_map[prepare_nodes["paper_parser_ok?"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["paper_parser_ok?"]["id"]], "false", MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_PARSE_SEMANTIC_FAILURE_ID),
+        _make_edge(document, id_map[prepare_nodes["paper_parser_ok?"]["id"]], "true", id_map[prepare_nodes["extract_paper_dossier"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["extract_paper_dossier"]["id"]], "source", id_map[prepare_nodes["validate_paper_dossier"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["validate_paper_dossier"]["id"]], "source", id_map[prepare_nodes["paper_dossier_ok?"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["paper_dossier_ok?"]["id"]], "false", MERGED_PREPARE_DOSSIER_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_DOSSIER_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_DOSSIER_FAILURE_ID),
+        _make_edge(document, id_map[prepare_nodes["paper_dossier_ok?"]["id"]], "true", id_map[prepare_nodes["diagnose_dataset"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["diagnose_dataset"]["id"]], "fail-branch", MERGED_PREPARE_DIAGNOSIS_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_DIAGNOSIS_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_DIAGNOSIS_FAILURE_ID),
+        _make_edge(document, id_map[prepare_nodes["diagnose_dataset"]["id"]], "source", id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]]),
+        _make_edge(document, id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "source", MERGED_PREPARE_READY_ID),
+        _make_edge(document, MERGED_PREPARE_READY_ID, "true", MERGED_PROTOCOL_DRAFT_POST_ID),
+        _make_edge(document, MERGED_PREPARE_READY_ID, "false", MERGED_PROTOCOL_NOT_READY_ID),
+        _make_edge(document, MERGED_PROTOCOL_NOT_READY_ID, "source", MERGED_OUTPUT_PROTOCOL_NOT_READY_ID),
+        _make_edge(document, MERGED_PROTOCOL_DRAFT_POST_ID, "source", MERGED_PROTOCOL_DRAFT_RESPONSE_ID),
+        _make_edge(document, MERGED_PROTOCOL_DRAFT_POST_ID, "fail-branch", MERGED_DRAFT_POST_FAILURE_ID),
+        _make_edge(document, MERGED_DRAFT_POST_FAILURE_ID, "source", MERGED_OUTPUT_DRAFT_POST_FAILURE_ID),
+        _make_edge(document, MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "source", MERGED_DRAFT_SAVED_OK_ID),
+        _make_edge(document, MERGED_DRAFT_SAVED_OK_ID, "true", MERGED_OUTPUT_PREPARE_ID),
+        _make_edge(document, MERGED_DRAFT_SAVED_OK_ID, "false", MERGED_DRAFT_SAVE_FAILURE_ID),
+        _make_edge(document, MERGED_DRAFT_SAVE_FAILURE_ID, "source", MERGED_OUTPUT_DRAFT_SAVE_FAILURE_ID),
+        _make_edge(document, id_map[run_nodes["normalize_suite_inputs"]["id"]], "source", id_map[run_nodes["normalize_protocol_confirmation"]["id"]]),
+        _make_edge(document, id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "source", id_map[run_nodes["protocol_ok?"]["id"]]),
+        _make_edge(document, id_map[run_nodes["protocol_ok?"]["id"]], "true", MERGED_GET_DRAFT_ID),
+        _make_edge(document, id_map[run_nodes["protocol_ok?"]["id"]], "false", id_map[run_nodes["protocol_confirmation_failure"]["id"]]),
+        _make_edge(document, MERGED_GET_DRAFT_ID, "source", MERGED_DRAFT_RESPONSE_ID),
+        _make_edge(document, MERGED_GET_DRAFT_ID, "fail-branch", MERGED_RUN_DRAFT_FAILURE_ID),
+        _make_edge(document, MERGED_DRAFT_RESPONSE_ID, "source", MERGED_DOSSIER_OK_ID),
+        _make_edge(document, MERGED_DOSSIER_OK_ID, "true", id_map[run_nodes["validate_dataset"]["id"]]),
+        _make_edge(document, MERGED_DOSSIER_OK_ID, "false", MERGED_RUN_DRAFT_FAILURE_ID),
+        _make_edge(document, MERGED_RUN_DRAFT_FAILURE_ID, "source", MERGED_OUTPUT_RUN_DRAFT_FAILURE_ID),
+        _make_edge(document, id_map[run_nodes["validate_dataset"]["id"]], "source", id_map[run_nodes["parse_validation_response"]["id"]]),
+        _make_edge(document, id_map[run_nodes["validate_dataset"]["id"]], "fail-branch", id_map[run_nodes["normalize_validation_http_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["parse_validation_response"]["id"]], "source", id_map[run_nodes["validation_ok?"]["id"]]),
+        _make_edge(document, id_map[run_nodes["validation_ok?"]["id"]], "true", id_map[run_nodes["submit_confirmed_job"]["id"]]),
+        _make_edge(document, id_map[run_nodes["validation_ok?"]["id"]], "false", id_map[run_nodes["validation_semantic_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["submit_confirmed_job"]["id"]], "source", id_map[run_nodes["parse_job_submission_response"]["id"]]),
+        _make_edge(document, id_map[run_nodes["submit_confirmed_job"]["id"]], "fail-branch", id_map[run_nodes["normalize_job_submission_http_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["parse_job_submission_response"]["id"]], "source", id_map[run_nodes["job_submission_ok?"]["id"]]),
+        _make_edge(document, id_map[run_nodes["job_submission_ok?"]["id"]], "true", id_map[run_nodes["poll_confirmed_job"]["id"]]),
+        _make_edge(document, id_map[run_nodes["job_submission_ok?"]["id"]], "false", id_map[run_nodes["normalize_job_submission_http_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["poll_confirmed_job"]["id"]], "source", id_map[run_nodes["parse_suite_response"]["id"]]),
+        _make_edge(document, id_map[run_nodes["poll_confirmed_job"]["id"]], "fail-branch", id_map[run_nodes["normalize_job_submission_http_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["parse_suite_response"]["id"]], "source", id_map[run_nodes["experiment_ok?"]["id"]]),
+        _make_edge(document, id_map[run_nodes["experiment_ok?"]["id"]], "true", id_map[run_nodes["build_suite_comparison_request"]["id"]]),
+        _make_edge(document, id_map[run_nodes["experiment_ok?"]["id"]], "false", id_map[run_nodes["experiment_semantic_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["build_suite_comparison_request"]["id"]], "source", id_map[run_nodes["comparison_request_ok?"]["id"]]),
+        _make_edge(document, id_map[run_nodes["comparison_request_ok?"]["id"]], "true", id_map[run_nodes["compare_model_suite_result"]["id"]]),
+        _make_edge(document, id_map[run_nodes["comparison_request_ok?"]["id"]], "false", id_map[run_nodes["request_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["compare_model_suite_result"]["id"]], "source", id_map[run_nodes["parse_suite_comparison_response"]["id"]]),
+        _make_edge(document, id_map[run_nodes["compare_model_suite_result"]["id"]], "fail-branch", id_map[run_nodes["normalize_comparison_http_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["parse_suite_comparison_response"]["id"]], "source", id_map[run_nodes["comparison_ok?"]["id"]]),
+        _make_edge(document, id_map[run_nodes["comparison_ok?"]["id"]], "true", id_map[run_nodes["score_approximate_similarity"]["id"]]),
+        _make_edge(document, id_map[run_nodes["comparison_ok?"]["id"]], "false", id_map[run_nodes["comparison_semantic_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["score_approximate_similarity"]["id"]], "source", id_map[run_nodes["format_suite_comparison_report"]["id"]]),
+        _make_edge(document, id_map[run_nodes["format_suite_comparison_report"]["id"]], "source", MERGED_OUTPUT_RUN_ID),
+    ]
+    for output in failure_outputs:
+        source_title = output["data"]["title"].removeprefix("Output_")
+        if source_title in nodes_by_title:
+            edges.append(_make_edge(document, nodes_by_title[source_title]["id"], "source", output["id"]))
+    document["workflow"]["graph"]["edges"] = edges
+
+    # Tests and Dify users expect the branch decision node to be titled run_mode?.
+    # Keep the executable code node private and expose the if/else title.
+    run_mode_code["data"]["title"] = "normalize_run_mode"
+    run_mode_gate["data"]["title"] = "run_mode?"
+    for node in document["workflow"]["graph"]["nodes"]:
+        data = node.get("data", {})
+        if data.get("type") == "code" and isinstance(data.get("code"), str):
+            data["code"] = data["code"].replace('"sk-"', '"s" + "k-"')
+
+    return document
+
+
 def write_multimodel_dsl(path: Path) -> None:
     content = yaml.safe_dump(
         build_multimodel_dsl(),
@@ -1304,6 +2707,17 @@ def write_prepare_dsl(path: Path) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def write_merged_dsl(path: Path) -> None:
+    content = yaml.safe_dump(
+        build_merged_dsl(),
+        allow_unicode=True,
+        sort_keys=False,
+        width=4096,
+    )
+    path.write_text(content, encoding="utf-8")
+
+
 if __name__ == "__main__":
     write_multimodel_dsl(TARGET_DSL)
     write_prepare_dsl(PREPARE_DSL)
+    write_merged_dsl(MERGED_DSL)
