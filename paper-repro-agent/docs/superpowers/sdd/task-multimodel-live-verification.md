@@ -1,6 +1,6 @@
 # Multi-model workflow verification record
 
-Date: Tuesday, August 11, 2026
+Date: 2026-08-12 follow-up to the 2026-08-11 verification
 Branch: `codex/multi-model-cv`
 Worktree: `C:\Users\17716\Documents\arcgis\.worktrees\multi-model-cv`
 Overall status: PASS WITH LIMITATIONS
@@ -18,7 +18,8 @@ This record covers the Task 9 verification brief only. I did not modify the lega
 - LIMITATION - `docker compose build repro-runner` remains blocked locally because `.env` is absent.
 - PASS - direct `Dockerfile.repro` image build succeeded; the built image runs as non-root `app` and served `{"status":"ok"}` on `/healthz`.
 - PASS - two-model live API smoke test succeeded with a safe synthetic local fixture.
-- LIMITATION - seven-model real-data experiment remains unavailable because the scoped workspace did not contain the original training CSV required by the brief.
+- PASS - bounded seven-model real-data API smoke completed against the available local training CSV.
+- LIMITATION - the original paper PDF/dossier and live Dify UI import path were not rerun in this follow-up, so this is backend suite verification rather than a claim of full paper reproduction.
 
 ## Detailed results
 
@@ -187,26 +188,34 @@ Returned metrics:
 
 ### 6) Seven-model real-data experiment
 
-Status: LIMITATION
+Status: PASS for the bounded backend suite API; the paper dossier/UI portion
+remains a limitation.
 
-Reason:
+Input:
 
-- the brief requires the original paper PDF/dossier plus the same training CSV
-- scoped workspace search found `tests/fixtures/minimal-paper.pdf` and `tests/fixtures/minimal-paper-dossier.json`
-- no original real training CSV was present in the scoped workspace
-- I did not invent substitute "real-data" inputs
+- local CSV: `E:\论文复现\成果\2training_samples_15180.csv`
+- 15180 rows, 16 features, 66 duplicate rows, class counts `13800/1380`
+- no raw rows were written to the verification output
 
-Search command:
+Request summary:
 
-```powershell
-rg --files -g "*.csv" -g "*.pdf" -g "*dossier*.json"
-```
+- isolated current-worktree Docker image on `127.0.0.1:18004`
+- `POST /v1/run-model-suite`
+- all seven models via the backend default model list
+- bounded `cv_folds=3`, `n_iter=1`, `n_jobs=1`, `random_state=42`, `test_size=0.2`
 
 Observed result:
 
-- `tests\fixtures\minimal-paper.pdf`
-- `tests\fixtures\minimal-paper-dossier.json`
-- `dify\paper-dossier-schema.json`
+- suite status: `succeeded`
+- all 7 models: `succeeded`
+- one shared held-out test digest: `sha256:f04ad6028f34c6e4c3c14b2c0de006473e0bd4d430817cb8d11e9e819e9fbdfb`
+- performance ranking: `random_forest`, `lightgbm`, `xgboost`, `mlp`,
+  `logistic_regression`, `svm`, `knn`
+- ROC AUC range: `0.729468` to `0.870592`
+- the temporary image/container were removed after the check
+
+This validates the real-data backend suite and shared-split contract. It does
+not validate the original paper PDF/dossier binding or a live Dify UI import.
 
 ### 7) Failure matrix and rollback checks
 
@@ -327,11 +336,13 @@ Why PASS:
 Remaining explicit limitations:
 
 - `docker compose build repro-runner` still requires the local `.env` file, which was not present in the scoped workspace
-- the seven-model real-data run remains unavailable because the scoped workspace did not include the original training CSV required by the brief
+- the original paper PDF/dossier and live Dify UI import were not available for
+  this follow-up; the bounded backend suite run is recorded separately above
 
 Why this is still useful:
 
 - the direct Docker image build and `/healthz` probe succeeded
 - the two-model live API smoke test succeeded
 - the legacy V3 single-model route still works
-- the seven-model real-data run was correctly left unavailable instead of invented
+- the bounded seven-model real-data API run succeeded without inventing paper
+  provenance; the original PDF/dossier/UI path remains explicitly unverified
