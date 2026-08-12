@@ -60,8 +60,7 @@ PREPARE_OUTPUT_VARIABLES = (
 
 MERGED_START_ID = "3900000000001"
 MERGED_RUN_MODE_ID = "3900000000002"
-MERGED_PREPARE_INPUTS_ID = "3900000000003"
-MERGED_PREPARE_INPUTS_OK_ID = "3900000000004"
+MERGED_PREPARE_PDF_PRESENT_ID = "3900000000003"
 MERGED_PREPARE_READY_ID = "3900000000005"
 MERGED_PROTOCOL_DRAFT_POST_ID = "3900000000006"
 MERGED_PROTOCOL_DRAFT_RESPONSE_ID = "3900000000007"
@@ -907,6 +906,7 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         _protocol_confirmation_code(),
         {
             "manifest_json": {"children": None, "type": "string"},
+            "draft_id": {"children": None, "type": "string"},
             "protocol_errors": {"children": None, "type": "string"},
             "protocol_ok": {"children": None, "type": "boolean"},
         },
@@ -1826,21 +1826,6 @@ def _merged_run_mode_code() -> str:
 """
 
 
-def _merged_prepare_inputs_code() -> str:
-    return """import json
-
-
-def main(paper_pdf) -> dict:
-    ok = paper_pdf is not None and paper_pdf != ""
-    errors = [] if ok else [{"code": "paper_pdf_required", "message": "Upload paper_pdf when run_mode is prepare."}]
-    return {
-        "prepare_inputs_ok": ok,
-        "error_json": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
-        "markdown_report": "" if ok else "Upload paper_pdf when run_mode is prepare.",
-    }
-"""
-
-
 def _merged_prepare_code() -> str:
     return _secret_safe_embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str) -> dict:
     return prepare_protocol_artifacts(
@@ -2001,6 +1986,31 @@ def _merged_failure_outputs_for_run(document: dict, nodes: dict[str, dict], outp
     return result
 
 
+def _clone_not_empty_if_node(template: dict, node_id: str, title: str, variable_selector: list[str], var_type: str, x: int, y: int) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["cases"] = [
+        {
+            "case_id": "true",
+            "conditions": [
+                {
+                    "comparison_operator": "not empty",
+                    "id": f"{node_id}-condition",
+                    "value": "",
+                    "varType": var_type,
+                    "variable_selector": variable_selector,
+                }
+            ],
+            "id": "true",
+            "logical_operator": "and",
+        }
+    ]
+    return node
+
+
 def build_merged_dsl() -> dict:
     """Build the deterministic merged prepare/run Dify workflow."""
     prepare_doc = build_prepare_dsl()
@@ -2087,25 +2097,12 @@ def build_merged_dsl() -> dict:
         120,
     )
 
-    prepare_inputs = _clone_code_node(
-        run_nodes["normalize_suite_inputs"],
-        MERGED_PREPARE_INPUTS_ID,
-        "prepare_inputs_ok?",
-        _merged_prepare_inputs_code(),
-        {
-            "prepare_inputs_ok": {"children": None, "type": "boolean"},
-            "error_json": {"children": None, "type": "string"},
-            "markdown_report": {"children": None, "type": "string"},
-        },
-        [{"value_selector": [MERGED_START_ID, "paper_pdf"], "value_type": "file", "variable": "paper_pdf"}],
-        1090,
-        -260,
-    )
-    prepare_inputs_gate = _clone_if_node(
+    prepare_pdf_present = _clone_not_empty_if_node(
         run_nodes["protocol_ok?"],
-        MERGED_PREPARE_INPUTS_OK_ID,
-        "prepare_inputs_valid?",
-        [MERGED_PREPARE_INPUTS_ID, "prepare_inputs_ok"],
+        MERGED_PREPARE_PDF_PRESENT_ID,
+        "prepare_pdf_present?",
+        [MERGED_START_ID, "paper_pdf"],
+        "array[file]",
         1420,
         -260,
     )
@@ -2218,10 +2215,7 @@ def build_merged_dsl() -> dict:
             "error_json": {"children": None, "type": "string"},
             "markdown_report": {"children": None, "type": "string"},
         },
-        [
-            {"value_selector": [MERGED_PREPARE_INPUTS_ID, "error_json"], "value_type": "string", "variable": "error_json"},
-            {"value_selector": [MERGED_PREPARE_INPUTS_ID, "markdown_report"], "value_type": "string", "variable": "markdown_report"},
-        ],
+        [],
         1750,
         -620,
     )
@@ -2621,8 +2615,7 @@ def main(
                     start,
                     run_mode_code,
                     run_mode_gate,
-                    prepare_inputs,
-                    prepare_inputs_gate,
+                    prepare_pdf_present,
                     *prepare_branch,
                     protocol_ready_gate,
                     draft_post,
@@ -2686,12 +2679,11 @@ def main(
     edges = [
         _make_edge(document, MERGED_START_ID, "source", MERGED_RUN_MODE_ID),
         _make_edge(document, MERGED_RUN_MODE_ID, "source", MERGED_RUN_MODE_ID + "g"),
-        _make_edge(document, MERGED_RUN_MODE_ID + "g", "true", MERGED_PREPARE_INPUTS_ID),
+        _make_edge(document, MERGED_RUN_MODE_ID + "g", "true", MERGED_PREPARE_PDF_PRESENT_ID),
         _make_edge(document, MERGED_RUN_MODE_ID + "g", "false", id_map[run_nodes["normalize_suite_inputs"]["id"]]),
-        _make_edge(document, MERGED_PREPARE_INPUTS_ID, "source", MERGED_PREPARE_INPUTS_OK_ID),
-        _make_edge(document, MERGED_PREPARE_INPUTS_OK_ID, "false", MERGED_PREPARE_INPUT_FAILURE_ID),
+        _make_edge(document, MERGED_PREPARE_PDF_PRESENT_ID, "false", MERGED_PREPARE_INPUT_FAILURE_ID),
         _make_edge(document, MERGED_PREPARE_INPUT_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_INPUT_FAILURE_ID),
-        _make_edge(document, MERGED_PREPARE_INPUTS_OK_ID, "true", id_map[prepare_nodes["parse_paper"]["id"]]),
+        _make_edge(document, MERGED_PREPARE_PDF_PRESENT_ID, "true", id_map[prepare_nodes["parse_paper"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["parse_paper"]["id"]], "fail-branch", MERGED_PREPARE_PARSE_HTTP_FAILURE_ID),
         _make_edge(document, MERGED_PREPARE_PARSE_HTTP_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_PARSE_HTTP_FAILURE_ID),
         _make_edge(document, id_map[prepare_nodes["parse_paper"]["id"]], "source", id_map[prepare_nodes["validate_parser_response"]["id"]]),

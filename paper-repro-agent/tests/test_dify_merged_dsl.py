@@ -91,7 +91,7 @@ def test_merged_outputs_are_separate_and_non_empty():
 def test_merged_graph_wires_prepare_and_run_directly_to_their_outputs():
     nodes = _node_map()
     edges = _document()["workflow"]["graph"]["edges"]
-    assert _has_edge(edges, nodes["run_mode?"], nodes["prepare_inputs_ok?"], "true")
+    assert _has_edge(edges, nodes["run_mode?"], nodes["prepare_pdf_present?"], "true")
     assert _has_edge(edges, nodes["draft_saved_ok?"], nodes["Output_prepare"], "true")
     assert _has_edge(edges, nodes["format_suite_comparison_report"], nodes["Output_run"], "source")
     assert all(
@@ -99,6 +99,28 @@ def test_merged_graph_wires_prepare_and_run_directly_to_their_outputs():
         for edge in edges
         if edge["source"] == nodes["prepare_protocol_draft_response"]["id"]
     )
+
+
+def test_merged_prepare_pdf_guard_uses_file_array_if_else_without_code_file_inputs():
+    nodes = _node_map()
+    code_file_variables = [
+        (node["data"]["title"], variable)
+        for node in _nodes()
+        if node["data"]["type"] == "code"
+        for variable in node["data"].get("variables", [])
+        if variable.get("value_type") == "file"
+    ]
+
+    assert code_file_variables == []
+
+    guard = nodes["prepare_pdf_present?"]
+    assert guard["data"]["type"] == "if-else"
+    [condition] = guard["data"]["cases"][0]["conditions"]
+    assert condition["comparison_operator"] == "not empty"
+    assert condition["varType"] == "array[file]"
+    assert condition["variable_selector"] == [nodes["Start"]["id"], "paper_pdf"]
+
+    assert nodes["prepare_input_failure"]["data"].get("variables", []) == []
 
 
 def test_prepare_draft_response_uses_expected_manifest_metadata_before_output():
@@ -151,6 +173,36 @@ def test_merged_run_path_reads_draft_with_header_token_and_no_prepare_inputs():
     assert "paper_pdf" not in serialized_run_nodes
     assert "paper_dossier_json" not in serialized_run_nodes
     assert "extract_paper_dossier" not in serialized_run_nodes
+
+
+def test_merged_protocol_confirmation_outputs_match_declared_keys_on_false_and_true_branches():
+    node = _node_map()["normalize_protocol_confirmation"]
+    declared = set(node["data"]["outputs"])
+    main = _exec_code_node("normalize_protocol_confirmation")
+
+    false_result = main("", False, "Y_cls", "[]", "5", "roc_auc", 0.2, 42)
+
+    assert set(false_result) == declared
+
+    namespace: dict[str, object] = {}
+    exec(compile(node["data"]["code"], node["data"]["title"], "exec"), namespace)
+    prepare_protocol_artifacts = namespace["prepare_protocol_artifacts"]
+    prepared = prepare_protocol_artifacts(
+        "{}",
+        {
+            "valid": True,
+            "dataset": {
+                "dataset_id": "sha256:" + "1" * 64,
+                "target": "Y_cls",
+                "column_names": ["feature_a", "Y_cls"],
+            },
+        },
+        target_column="Y_cls",
+        now=1000,
+    )
+    true_result = main(prepared["protocol_token"], True, "Y_cls", "[]", "5", "roc_auc", 0.2, 42)
+
+    assert set(true_result) == declared
 
 
 def test_merged_failure_and_false_paths_all_have_direct_edges():

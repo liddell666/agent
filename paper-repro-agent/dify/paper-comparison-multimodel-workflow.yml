@@ -2374,6 +2374,9 @@ workflow:
           manifest_json:
             children: null
             type: string
+          draft_id:
+            children: null
+            type: string
           protocol_errors:
             children: null
             type: string

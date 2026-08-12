@@ -105,7 +105,7 @@ workflow:
         isInIteration: false
         isInLoop: false
         sourceType: if-else
-        targetType: code
+        targetType: if-else
       id: 3900000000002g-true-3900000000003-target
       source: 3900000000002g
       sourceHandle: 'true'
@@ -128,22 +128,10 @@ workflow:
     - data:
         isInIteration: false
         isInLoop: false
-        sourceType: code
-        targetType: if-else
-      id: 3900000000003-source-3900000000004-target
-      source: '3900000000003'
-      sourceHandle: source
-      target: '3900000000004'
-      targetHandle: target
-      type: custom
-      zIndex: 0
-    - data:
-        isInIteration: false
-        isInLoop: false
         sourceType: if-else
         targetType: code
-      id: 3900000000004-false-3900000000013-target
-      source: '3900000000004'
+      id: 3900000000003-false-3900000000013-target
+      source: '3900000000003'
       sourceHandle: 'false'
       target: '3900000000013'
       targetHandle: target
@@ -166,8 +154,8 @@ workflow:
         isInLoop: false
         sourceType: if-else
         targetType: http-request
-      id: 3900000000004-true-3910000000002-target
-      source: '3900000000004'
+      id: 3900000000003-true-3910000000002-target
+      source: '3900000000003'
       sourceHandle: 'true'
       target: '3910000000002'
       targetHandle: target
@@ -1251,59 +1239,23 @@ workflow:
       width: 242
       zIndex: 0
     - data:
-        code: "import json\n\n\ndef main(paper_pdf) -> dict:\n    ok = paper_pdf is not None and paper_pdf != \"\"\n    errors = [] if ok else [{\"code\": \"paper_pdf_required\", \"message\": \"Upload paper_pdf when run_mode is prepare.\"}]\n    return {\n        \"prepare_inputs_ok\": ok,\n        \"error_json\": json.dumps(errors, ensure_ascii=False, separators=(\",\", \":\")),\n        \"markdown_report\": \"\" if ok else \"Upload paper_pdf when run_mode is prepare.\",\n    }\n"
-        code_language: python3
-        outputs:
-          prepare_inputs_ok:
-            children: null
-            type: boolean
-          error_json:
-            children: null
-            type: string
-          markdown_report:
-            children: null
-            type: string
-        selected: false
-        title: prepare_inputs_ok?
-        type: code
-        variables:
-        - value_selector:
-          - '3900000000001'
-          - paper_pdf
-          value_type: file
-          variable: paper_pdf
-      height: 51
-      id: '3900000000003'
-      position:
-        x: 1090
-        y: -260
-      positionAbsolute:
-        x: 1090
-        y: -260
-      selected: false
-      sourcePosition: right
-      targetPosition: left
-      type: custom
-      width: 242
-      zIndex: 0
-    - data:
         cases:
         - case_id: 'true'
           conditions:
-          - comparison_operator: is
-            id: 3900000000004-condition
-            value: true
-            varType: boolean
+          - comparison_operator: not empty
+            id: 3900000000003-condition
+            value: ''
+            varType: array[file]
             variable_selector:
-            - '3900000000003'
-            - prepare_inputs_ok
+            - '3900000000001'
+            - paper_pdf
           id: 'true'
           logical_operator: and
         selected: false
-        title: prepare_inputs_valid?
+        title: prepare_pdf_present?
         type: if-else
       height: 147
-      id: '3900000000004'
+      id: '3900000000003'
       position:
         x: 1420
         y: -260
@@ -2008,17 +1960,7 @@ workflow:
         selected: false
         title: prepare_input_failure
         type: code
-        variables:
-        - value_selector:
-          - '3900000000003'
-          - error_json
-          value_type: string
-          variable: error_json
-        - value_selector:
-          - '3900000000003'
-          - markdown_report
-          value_type: string
-          variable: markdown_report
+        variables: []
       height: 51
       id: '3900000000013'
       position:
@@ -2692,6 +2634,9 @@ workflow:
         code_language: python3
         outputs:
           manifest_json:
+            children: null
+            type: string
+          draft_id:
             children: null
             type: string
           protocol_errors:
