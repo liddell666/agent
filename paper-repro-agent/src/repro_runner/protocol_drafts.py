@@ -16,6 +16,20 @@ from typing import Callable
 
 
 _DRAFT_ID = re.compile(r"draft-[A-Za-z0-9_-]{8,128}\Z")
+_SENSITIVE_KEY = re.compile(
+    r"(?:^|[_-])(api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|password|secret|traceback|raw[_-]?(?:csv|pdf))(?:$|[_-])",
+    re.IGNORECASE,
+)
+_API_KEY_VALUE = re.compile(r"\bsk-(?:live|test|proj)-[A-Za-z0-9_\-]{8,}\b")
+_BEARER_VALUE = re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{12,}\b", re.IGNORECASE)
+_TRACEBACK_VALUE = re.compile(
+    r"traceback \(most recent call last\):", re.IGNORECASE
+)
+_PDF_VALUE = re.compile(r"%pdf-", re.IGNORECASE)
+_CSV_VALUE = re.compile(
+    r"^[^\n,]+(?:,[^\n,]+)+\r?\n[^\n,]+(?:,[^\n,]+)+",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -174,8 +188,12 @@ class ProtocolDraftStore:
             except (OSError, ValueError, json.JSONDecodeError, ProtocolDraftError):
                 continue
             if now >= record.expires_at:
-                shutil.rmtree(child, ignore_errors=True)
-                removed += 1
+                try:
+                    shutil.rmtree(child, ignore_errors=True)
+                except OSError:
+                    continue
+                if not child.exists():
+                    removed += 1
         return removed
 
     def _read_record(self, path: Path) -> ProtocolDraftRecord:
@@ -224,7 +242,43 @@ def _normalize_dossier(dossier: dict[str, object]) -> dict[str, object]:
         raise ProtocolDraftError("protocol_payload_invalid") from exc
     if not isinstance(normalized, dict):
         raise ProtocolDraftError("protocol_payload_invalid")
+    _ensure_safe_dossier(normalized)
     return normalized
+
+
+def _ensure_safe_dossier(value: object, *, key_path: tuple[str, ...] = ()) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                raise ProtocolDraftError("protocol_payload_invalid")
+            if _SENSITIVE_KEY.search(key):
+                raise ProtocolDraftError("protocol_payload_invalid")
+            _ensure_safe_dossier(nested, key_path=(*key_path, key))
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _ensure_safe_dossier(nested, key_path=key_path)
+        return
+    if isinstance(value, str):
+        if _looks_sensitive_string(value):
+            raise ProtocolDraftError("protocol_payload_invalid")
+        return
+    if value is None or isinstance(value, (bool, int, float)):
+        return
+    raise ProtocolDraftError("protocol_payload_invalid")
+
+
+def _looks_sensitive_string(value: str) -> bool:
+    return any(
+        pattern.search(value)
+        for pattern in (
+            _API_KEY_VALUE,
+            _BEARER_VALUE,
+            _TRACEBACK_VALUE,
+            _PDF_VALUE,
+            _CSV_VALUE,
+        )
+    )
 
 
 def _record_payload(record: ProtocolDraftRecord) -> dict[str, object]:

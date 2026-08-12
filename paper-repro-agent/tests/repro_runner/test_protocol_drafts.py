@@ -146,6 +146,77 @@ def test_cleanup_expired_removes_only_expired_drafts(tmp_path):
     assert (tmp_path / "draft-bbbbbbbb" / "draft.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("dossier", "needle"),
+    [
+        ({"title": "Paper", "api_key": "sk-live-1234567890abcdef"}, "sk-live"),
+        (
+            {"title": "Paper", "notes": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"},
+            "Bearer ",
+        ),
+        (
+            {
+                "title": "Paper",
+                "notes": "Traceback (most recent call last):\n  File \"x.py\", line 1, in <module>",
+            },
+            "Traceback (most recent call last):",
+        ),
+        (
+            {"title": "Paper", "appendix": "%PDF-1.7 binary payload"},
+            "%PDF-",
+        ),
+        (
+            {"title": "Paper", "raw_csv": "col_a,col_b\n1,2\n3,4"},
+            "col_a,col_b",
+        ),
+    ],
+)
+def test_save_rejects_sensitive_dossier_content_without_persisting(tmp_path, dossier, needle):
+    token = _token(
+        draft_id="draft-aaaaaaaa",
+        manifest_id="sha256:" + "1" * 64,
+        dataset_id="sha256:" + "2" * 64,
+        exp=2_000,
+    )
+    store = ProtocolDraftStore(tmp_path, secret="test-secret", clock=lambda: 1_000)
+
+    with pytest.raises(ProtocolDraftError) as error:
+        store.save("draft-aaaaaaaa", token, dossier)
+
+    assert error.value.code == "protocol_payload_invalid"
+    path = tmp_path / "draft-aaaaaaaa" / "draft.json"
+    assert not path.exists()
+    if (tmp_path / "draft-aaaaaaaa").exists():
+        assert needle not in json.dumps(
+            json.loads(path.read_text(encoding="utf-8")),
+            ensure_ascii=False,
+        )
+
+
+def test_cleanup_expired_counts_only_actual_removals(tmp_path, monkeypatch):
+    now = [1_000]
+    store = ProtocolDraftStore(tmp_path, secret="test-secret", clock=lambda: now[0])
+    store.save(
+        "draft-aaaaaaaa",
+        _token(
+            "draft-aaaaaaaa",
+            "sha256:" + "1" * 64,
+            "sha256:" + "2" * 64,
+            1_001,
+        ),
+        {"title": "Old"},
+    )
+    now[0] = 1_100
+
+    def _failing_rmtree(path, ignore_errors=False):
+        return None
+
+    monkeypatch.setattr("repro_runner.protocol_drafts.shutil.rmtree", _failing_rmtree)
+
+    assert store.cleanup_expired() == 0
+    assert (tmp_path / "draft-aaaaaaaa").exists()
+
+
 def test_rejects_unsafe_draft_ids(tmp_path):
     store = ProtocolDraftStore(tmp_path, secret="test-secret", clock=lambda: 1_000)
     token = _token(

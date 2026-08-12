@@ -34,3 +34,34 @@
   - `.superpowers/sdd/task-1-report.md`
 - Concerns:
   - The broader regression still emits a pre-existing FastAPI/Starlette deprecation warning about `httpx` in the test client stack; it is unrelated to this task.
+
+## Fix follow-up for reviewer findings
+
+- Status: DONE_WITH_CONCERNS
+- Fix summary:
+  - Added a persisted-dossier safety gate in `src/repro_runner/protocol_drafts.py` that recursively validates normalized dossier content before any draft directory or `draft.json` is created.
+  - The storage boundary now rejects sensitive key names and token-like / auth-like / traceback-like / raw PDF / raw CSV string content with `protocol_payload_invalid`, without echoing offending values.
+  - Kept valid dossier round-trip behavior unchanged for safe content.
+  - Tightened `cleanup_expired()` so it increments its removal count only when the expired draft directory is actually gone after cleanup.
+- Focused fix tests:
+  - `pytest tests\repro_runner\test_protocol_drafts.py -q`
+  - Result: 14 passed
+- Relevant regression:
+  - `pytest tests\repro_runner -q`
+  - Result: 254 passed, 1 warning
+- Added test coverage:
+  - Sensitive dossier strings are rejected and never persisted for:
+    - API-key-like content
+    - bearer-auth-like content
+    - traceback-like content
+    - raw PDF sentinel content
+    - raw CSV sentinel content
+  - Cleanup removal count stays at zero when deletion is attempted but the directory remains present.
+- Changed files for this fix:
+  - `src/repro_runner/protocol_drafts.py`
+  - `tests/repro_runner/test_protocol_drafts.py`
+  - `.superpowers/sdd/task-1-report.md`
+- Self-review:
+  - Verified the sensitive-content guard runs after canonical JSON normalization but before any persistence path is created, so rejected dossiers cannot leave partial draft state behind.
+  - Verified the approved protocol error contract remains unchanged: malformed, tampered, payload invalid, expired, and draft/token mismatch still map to the same codes.
+  - Verified cleanup failure handling does not leak draft contents and does not over-report removals.
