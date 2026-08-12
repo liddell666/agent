@@ -9,6 +9,8 @@ from scripts.build_multimodel_dsl import build_multimodel_dsl, write_multimodel_
 PROJECT_ROOT = Path(__file__).parents[1]
 SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
 GENERATED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
+PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
+MERGED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-merged-workflow.yml"
 SECRET_SENTINELS = (
     "RAW_CSV_SECRET_07a1",
     "SECRET_TOKEN",
@@ -136,12 +138,28 @@ def test_multimodel_dsl_has_suite_urls_inputs_and_stable_idempotency_key() -> No
     assert compare_node["body"]["data"][0]["value"] == "{{#1900000000014.suite_comparison_request_json#}}"
 
 
-def test_multimodel_dsl_has_one_end_six_string_outputs_and_no_secrets() -> None:
+def test_multimodel_dsl_has_terminal_outputs_and_no_secrets() -> None:
     document = _document()
     ends = [node for node in _nodes(document) if node["data"]["type"] == "end"]
 
-    assert len(ends) == 1
-    outputs = ends[0]["data"]["outputs"]
+    assert {node["data"]["title"] for node in ends} == {
+        "Output",
+        "Output_protocol_confirmation_failure",
+        "Output_job_submission_failure",
+        *(f"Output_{title}" for title in (
+            "normalize_dossier_http_failure",
+            "dossier_semantic_failure",
+            "thresholds_failure",
+            "normalize_validation_http_failure",
+            "validation_semantic_failure",
+            "normalize_experiment_http_failure",
+            "experiment_semantic_failure",
+            "request_failure",
+            "normalize_comparison_http_failure",
+            "comparison_semantic_failure",
+        )),
+    }
+    outputs = next(node for node in ends if node["data"]["title"] == "Output")["data"]["outputs"]
     assert {item["variable"] for item in outputs} == {
         "dossier_json",
         "validation_json",
@@ -154,11 +172,107 @@ def test_multimodel_dsl_has_one_end_six_string_outputs_and_no_secrets() -> None:
 
     source = GENERATED_DSL.read_text(encoding="utf-8")
     lowered = source.casefold()
-    assert "value_type: secret" not in lowered
     assert "authorization: bearer" not in lowered
     assert "raw_csv_secret_07a1" not in lowered
+    assert "local-only-fallback-not-for-production" not in source
     assert _document()["dependencies"] == []
-    assert _document()["workflow"].get("environment_variables") == []
+
+
+def test_generated_protocol_helper_workflows_declare_blank_secret_env() -> None:
+    for path in (GENERATED_DSL, PREPARE_DSL, MERGED_DSL):
+        source = path.read_text(encoding="utf-8")
+        if "_PROTOCOL_SECRET" not in source and "DIFY_PROTOCOL_SECRET" not in source:
+            continue
+        document = _document(path)
+        variables = {
+            item["name"]: item
+            for item in document["workflow"].get("environment_variables", [])
+        }
+        assert "DIFY_PROTOCOL_SECRET" in variables, path
+        secret = variables["DIFY_PROTOCOL_SECRET"]
+        assert secret["value_type"] == "secret", path
+        assert secret["value"] == "", path
+        assert secret["selector"] == ["env", "DIFY_PROTOCOL_SECRET"], path
+
+
+def test_protocol_branch_nodes_are_before_aggregators_and_output() -> None:
+    titles = [node["data"]["title"] for node in _nodes(_document())]
+
+    first_aggregator = titles.index("aggregate_dossier_json")
+    assert titles.index("protocol_confirmation_failure") < first_aggregator
+    assert titles.index("normalize_job_submission_http_failure") < first_aggregator
+    assert titles[-1] == "Output"
+
+    node_ids = {node["data"]["title"]: node["id"] for node in _nodes(_document())}
+    edges = _document()["workflow"]["graph"]["edges"]
+    first_aggregator_chain_edge = next(
+        index
+        for index, edge in enumerate(edges)
+        if edge["source"] == node_ids["aggregate_dossier_json"]
+    )
+    aggregator_inputs = [
+        index
+        for index, edge in enumerate(edges)
+        if edge["target"] == node_ids["aggregate_dossier_json"]
+    ]
+    assert max(aggregator_inputs) < first_aggregator_chain_edge
+
+
+def test_early_protocol_branches_have_direct_end_outputs() -> None:
+    document = _document()
+    nodes = _nodes(document)
+    node_ids = {node["data"]["title"]: node["id"] for node in nodes}
+    ends = [node for node in nodes if node["data"]["type"] == "end"]
+
+    assert {node["data"]["title"] for node in ends} >= {
+        "Output",
+        "Output_protocol_confirmation_failure",
+        "Output_job_submission_failure",
+    }
+    edges = document["workflow"]["graph"]["edges"]
+    for source_title, end_title in (
+        ("protocol_confirmation_failure", "Output_protocol_confirmation_failure"),
+        ("normalize_job_submission_http_failure", "Output_job_submission_failure"),
+    ):
+        assert any(
+            edge["source"] == node_ids[source_title]
+            and edge["target"] == node_ids[end_title]
+            for edge in edges
+        )
+
+
+def test_success_path_wires_main_output_directly_from_report() -> None:
+    document = _document()
+    nodes = _nodes(document)
+    node_ids = {node["data"]["title"]: node["id"] for node in nodes}
+    output = next(node for node in nodes if node["data"]["title"] == "Output")
+
+    assert {
+        tuple(item["value_selector"])
+        for item in output["data"]["outputs"]
+    } == {
+        (node_ids["format_suite_comparison_report"], variable)
+        for variable in {
+            "dossier_json",
+            "validation_json",
+            "experiment_json",
+            "comparison_json",
+            "assessment_json",
+            "markdown_report",
+        }
+    }
+
+    edges = document["workflow"]["graph"]["edges"]
+    assert any(
+        edge["source"] == node_ids["format_suite_comparison_report"]
+        and edge["target"] == node_ids["Output"]
+        for edge in edges
+    )
+    assert not any(
+        edge["source"] == node_ids["aggregate_markdown_report"]
+        and edge["target"] == node_ids["Output"]
+        for edge in edges
+    )
 
 
 def test_multimodel_embedded_python_compiles_and_failure_branches_avoid_http_outputs() -> None:

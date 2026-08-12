@@ -548,6 +548,22 @@ def _embedded_parser_validator_code() -> str:
     return validator_path.read_text(encoding="utf-8").rstrip() + "\n"
 
 
+def _protocol_environment_variables(base_variables: list[dict] | None = None) -> list[dict]:
+    variables = deepcopy(base_variables or [])
+    if not any(item.get("name") == "DIFY_PROTOCOL_SECRET" for item in variables):
+        variables.append(
+            {
+                "description": "Protocol signing secret shared with repro-runner; exported without a value.",
+                "id": "39000000-0000-4000-8000-000000000001",
+                "name": "DIFY_PROTOCOL_SECRET",
+                "selector": ["env", "DIFY_PROTOCOL_SECRET"],
+                "value": "",
+                "value_type": "secret",
+            }
+        )
+    return variables
+
+
 def _protocol_confirmation_code() -> str:
     return _embedded_experiment_helper_code("""import json
 
@@ -1276,6 +1292,9 @@ def build_multimodel_dsl() -> dict:
 
     _add_protocol_path(document, nodes)
     document["workflow"]["name"] = "paper-comparison-multimodel-workflow"
+    document["workflow"]["environment_variables"] = _protocol_environment_variables(
+        document["workflow"].get("environment_variables", [])
+    )
     return document
 
 
@@ -1418,7 +1437,7 @@ def build_prepare_dsl_legacy() -> dict:
         "version": source.get("version", "0.7.0"),
         "workflow": {
             "conversation_variables": [],
-            "environment_variables": [],
+            "environment_variables": _protocol_environment_variables([]),
             "features": deepcopy(source["workflow"]["features"]),
             "graph": {
                 "edges": [],
@@ -1637,7 +1656,9 @@ def build_prepare_dsl() -> dict:
         "version": source.get("version", "0.7.0"),
         "workflow": {
             "conversation_variables": [],
-            "environment_variables": deepcopy(dossier_source["workflow"].get("environment_variables", [])),
+            "environment_variables": _protocol_environment_variables(
+                dossier_source["workflow"].get("environment_variables", [])
+            ),
             "features": deepcopy(source["workflow"]["features"]),
             "graph": {
                 "edges": [],
@@ -1978,22 +1999,6 @@ def _merged_failure_outputs_for_run(document: dict, nodes: dict[str, dict], outp
         y = source.get("position", {}).get("y", 0)
         result.append(_merged_end_from_source(output_template, output_id, title, source["id"], REPORT_OUTPUT_VARIABLES, 7000, y))
     return result
-
-
-def _merged_environment_variables() -> list[dict]:
-    variables = deepcopy(_load_paper_dossier_source()["workflow"].get("environment_variables", []))
-    if not any(item.get("name") == "DIFY_PROTOCOL_SECRET" for item in variables):
-        variables.append(
-            {
-                "description": "Protocol signing secret shared with repro-runner; exported without a value.",
-                "id": "39000000-0000-4000-8000-000000000001",
-                "name": "DIFY_PROTOCOL_SECRET",
-                "selector": ["env", "DIFY_PROTOCOL_SECRET"],
-                "value": "",
-                "value_type": "secret",
-            }
-        )
-    return variables
 
 
 def build_merged_dsl() -> dict:
@@ -2606,7 +2611,9 @@ def main(
         "version": source.get("version", "0.7.0"),
         "workflow": {
             "conversation_variables": [],
-            "environment_variables": _merged_environment_variables(),
+            "environment_variables": _protocol_environment_variables(
+                _load_paper_dossier_source()["workflow"].get("environment_variables", [])
+            ),
             "features": deepcopy(source["workflow"]["features"]),
             "graph": {
                 "edges": [],

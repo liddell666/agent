@@ -232,3 +232,99 @@ Outcome:
 - Merged serialized YAML contains no fallback secret literal, no `raw_csv_secret_07a1`, no `sk-`, no `SECRET_TOKEN`, and includes blank secret-typed `DIFY_PROTOCOL_SECRET`.
 - Unrelated dirty files and temporary directories were preserved and not cleaned.
 
+## Second review fix - 2026-08-13
+
+### Changed files
+
+- `scripts/build_multimodel_dsl.py`
+- `dify/paper-comparison-multimodel-workflow.yml`
+- `dify/paper-comparison-prepare-workflow.yml`
+- `dify/paper-comparison-merged-workflow.yml`
+- `tests/test_dify_multimodel_dsl.py`
+- `.superpowers/sdd/task-4-report.md`
+
+### Fix details
+
+- Added a shared `_protocol_environment_variables()` builder helper that preserves existing workflow environment variables and appends blank secret-typed `DIFY_PROTOCOL_SECRET` when absent.
+- Applied the helper to `build_multimodel_dsl()`, `build_prepare_dsl()`, `build_prepare_dsl_legacy()`, and `build_merged_dsl()`.
+- Regenerated workflows so the multimodel, prepare, and merged YAML exports all declare `DIFY_PROTOCOL_SECRET` with `value: ""`, `value_type: secret`, and selector `["env", "DIFY_PROTOCOL_SECRET"]`.
+- Added regression coverage scanning all generated DSLs that embed `_PROTOCOL_SECRET`/`DIFY_PROTOCOL_SECRET` and asserting the blank secret env declaration is present.
+
+### RED evidence
+
+Command:
+
+```powershell
+pytest tests/test_dify_multimodel_dsl.py::test_generated_protocol_helper_workflows_declare_blank_secret_env -q
+```
+
+Outcome before fix:
+
+- Failed on `dify/paper-comparison-multimodel-workflow.yml` because its environment variable map did not contain `DIFY_PROTOCOL_SECRET`.
+
+### Verification results
+
+Command:
+
+```powershell
+pytest tests/test_dify_merged_dsl.py -q
+```
+
+Outcome:
+
+- Passed: `10 passed in 9.75s`
+
+Command:
+
+```powershell
+pytest tests/test_dify_multimodel_dsl.py tests/test_dify_multimodel_code.py -q
+```
+
+Outcome:
+
+- Passed: `38 passed in 4.45s`
+
+Command:
+
+```powershell
+python -m compileall dify/code
+```
+
+Outcome:
+
+- Exit code 0; output: `Listing 'dify/code'...`
+
+Embedded generated-code compile check:
+
+- `dify\paper-comparison-merged-workflow.yml: 34 code nodes compile`
+- `dify\paper-comparison-multimodel-workflow.yml: 23 code nodes compile`
+- `dify\paper-comparison-prepare-workflow.yml: 3 code nodes compile`
+
+Command:
+
+```powershell
+python scripts/build_multimodel_dsl.py
+git diff --check
+```
+
+Outcome:
+
+- Exit code 0; Git emitted only CRLF conversion warnings for pre-existing dirty files.
+
+Final-state focused tests after regeneration:
+
+```powershell
+pytest tests/test_dify_merged_dsl.py tests/test_dify_multimodel_dsl.py tests/test_dify_multimodel_code.py -q
+```
+
+Outcome:
+
+- Passed: `48 passed in 13.66s`
+
+### Self-review
+
+- All generated workflows that embed protocol helper code now declare `DIFY_PROTOCOL_SECRET` as an empty secret env variable.
+- Existing `PARSER_API_TOKEN` declaration in prepare and merged workflows is preserved.
+- No protocol secret value is exported in any generated DSL.
+- Unrelated dirty files and temporary directories were preserved and not cleaned.
+
