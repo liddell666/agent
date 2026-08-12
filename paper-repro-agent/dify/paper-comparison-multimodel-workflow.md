@@ -4,6 +4,12 @@ This guide is for the separate multi-model workflow at `dify/paper-comparison-mu
 Keep `dify/paper-comparison-workflow.yml` as the current V3 rollback target until live verification is accepted.
 Do not overwrite the published V3 workflow during import, testing, or rollback.
 
+The normal path is two-step: import and run `dify/paper-comparison-prepare-workflow.yml` first,
+review its aggregate `protocol_preview_json`, then pass its short-lived `protocol_token`
+to this confirmed-run workflow with `confirm_protocol=true`. The run workflow submits the
+confirmed manifest to the persistent `/v1/jobs` API and polls a bounded number of times; it
+does not wait synchronously for model training inside the initial request.
+
 ## 1. Workflow files / 工作流文件
 
 - Import: `dify/paper-comparison-multimodel-workflow.yml`
@@ -32,6 +38,8 @@ Default `models_json`:
 
 | Input | Default | Notes |
 | --- | --- | --- |
+| `paper_dossier_json` | required file | Existing dossier input retained so the six legacy output strings remain compatible. |
+| `training_csv` | required file | Re-upload the exact CSV used in prepare; the runner verifies its dataset fingerprint against the confirmed token manifest. |
 | `models_json` | JSON array above | Ordered suite definition. Duplicate or unknown names are rejected safely. |
 | `target_column` | `Y_cls` | Binary target column. |
 | `test_size` | `0.2` | Shared outer held-out test fraction for all successful models. |
@@ -42,6 +50,8 @@ Default `models_json`:
 | `n_iter` | `8` | RandomizedSearchCV iterations per model. |
 | `use_gpu` | `false` | CPU is the default. Set `true` only when the runtime has supported GPU libraries/devices. |
 | `drop_duplicates` | `false` | Applied during dataset loading before the shared split. |
+| `protocol_token` | empty | Required from the prepare workflow; expires after a bounded lifetime and is bound to the prepared dataset/manifest. |
+| `confirm_protocol` | `false` | Must be explicitly set to `true` after reviewing the preview. |
 
 Idempotency / 幂等:
 
@@ -68,13 +78,20 @@ Resource and dependency notes / 资源与依赖说明:
 
 ## 5. Backend endpoints / 后端端点
 
-Workflow execution path:
+Legacy compatibility path (kept for existing synchronous consumers):
 
 - `POST /v1/run-model-suite`
   - Returns `ExperimentSuiteResult`
   - Includes `experiment_id`, overall `status`, shared `config`, `dataset`, `split_provenance`, per-model `results`, `performance_ranking`, and `reproducibility_status=cv_tuned`
 
 Additional suite endpoints:
+
+- `POST /v1/jobs`
+  - Confirmed path: receives the manifest and CSV upload, returns a job ID immediately with status `queued`.
+- `GET /v1/jobs/{job_id}`
+  - Returns bounded stage/progress/status data for polling.
+- `GET /v1/jobs/{job_id}/result`
+  - Returns the saved aggregate suite result after `succeeded` or `partial`.
 
 - `GET /v1/model-suites/{experiment_id}`
   - Returns the persisted `ExperimentSuiteResult` for the suite ID
@@ -122,34 +139,43 @@ Interpretation / 解释:
 
 ## 7. Import and verification / 导入与验证
 
-1. In Dify, import `dify/paper-comparison-multimodel-workflow.yml` as a separate workflow/app version.
-2. Confirm the Start node includes the multi-model inputs:
+1. Import `dify/paper-comparison-prepare-workflow.yml` as a separate prepare workflow/app version.
+2. Upload a paper PDF and UTF-8 CSV, optionally provide a target-column suggestion and notes, and run prepare.
+3. Review `protocol_preview_json`: target, final features, types, missing/duplicate counts, class ratios,
+   risk flags, paper metrics and unresolved fields. Do not copy raw rows or PDF evidence into Dify variables.
+4. Import `dify/paper-comparison-multimodel-workflow.yml` as a separate confirmed-run workflow/app version.
+5. Pass the token from prepare, set `confirm_protocol=true`, and keep the confirmed target/features unchanged.
+   Re-upload the same `training_csv`; the local fallback does not carry raw file bytes
+   in the token. Keep the existing `paper_dossier_json` input for the dossier output.
+6. Confirm the Start node includes the multi-model inputs:
    `models_json`, `target_column`, `test_size`, `random_state`, `cv_folds`, `optimization_metric`, `n_iter`, `use_gpu`, `drop_duplicates`, plus the existing similarity thresholds.
-3. Confirm the suite HTTP nodes use:
+7. Confirm the suite/comparison nodes use:
    - `http://repro-runner:8001/v1/run-model-suite`
    - `http://repro-runner:8001/v1/compare-model-suite-result`
-4. Confirm the workflow still ends in one Output node with six string outputs:
+8. Confirm the workflow still ends in one Output node with six string outputs:
    `dossier_json`, `validation_json`, `experiment_json`, `comparison_json`, `assessment_json`, `markdown_report`
-5. Run a manual-override verification in the generated comparison request. Use this exact metric payload:
+9. Run a manual-override verification in the generated comparison request. Use this exact metric payload:
 
 ```json
 [{"name":"AUC","dataset":"奉节县（全域模型）","split":"测试集","reported_value":0.850}]
 ```
 
    Then confirm the generated comparison request preserves both `dataset` and `split` in `suite_comparison_request_json` instead of dropping them.
-6. Run the local smoke check from the project root with a safe placeholder path:
+10. Run the local smoke check from the project root with a safe placeholder path:
 
 ```powershell
 .\scripts\smoke_multimodel.ps1 -CsvPath 'C:\safe-placeholder\training.csv' -BaseUrl 'http://localhost:8001'
 ```
 
-7. Review only safe summaries and structured JSON outputs. Do not paste API keys, tokens, raw CSV rows, or paper/PDF text into the workflow.
+11. Review only safe summaries and structured JSON outputs. Do not paste API keys, tokens, raw CSV rows, or paper/PDF text into the workflow.
 
 ## 8. Rollback / 回滚
 
 - If import verification, runner health, or live suite behavior fails, keep using the current V3 workflow at `dify/paper-comparison-workflow.yml`.
 - Roll back by switching the Dify app/version back to the saved V3 export; do not delete the separate multimodel DSL file.
 - Treat the multimodel workflow as non-production until live verification confirms the new import path, shared split behavior, and comparison output.
+- If the protocol token expires, rerun the prepare workflow; never extend or edit the token manually.
+- If the runner restarts, keep polling the same job ID. A job may become `needs_retry`; retry only after reviewing its persisted progress/result.
 
 ## 9. Safety reminders / 安全提醒
 

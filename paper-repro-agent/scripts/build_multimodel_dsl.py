@@ -10,6 +10,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
 TARGET_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
+PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
 DEFAULT_MODELS = [
     "logistic_regression",
     "random_forest",
@@ -19,6 +20,10 @@ DEFAULT_MODELS = [
     "knn",
     "mlp",
 ]
+PROTOCOL_CONFIRMATION_ID = "1900000000038"
+POLL_CONFIRMED_JOB_ID = "1900000000039"
+PROTOCOL_FAILURE_ID = "1900000000040"
+PROTOCOL_OK_ID = "1900000000041"
 
 
 def _load_source() -> dict:
@@ -446,11 +451,121 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 """
 
 
+def _embedded_experiment_helper_code(entrypoint: str) -> str:
+    helper_path = PROJECT_ROOT / "dify" / "code" / "experiment_workflow.py"
+    helper = helper_path.read_text(encoding="utf-8").rstrip()
+    return helper + "\n\n" + entrypoint.strip() + "\n"
+
+
+def _protocol_confirmation_code() -> str:
+    return _embedded_experiment_helper_code("""import json
+
+
+def main(
+    protocol_token: str,
+    confirm_protocol: bool,
+    models_json_text: str,
+    cv_folds_text: str,
+    optimization_metric_text: str,
+    test_size: float,
+    random_state: int,
+) -> dict:
+    # The shared helper emits protocol_not_confirmed for the explicit false branch.
+    return normalize_protocol_confirmation(
+        protocol_token,
+        confirm_protocol,
+        confirmed_options={
+            "models_json": models_json_text,
+            "cv_folds": cv_folds_text,
+            "optimization_metric": optimization_metric_text,
+            "test_size": test_size,
+            "random_state": random_state,
+        },
+    )
+""")
+
+
+def _poll_confirmed_job_code() -> str:
+    return _embedded_experiment_helper_code("""def main(manifest_json: str, training_csv) -> dict:
+
+    # The helper submits to /v1/jobs and polls /result with bounded retries.
+    return poll_job_until_terminal(
+        "http://repro-runner:8001",
+        manifest_json,
+        training_csv=training_csv,
+    )
+""")
+
+
+def _protocol_failure_code() -> str:
+    return """import json
+
+
+def main(dossier_json: str, validation_json: str, protocol_errors: str) -> dict:
+    try:
+        dossier = json.loads(dossier_json) if isinstance(dossier_json, str) else {}
+    except (TypeError, json.JSONDecodeError):
+        dossier = {}
+    try:
+        validation = json.loads(validation_json) if isinstance(validation_json, str) else {}
+    except (TypeError, json.JSONDecodeError):
+        validation = {}
+    try:
+        errors = json.loads(protocol_errors) if isinstance(protocol_errors, str) else []
+    except (TypeError, json.JSONDecodeError):
+        errors = []
+    if not isinstance(dossier, dict):
+        dossier = {}
+    if not isinstance(validation, dict):
+        validation = {}
+    if not isinstance(errors, list):
+        errors = []
+    safe_errors = [
+        item for item in errors
+        if isinstance(item, dict) and isinstance(item.get("code"), str)
+    ] or [{"code": "protocol_not_confirmed", "message": "Protocol confirmation is required."}]
+    experiment = {"status": "failed", "errors": safe_errors}
+    comparison = {"items": [], "errors": [{"code": "comparison_not_run", "message": "Comparison did not run."}]}
+    assessment = {"strict_status": "not_comparable", "approximate_status": "insufficient_metrics", "items": []}
+    return {
+        "dossier_json": json.dumps(dossier, ensure_ascii=False, separators=(",", ":")),
+        "validation_json": json.dumps(validation, ensure_ascii=False, separators=(",", ":")),
+        "experiment_json": json.dumps(experiment, ensure_ascii=False, separators=(",", ":")),
+        "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
+        "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": "Protocol confirmation is required before the asynchronous experiment can run.",
+    }
+"""
+
+
 def _reordered_start_variables(start_node: dict) -> list[dict]:
     existing = {item["variable"]: deepcopy(item) for item in start_node["data"]["variables"]}
+    protocol_token = {
+        "default": "",
+        "hint": "Short-lived token returned by the prepare workflow.",
+        "label": "protocol_token",
+        "max_length": 100000,
+        "options": [],
+        "placeholder": "",
+        "required": False,
+        "type": "paragraph",
+        "variable": "protocol_token",
+    }
+    confirm_protocol = {
+        "default": False,
+        "hint": "Run only after reviewing and confirming the protocol preview.",
+        "label": "confirm_protocol",
+        "options": [],
+        "placeholder": "",
+        "required": False,
+        "type": "checkbox",
+        "variable": "confirm_protocol",
+    }
     return [
         existing["paper_dossier_json"],
         existing["training_csv"],
+        protocol_token,
+        confirm_protocol,
         existing["metric_overrides_json"],
         existing["target_column"],
         existing["test_size"],
@@ -511,6 +626,186 @@ def _reordered_start_variables(start_node: dict) -> list[dict]:
         existing["close_threshold"],
         existing["partial_threshold"],
     ]
+
+
+def _clone_code_node(template: dict, node_id: str, title: str, code: str, outputs: dict, variables: list[dict], x: int, y: int) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["code"] = code
+    node["data"]["outputs"] = outputs
+    node["data"]["variables"] = variables
+    return node
+
+
+def _clone_if_node(template: dict, node_id: str, title: str, variable_selector: list[str], x: int, y: int) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["cases"] = [
+        {
+            "case_id": "true",
+            "conditions": [
+                {
+                    "comparison_operator": "is",
+                    "id": f"{node_id}-condition",
+                    "value": True,
+                    "varType": "boolean",
+                    "variable_selector": variable_selector,
+                }
+            ],
+            "id": "true",
+            "logical_operator": "and",
+        }
+    ]
+    return node
+
+
+def _make_edge(document: dict, source: str, source_handle: str, target: str) -> dict:
+    nodes = {node["id"]: node for node in _nodes(document)}
+    source_type = nodes[source]["data"]["type"]
+    target_type = nodes[target]["data"]["type"]
+    return {
+        "data": {
+            "isInIteration": False,
+            "isInLoop": False,
+            "sourceType": source_type,
+            "targetType": target_type,
+        },
+        "id": f"{source}-{source_handle}-{target}-target",
+        "source": source,
+        "sourceHandle": source_handle,
+        "target": target,
+        "targetHandle": "target",
+        "type": "custom",
+        "zIndex": 0,
+    }
+
+
+def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
+    start = nodes["Start"]
+    normalize = nodes["normalize_experiment_inputs"]
+    parse_suite = nodes["parse_experiment_response"]
+    template = normalize
+    confirmation = _clone_code_node(
+        template,
+        PROTOCOL_CONFIRMATION_ID,
+        "normalize_protocol_confirmation",
+        _protocol_confirmation_code(),
+        {
+            "manifest_json": {"children": None, "type": "string"},
+            "protocol_errors": {"children": None, "type": "string"},
+            "protocol_ok": {"children": None, "type": "boolean"},
+        },
+        [
+            {"value_selector": [start["id"], "protocol_token"], "value_type": "string", "variable": "protocol_token"},
+            {"value_selector": [start["id"], "confirm_protocol"], "value_type": "boolean", "variable": "confirm_protocol"},
+            {"value_selector": [normalize["id"], "models_json_text"], "value_type": "string", "variable": "models_json_text"},
+            {"value_selector": [normalize["id"], "cv_folds_text"], "value_type": "string", "variable": "cv_folds_text"},
+            {"value_selector": [normalize["id"], "optimization_metric_text"], "value_type": "string", "variable": "optimization_metric_text"},
+            {"value_selector": [start["id"], "test_size"], "value_type": "number", "variable": "test_size"},
+            {"value_selector": [start["id"], "random_state"], "value_type": "number", "variable": "random_state"},
+        ],
+        3210,
+        -360,
+    )
+    poll = _clone_code_node(
+        template,
+        POLL_CONFIRMED_JOB_ID,
+        "poll_confirmed_job",
+        _poll_confirmed_job_code(),
+        {
+            "experiment_errors": {"children": None, "type": "string"},
+            "experiment_json": {"children": None, "type": "string"},
+            "experiment_ok": {"children": None, "type": "boolean"},
+        },
+        [
+            {"value_selector": [confirmation["id"], "manifest_json"], "value_type": "string", "variable": "manifest_json"},
+            {"value_selector": [start["id"], "training_csv"], "value_type": "file", "variable": "training_csv"},
+        ],
+        3540,
+        -360,
+    )
+    protocol_ok = _clone_if_node(
+        nodes["experiment_ok?"],
+        PROTOCOL_OK_ID,
+        "protocol_ok?",
+        [confirmation["id"], "protocol_ok"],
+        3375,
+        -360,
+    )
+    failure = _clone_code_node(
+        nodes["normalize_experiment_http_failure"],
+        PROTOCOL_FAILURE_ID,
+        "protocol_confirmation_failure",
+        _protocol_failure_code(),
+        {
+            "dossier_json": {"children": None, "type": "string"},
+            "validation_json": {"children": None, "type": "string"},
+            "experiment_json": {"children": None, "type": "string"},
+            "comparison_json": {"children": None, "type": "string"},
+            "assessment_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [nodes["parse_dossier_response"]["id"], "dossier_json"], "value_type": "string", "variable": "dossier_json"},
+            {"value_selector": [nodes["parse_validation_response"]["id"], "validation_json"], "value_type": "string", "variable": "validation_json"},
+            {"value_selector": [confirmation["id"], "protocol_errors"], "value_type": "string", "variable": "protocol_errors"},
+        ],
+        3705,
+        -360,
+    )
+    document["workflow"]["graph"]["nodes"].extend([confirmation, protocol_ok, poll, failure])
+
+    parse_suite["data"]["variables"] = [
+        {"value_selector": [poll["id"], "experiment_json"], "value_type": "string", "variable": "body"}
+    ]
+    for edge in document["workflow"]["graph"]["edges"]:
+        if edge["source"] == nodes["run_experiment"]["id"] or edge["target"] == nodes["run_experiment"]["id"]:
+            edge["_remove"] = True
+    document["workflow"]["graph"]["edges"] = [
+        edge for edge in document["workflow"]["graph"]["edges"] if not edge.pop("_remove", False)
+    ]
+    edges = document["workflow"]["graph"]["edges"]
+    edges.extend(
+        [
+            _make_edge(document, normalize["id"], "source", confirmation["id"]),
+            _make_edge(document, confirmation["id"], "source", protocol_ok["id"]),
+            _make_edge(document, protocol_ok["id"], "true", poll["id"]),
+            _make_edge(document, protocol_ok["id"], "false", failure["id"]),
+            _make_edge(document, poll["id"], "source", parse_suite["id"]),
+            _make_edge(document, failure["id"], "source", "1900000000031"),
+        ]
+    )
+    for title in (
+        "normalize_experiment_http_failure",
+        "aggregate_dossier_json",
+        "aggregate_validation_json",
+        "aggregate_experiment_json",
+        "aggregate_comparison_json",
+        "aggregate_assessment_json",
+        "aggregate_markdown_report",
+    ):
+        if title == "normalize_experiment_http_failure":
+            node = nodes[title]
+            node["data"]["variables"] = [
+                {"value_selector": [poll["id"], "experiment_json"], "value_type": "string", "variable": "experiment_json"},
+            ]
+            continue
+        node = nodes[title]
+        variable_name = {
+            "aggregate_dossier_json": "dossier_json",
+            "aggregate_validation_json": "validation_json",
+            "aggregate_experiment_json": "experiment_json",
+            "aggregate_comparison_json": "comparison_json",
+            "aggregate_assessment_json": "assessment_json",
+            "aggregate_markdown_report": "markdown_report",
+        }[title]
+        node["data"]["variables"].append([failure["id"], variable_name])
 
 
 def build_multimodel_dsl() -> dict:
@@ -588,7 +883,161 @@ def build_multimodel_dsl() -> dict:
     formatter["data"]["title"] = "format_suite_comparison_report"
     formatter["data"]["code"] = _suite_report_code()
 
+    _add_protocol_path(document, nodes)
     document["workflow"]["name"] = "paper-comparison-multimodel-workflow"
+    return document
+
+
+def _prepare_code() -> str:
+    return _embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str) -> dict:
+    return prepare_protocol_artifacts(
+        dossier_response_json,
+        diagnosis_response_json,
+        target_column=target_column,
+        protocol_notes=protocol_notes,
+    )
+""")
+
+
+def build_prepare_dsl() -> dict:
+    source = _load_source()
+    source_nodes = _by_title(source)
+    start_id = "2900000000001"
+    dossier_id = "2900000000002"
+    diagnosis_id = "2900000000003"
+    prepare_id = "2900000000004"
+    output_id = "2900000000005"
+
+    start = deepcopy(source_nodes["Start"])
+    start["id"] = start_id
+    start["position"] = {"x": 100, "y": 300}
+    start["positionAbsolute"] = {"x": 100, "y": 300}
+    start["data"]["variables"] = [
+        {
+            "default": "",
+            "hint": "Upload the paper PDF for dossier parsing.",
+            "label": "paper_pdf",
+            "max_length": 0,
+            "options": [],
+            "placeholder": "",
+            "required": True,
+            "type": "file",
+            "variable": "paper_pdf",
+        },
+        {
+            "default": "",
+            "hint": "Upload a UTF-8 tabular binary-classification CSV.",
+            "label": "training_csv",
+            "max_length": 0,
+            "options": [],
+            "placeholder": "",
+            "required": True,
+            "type": "file",
+            "variable": "training_csv",
+        },
+        {
+            "default": "",
+            "hint": "Optional protocol notes; only a digest is retained in the token.",
+            "label": "protocol_notes",
+            "max_length": 512,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "paragraph",
+            "variable": "protocol_notes",
+        },
+        {
+            "default": "",
+            "hint": "Optional target-column suggestion; confirm it in the preview.",
+            "label": "target_column",
+            "max_length": 128,
+            "options": [],
+            "placeholder": "Y_cls",
+            "required": False,
+            "type": "text-input",
+            "variable": "target_column",
+        },
+    ]
+
+    dossier = deepcopy(source_nodes["parse_dossier"])
+    dossier["id"] = dossier_id
+    dossier["position"] = {"x": 600, "y": 200}
+    dossier["positionAbsolute"] = {"x": 600, "y": 200}
+    dossier["data"]["body"]["data"] = [
+        {"file": [start_id, "paper_pdf"], "id": "key-value-1", "key": "file", "type": "file", "value": ""},
+        {"id": "key-value-2", "key": "metric_overrides_json", "type": "text", "value": "[]"},
+    ]
+
+    diagnosis = deepcopy(source_nodes["validate_dataset"])
+    diagnosis["id"] = diagnosis_id
+    diagnosis["position"] = {"x": 600, "y": 420}
+    diagnosis["positionAbsolute"] = {"x": 600, "y": 420}
+    diagnosis["data"]["title"] = "diagnose_dataset"
+    diagnosis["data"]["url"] = "http://repro-runner:8001/v1/diagnose-dataset"
+    diagnosis["data"]["body"]["data"] = [
+        {"file": [start_id, "training_csv"], "id": "key-value-1", "key": "file", "type": "file", "value": ""},
+        {"id": "key-value-2", "key": "target_column", "type": "text", "value": f"{{{{#{start_id}.target_column#}}}}"},
+    ]
+
+    prepare = _clone_code_node(
+        source_nodes["normalize_experiment_inputs"],
+        prepare_id,
+        "prepare_protocol_artifacts",
+        _prepare_code(),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [dossier_id, "body"], "value_type": "string", "variable": "dossier_response_json"},
+            {"value_selector": [diagnosis_id, "body"], "value_type": "string", "variable": "diagnosis_response_json"},
+            {"value_selector": [start_id, "target_column"], "value_type": "string", "variable": "target_column"},
+            {"value_selector": [start_id, "protocol_notes"], "value_type": "string", "variable": "protocol_notes"},
+        ],
+        1100,
+        300,
+    )
+    output = deepcopy(source_nodes["Output"])
+    output["id"] = output_id
+    output["position"] = {"x": 1500, "y": 300}
+    output["positionAbsolute"] = {"x": 1500, "y": 300}
+    output["data"]["outputs"] = [
+        {"value_selector": [prepare_id, "protocol_preview_json"], "value_type": "string", "variable": "protocol_preview_json"},
+        {"value_selector": [prepare_id, "protocol_token"], "value_type": "string", "variable": "protocol_token"},
+    ]
+
+    document = {
+        "app": {
+            "description": "Prepare a safe protocol preview before confirmed asynchronous training.",
+            "icon": "🧪",
+            "icon_background": "#E4FBCC",
+            "icon_type": "emoji",
+            "mode": "workflow",
+            "name": "paper-comparison-prepare-workflow",
+            "use_icon_as_answer_icon": False,
+        },
+        "dependencies": [],
+        "kind": source.get("kind", "app"),
+        "version": source.get("version", "0.7.0"),
+        "workflow": {
+            "conversation_variables": [],
+            "environment_variables": [],
+            "features": deepcopy(source["workflow"]["features"]),
+            "graph": {
+                "edges": [],
+                "nodes": [start, dossier, diagnosis, prepare, output],
+                "viewport": {"x": 0, "y": 0, "zoom": 0.8},
+            },
+            "rag_pipeline_variables": [],
+            "name": "paper-comparison-prepare-workflow",
+        },
+    }
+    document["workflow"]["graph"]["edges"] = [
+        _make_edge(document, start_id, "source", dossier_id),
+        _make_edge(document, dossier_id, "source", diagnosis_id),
+        _make_edge(document, diagnosis_id, "source", prepare_id),
+        _make_edge(document, prepare_id, "source", output_id),
+    ]
     return document
 
 
@@ -602,5 +1051,16 @@ def write_multimodel_dsl(path: Path) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def write_prepare_dsl(path: Path) -> None:
+    content = yaml.safe_dump(
+        build_prepare_dsl(),
+        allow_unicode=True,
+        sort_keys=False,
+        width=4096,
+    )
+    path.write_text(content, encoding="utf-8")
+
+
 if __name__ == "__main__":
     write_multimodel_dsl(TARGET_DSL)
+    write_prepare_dsl(PREPARE_DSL)

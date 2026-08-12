@@ -4,7 +4,12 @@ from dify.code.comparison_workflow import (
     build_suite_comparison_request,
     format_suite_comparison_report,
 )
-from dify.code.experiment_workflow import normalize_suite_inputs
+from dify.code.experiment_workflow import (
+    normalize_protocol_confirmation,
+    prepare_protocol_artifacts,
+    normalize_suite_inputs,
+    poll_job_until_terminal,
+)
 
 
 RAW_SENTINEL = "RAW_CSV_SECRET_07a1"
@@ -340,6 +345,8 @@ def test_format_suite_comparison_report_returns_six_strings_with_rankings_and_sa
     suite_json = json.dumps(
         {
             "experiment_id": "exp-suite-report",
+            "job_id": "job-suite-report",
+            "job_status": "partial",
             "status": "partial",
             "config": {
                 "models": ["logistic_regression", "random_forest", "xgboost"],
@@ -461,6 +468,8 @@ def test_format_suite_comparison_report_returns_six_strings_with_rankings_and_sa
     report = result["markdown_report"]
     for required in (
         "exp-suite-report",
+        "job-suite-report",
+        "job status: partial",
         "random_forest",
         "logistic_regression",
         "xgboost",
@@ -506,3 +515,170 @@ def test_format_suite_comparison_report_redacts_arbitrary_backend_error_text() -
     assert "details redacted for privacy" in report
     for sentinel in SECRET_SENTINELS[1:]:
         assert sentinel not in report
+
+
+def test_normalize_protocol_confirmation_rejects_unconfirmed_manifest() -> None:
+    result = normalize_protocol_confirmation(
+        '{"manifest_id":"manifest-1","target_column":"Y_cls"}',
+        False,
+    )
+
+    assert result["protocol_ok"] is False
+    assert json.loads(result["protocol_errors"])[0]["code"] == "protocol_not_confirmed"
+
+
+def test_prepare_protocol_artifacts_builds_safe_preview_and_short_lived_token() -> None:
+    dossier_json = json.dumps(
+        {
+            "title": "Minimal paper",
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.91,
+                    "dataset": "test",
+                    "split": "test",
+                    "source": "paper_dossier",
+                    "evidence": [{"page": 3, "source_text": RAW_SENTINEL}],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    diagnosis_json = json.dumps(
+        {
+            "valid": True,
+            "dataset": {
+                "rows": 100,
+                "effective_rows": 95,
+                "features": 2,
+                "target": "Y_cls",
+                "missing_values": 1,
+                "duplicate_rows": 4,
+                "class_counts": {"0": 45, "1": 50},
+                "class_ratios": {"0": 0.473684, "1": 0.526316},
+                "column_names": ["x1", "x2", "Y_cls"],
+                "column_types": {"x1": "numeric", "x2": "numeric", "Y_cls": "numeric"},
+                "dataset_id": "sha256:" + "a" * 64,
+            },
+            "columns": [
+                {"name": "x1", "inferred_type": "numeric", "missing_count": 0, "unique_count": 10, "is_target_candidate": False, "risk_flags": []},
+                {"name": "x2", "inferred_type": "numeric", "missing_count": 1, "unique_count": 8, "is_target_candidate": False, "risk_flags": ["missing_values"]},
+                {"name": "Y_cls", "inferred_type": "numeric", "missing_count": 0, "unique_count": 2, "is_target_candidate": True, "risk_flags": []},
+            ],
+            "target_candidates": ["Y_cls"],
+            "risk_flags": ["missing_values"],
+            "recommended_options": {
+                "target_column": "Y_cls",
+                "target_column_confirmed": True,
+                "missing_policy": "reject",
+                "sampling_strategy": "original",
+                "comparison_mode": "paper_comparable",
+                "feature_columns": ["x1", "x2"],
+                "exclude_columns": [],
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    result = prepare_protocol_artifacts(
+        dossier_json,
+        diagnosis_json,
+        target_column="Y_cls",
+        protocol_notes="Focus on tabular binary classification only.",
+        secret="unit-test-secret",
+        now=1_786_377_600,
+        ttl_seconds=300,
+    )
+
+    preview = json.loads(result["protocol_preview_json"])
+    assert preview["dataset"]["dataset_id"] == "sha256:" + "a" * 64
+    assert preview["manifest_draft"]["target_column"] == "Y_cls"
+    assert preview["protocol_notes_digest"].startswith("sha256:")
+    assert preview["paper_summary"]["metrics"][0]["evidence"] == [{"page": 3, "source": "paper_dossier"}]
+    assert RAW_SENTINEL not in result["protocol_preview_json"]
+    assert RAW_SENTINEL not in result["protocol_token"]
+
+    confirmed = normalize_protocol_confirmation(
+        result["protocol_token"],
+        True,
+        secret="unit-test-secret",
+        now=1_786_377_700,
+    )
+    assert confirmed["protocol_ok"] is True
+    manifest = json.loads(confirmed["manifest_json"])
+    assert manifest["dataset_id"] == "sha256:" + "a" * 64
+    assert manifest["target_column"] == "Y_cls"
+
+
+def test_poll_job_until_terminal_returns_safe_terminal_result_and_bounds_intervals() -> None:
+    calls: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+    job_result = {
+        "experiment_id": "exp-20260812T010203Z-deadbeef",
+        "job_id": "job-123",
+        "job_status": "partial",
+        "status": "partial",
+        "results": [],
+    }
+
+    def fake_request(method: str, url: str, payload: str | None = None) -> tuple[int, str]:
+        calls.append((method, url))
+        if method == "POST":
+            return 202, json.dumps({"job_id": "job-123", "status": "queued"}, ensure_ascii=False)
+        if url.endswith("/result"):
+            return 200, json.dumps(job_result, ensure_ascii=False)
+        if len([item for item in calls if item[0] == "GET" and not item[1].endswith("/result")]) == 1:
+            return 200, json.dumps({"job_id": "job-123", "status": "running"}, ensure_ascii=False)
+        return 200, json.dumps({"job_id": "job-123", "status": "partial", "result_id": "exp-20260812T010203Z-deadbeef"}, ensure_ascii=False)
+
+    result = poll_job_until_terminal(
+        "http://repro-runner:8001",
+        '{"manifest_id":"manifest-1"}',
+        request_func=fake_request,
+        sleep_func=sleeps.append,
+        poll_interval_seconds=0.25,
+        max_polls=3,
+    )
+
+    assert result["experiment_ok"] is True
+    experiment = json.loads(result["experiment_json"])
+    assert experiment["job_id"] == "job-123"
+    assert experiment["job_status"] == "partial"
+    assert experiment["experiment_id"] == "exp-20260812T010203Z-deadbeef"
+    assert sleeps == [0.25]
+    assert calls == [
+        ("POST", "http://repro-runner:8001/v1/jobs"),
+        ("GET", "http://repro-runner:8001/v1/jobs/job-123"),
+        ("GET", "http://repro-runner:8001/v1/jobs/job-123"),
+        ("GET", "http://repro-runner:8001/v1/jobs/job-123/result"),
+    ]
+
+
+def test_poll_job_until_terminal_redacts_malformed_backend_payloads() -> None:
+    def fake_request(method: str, url: str, payload: str | None = None) -> tuple[int, str]:
+        if method == "POST":
+            return 202, '{"job_id":"job-123","status":"queued"}'
+        return 200, (
+            '{"job_id":"job-123","status":"failed",'
+            '"error_code":"Traceback (most recent call last): SECRET_TOKEN '
+            'sk-123456 col_a,col_b\\n1,2"}'
+        )
+
+    result = poll_job_until_terminal(
+        "http://repro-runner:8001",
+        '{"manifest_id":"manifest-1","raw":"RAW_CSV_SECRET_07a1"}',
+        request_func=fake_request,
+        sleep_func=lambda _seconds: None,
+        poll_interval_seconds=0.25,
+        max_polls=1,
+    )
+
+    assert result["experiment_ok"] is False
+    errors = json.loads(result["experiment_errors"])
+    assert errors[0]["code"] == "job_failed"
+    payload = json.dumps(result, ensure_ascii=False)
+    for sentinel in SECRET_SENTINELS:
+        assert sentinel not in payload

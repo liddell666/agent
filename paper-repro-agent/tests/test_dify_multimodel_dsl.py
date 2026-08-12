@@ -59,6 +59,8 @@ def test_multimodel_dsl_has_suite_urls_inputs_and_stable_idempotency_key() -> No
     assert list(variables) == [
         "paper_dossier_json",
         "training_csv",
+        "protocol_token",
+        "confirm_protocol",
         "metric_overrides_json",
         "target_column",
         "test_size",

@@ -305,6 +305,8 @@ def format_suite_comparison_report(
         comparison.get("paper_distance_ranking") or assessment.get("paper_distance_ranking")
     )
     experiment_id = suite.get("experiment_id") or comparison.get("experiment_id") or "unavailable"
+    job_id = suite.get("job_id") if isinstance(suite.get("job_id"), str) else "unavailable"
+    job_status = suite.get("job_status") if isinstance(suite.get("job_status"), str) else suite.get("status")
     title = dossier.get("title") if isinstance(dossier.get("title"), str) else "Unnamed paper"
 
     lines = [
@@ -312,6 +314,8 @@ def format_suite_comparison_report(
         "",
         f"paper: {_report_value(title)}",
         f"suite experiment id: {_report_value(experiment_id)}",
+        f"job id: {_report_value(job_id)}",
+        f"job status: {_report_value(job_status)}",
         "shared dataset/split summary:",
         f"- rows={_report_value(dataset.get('rows'))}, effective_rows={_report_value(dataset.get('effective_rows'))}, features={_report_value(dataset.get('features'))}, target={_report_value(dataset.get('target') or config.get('target_column'))}",
         f"- test_size={_report_value(split.get('test_size', config.get('test_size')))}, random_state={_report_value(split.get('random_state', config.get('random_state')))}, train_rows={_report_value(split.get('train_rows'))}, test_rows={_report_value(split.get('test_rows'))}",
