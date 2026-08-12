@@ -123,6 +123,25 @@ def test_merged_prepare_pdf_guard_uses_file_array_if_else_without_code_file_inpu
     assert nodes["prepare_input_failure"]["data"].get("variables", []) == []
 
 
+def test_merged_protocol_code_nodes_bind_workflow_secret_explicitly():
+    nodes = _node_map()
+
+    for title in ("prepare_protocol_artifacts", "normalize_protocol_confirmation"):
+        node = nodes[title]
+        protocol_secret = next(
+            variable
+            for variable in node["data"].get("variables", [])
+            if variable["variable"] == "protocol_secret"
+        )
+        assert protocol_secret == {
+            "value_selector": ["env", "DIFY_PROTOCOL_SECRET"],
+            "value_type": "string",
+            "variable": "protocol_secret",
+        }
+        assert "protocol_secret: str" in node["data"]["code"]
+        assert "secret=protocol_secret" in node["data"]["code"]
+
+
 def test_prepare_draft_response_uses_expected_manifest_metadata_before_output():
     main = _exec_code_node("prepare_protocol_draft_response")
     manifest = {"manifest_id": "sha256:" + "1" * 64, "dataset_id": "sha256:" + "2" * 64}

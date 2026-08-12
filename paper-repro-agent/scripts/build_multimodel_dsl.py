@@ -563,6 +563,14 @@ def _protocol_environment_variables(base_variables: list[dict] | None = None) ->
     return variables
 
 
+def _protocol_secret_input() -> dict:
+    return {
+        "value_selector": ["env", "DIFY_PROTOCOL_SECRET"],
+        "value_type": "string",
+        "variable": "protocol_secret",
+    }
+
+
 def _protocol_confirmation_code() -> str:
     return _embedded_experiment_helper_code("""import json
 
@@ -576,6 +584,7 @@ def main(
     optimization_metric_text: str,
     test_size: float,
     random_state: int,
+    protocol_secret: str = "",
 ) -> dict:
     # The shared helper emits protocol_not_confirmed for the explicit false branch.
     return normalize_protocol_confirmation(
@@ -589,6 +598,7 @@ def main(
             "test_size": test_size,
             "random_state": random_state,
         },
+        secret=protocol_secret,
     )
 """)
 
@@ -919,6 +929,7 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
             {"value_selector": [normalize["id"], "optimization_metric_text"], "value_type": "string", "variable": "optimization_metric_text"},
             {"value_selector": [start["id"], "test_size"], "value_type": "number", "variable": "test_size"},
             {"value_selector": [start["id"], "random_state"], "value_type": "number", "variable": "random_state"},
+            _protocol_secret_input(),
         ],
         3210,
         -360,
@@ -1299,12 +1310,13 @@ def build_multimodel_dsl() -> dict:
 
 
 def _prepare_code() -> str:
-    return _embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str) -> dict:
+    return _embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str, protocol_secret: str = "") -> dict:
     return prepare_protocol_artifacts(
         dossier_response_json,
         diagnosis_response_json,
         target_column=target_column,
         protocol_notes=protocol_notes,
+        secret=protocol_secret,
     )
 """)
 
@@ -1409,6 +1421,7 @@ def build_prepare_dsl_legacy() -> dict:
             {"value_selector": [diagnosis_id, "body"], "value_type": "string", "variable": "diagnosis_response_json"},
             {"value_selector": [start_id, "target_column"], "value_type": "string", "variable": "target_column"},
             {"value_selector": [start_id, "protocol_notes"], "value_type": "string", "variable": "protocol_notes"},
+            _protocol_secret_input(),
         ],
         1100,
         300,
@@ -1628,6 +1641,7 @@ def build_prepare_dsl() -> dict:
             {"value_selector": [diagnosis_id, "body"], "value_type": "string", "variable": "diagnosis_response_json"},
             {"value_selector": [start_id, "target_column"], "value_type": "string", "variable": "target_column"},
             {"value_selector": [start_id, "protocol_notes"], "value_type": "string", "variable": "protocol_notes"},
+            _protocol_secret_input(),
         ],
         2600,
         300,
@@ -1827,12 +1841,13 @@ def _merged_run_mode_code() -> str:
 
 
 def _merged_prepare_code() -> str:
-    return _secret_safe_embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str) -> dict:
+    return _secret_safe_embedded_experiment_helper_code("""def main(dossier_response_json: str, diagnosis_response_json: str, target_column: str, protocol_notes: str, protocol_secret: str = "") -> dict:
     return prepare_protocol_artifacts(
         dossier_response_json,
         diagnosis_response_json,
         target_column=target_column,
         protocol_notes=protocol_notes,
+        secret=protocol_secret,
     )
 """)
 
@@ -2120,6 +2135,11 @@ def build_merged_dsl() -> dict:
     prepare_branch = [_merged_clone_node(prepare_nodes[title], id_map[prepare_nodes[title]["id"]], id_map) for title in prepare_titles]
     prepare_branch_by_title = {node["data"]["title"]: node for node in prepare_branch}
     prepare_branch_by_title["prepare_protocol_artifacts"]["data"]["code"] = _merged_prepare_code()
+    prepare_branch_by_title["prepare_protocol_artifacts"]["data"]["variables"] = [
+        variable
+        for variable in prepare_branch_by_title["prepare_protocol_artifacts"]["data"].get("variables", [])
+        if variable.get("variable") != "protocol_secret"
+    ] + [_protocol_secret_input()]
     prepare_branch_by_title["prepare_protocol_artifacts"]["data"]["outputs"] = {
         "protocol_preview_json": {"children": None, "type": "string"},
         "protocol_token": {"children": None, "type": "string"},
@@ -2448,6 +2468,7 @@ def main(
     optimization_metric_text: str,
     test_size: float,
     random_state: int,
+    protocol_secret: str = "",
 ) -> dict:
     return normalize_protocol_confirmation(
         protocol_token,
@@ -2460,8 +2481,14 @@ def main(
             "test_size": test_size,
             "random_state": random_state,
         },
+        secret=protocol_secret,
     )
 """)
+    run_branch_by_title["normalize_protocol_confirmation"]["data"]["variables"] = [
+        variable
+        for variable in run_branch_by_title["normalize_protocol_confirmation"]["data"].get("variables", [])
+        if variable.get("variable") != "protocol_secret"
+    ] + [_protocol_secret_input()]
     get_draft = _merged_http_node(
         source_nodes["run_experiment"],
         MERGED_GET_DRAFT_ID,

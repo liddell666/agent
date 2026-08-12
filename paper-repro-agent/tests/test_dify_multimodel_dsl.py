@@ -3,7 +3,12 @@ from pathlib import Path
 
 import yaml
 
-from scripts.build_multimodel_dsl import build_multimodel_dsl, write_multimodel_dsl
+from scripts.build_multimodel_dsl import (
+    build_multimodel_dsl,
+    build_prepare_dsl,
+    build_prepare_dsl_legacy,
+    write_multimodel_dsl,
+)
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -30,6 +35,21 @@ def _nodes(document: dict) -> list[dict]:
 
 def _node_map(document: dict) -> dict[str, dict]:
     return {node["data"]["title"]: node for node in _nodes(document)}
+
+
+def _assert_protocol_secret_binding(node: dict) -> None:
+    protocol_secret = next(
+        variable
+        for variable in node["data"].get("variables", [])
+        if variable["variable"] == "protocol_secret"
+    )
+    assert protocol_secret == {
+        "value_selector": ["env", "DIFY_PROTOCOL_SECRET"],
+        "value_type": "string",
+        "variable": "protocol_secret",
+    }
+    assert "protocol_secret: str" in node["data"]["code"]
+    assert "secret=protocol_secret" in node["data"]["code"]
 
 
 def _exec_code_node(title: str):
@@ -193,6 +213,19 @@ def test_generated_protocol_helper_workflows_declare_blank_secret_env() -> None:
         assert secret["value_type"] == "secret", path
         assert secret["value"] == "", path
         assert secret["selector"] == ["env", "DIFY_PROTOCOL_SECRET"], path
+
+
+def test_generated_protocol_code_nodes_bind_workflow_secret_explicitly() -> None:
+    for path, title in (
+        (GENERATED_DSL, "normalize_protocol_confirmation"),
+        (PREPARE_DSL, "prepare_protocol_artifacts"),
+    ):
+        _assert_protocol_secret_binding(_node_map(_document(path))[title])
+
+
+def test_prepare_builders_bind_workflow_secret_explicitly() -> None:
+    for builder in (build_prepare_dsl_legacy, build_prepare_dsl):
+        _assert_protocol_secret_binding(_node_map(builder())["prepare_protocol_artifacts"])
 
 
 def test_protocol_branch_nodes_are_before_aggregators_and_output() -> None:

@@ -1,34 +1,51 @@
-# Task 7 UI acceptance blocker follow-up - 2026-08-13
+# Task 7 UI acceptance blocker follow-up - 2026-08-12
 
 ## Root causes
 
-Live Dify acceptance reproduced a real merged-DSL prepare failure after importing
-the workflow and uploading a PDF plus CSV:
+After commit `2b0d9e2` fixed the merged-graph PDF guard and the run-branch
+`draft_id` output contract, live Dify UI prepare advanced past parser and
+diagnosis into `POST /v1/protocol-drafts`, but that request failed with
+HTTP `422` / `protocol_token_tampered`.
 
-`Start -> normalize_run_mode -> run_mode? -> prepare_inputs_ok?` failed with
-`Type is not JSON serializable: File`.
+The remaining mismatch was secret propagation across Dify Code nodes. The
+embedded helper code still defined `_PROTOCOL_SECRET` via
+`os.environ.get("DIFY_PROTOCOL_SECRET")`, but Dify workflow environment
+variables are not exposed inside Code-node Python through `os.environ`. In the
+real UI this meant `prepare_protocol_artifacts(...)` signed the preview token
+with an empty secret inside the Code node while repro-runner validated the same
+token with the configured server-side secret. The HMAC no longer matched, so
+`/v1/protocol-drafts` rejected the draft write as `protocol_token_tampered`.
 
-The merged graph had a Code node variable wired directly to `Start.paper_pdf`
-with `value_type: file`. Dify Code/Template-style nodes serialize inputs before
-execution, and raw File objects are not safely JSON-serializable there. The
-legacy prepare workflow avoided this because it sent the Start file directly to
-the HTTP form-data parser node and never passed the File through Code. Dify
-IF/ELSE supports presence checks on file arrays, so the safe prepare guard is an
-IF/ELSE condition on `Start.paper_pdf`, not a Code node.
+The correct Dify boundary is an explicit Code-node input sourced from
+`["env", "DIFY_PROTOCOL_SECRET"]`, with the entrypoint threading that input as
+`secret=protocol_secret`. The blank secret declaration still belongs only in the
+workflow `environment_variables` export; the serialized DSL must not embed any
+real secret value.
 
-Live Dify acceptance also reproduced a run-branch failure when
-`confirm_protocol=false`: `normalize_protocol_confirmation` failed with
-`Not all output parameters are validated.` The embedded helper returned
-`protocol_ok`, `manifest_json`, `draft_id`, and `protocol_errors`, while the
-generated Code node declared only `protocol_ok`, `manifest_json`, and
-`protocol_errors`. Dify validates Code node return keys against declared
-outputs, so both false and true branches must return exactly the declared key
-set. The merged run branch also uses `draft_id` downstream to read the saved
-protocol draft, so the correct fix is to declare `draft_id` instead of dropping
-it from the entrypoint.
+The earlier August 12, 2026 UI findings still applied too:
+
+- the merged prepare guard could not pass raw `paper_pdf` file objects through a
+  Code node because Dify serializes Code-node inputs before execution; and
+- the merged run branch needed `draft_id` declared in
+  `normalize_protocol_confirmation` outputs because Dify validates returned keys
+  against the node contract and the downstream draft-read path consumes
+  `draft_id`.
 
 ## Fix
 
+- Added a shared `_protocol_secret_input()` generator helper that binds
+  `protocol_secret` from `value_selector: ["env", "DIFY_PROTOCOL_SECRET"]` with
+  `value_type: string`.
+- Updated the shared multimodel protocol-confirmation Code node entrypoint to
+  accept `protocol_secret: str = ""` and call
+  `normalize_protocol_confirmation(..., secret=protocol_secret)`.
+- Updated the standalone prepare builder entrypoint, legacy prepare builder
+  entrypoint, and merged prepare entrypoint to accept `protocol_secret: str = ""`
+  and call `prepare_protocol_artifacts(..., secret=protocol_secret)`.
+- Regenerated the relevant workflow YAML so the multimodel, prepare, and merged
+  DSLs all declare the explicit Code-node secret input while preserving the
+  blank `DIFY_PROTOCOL_SECRET` environment declaration and keeping the DSL free
+  of any actual secret value.
 - Replaced the merged prepare-side `prepare_inputs_ok?` Code node and
   `prepare_inputs_valid?` boolean IF node with one `prepare_pdf_present?`
   IF/ELSE node.
@@ -44,29 +61,39 @@ it from the entrypoint.
 
 ## RED evidence
 
-Command:
+Clean-snapshot regression against commit `2b0d9e2` with only the new tests
+overlaid:
 
-`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_merged_dsl.py -q -k "prepare_pdf_guard"`
+`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_multimodel_dsl.py -q -k "generated_protocol_code_nodes_bind_workflow_secret_explicitly or prepare_builders_bind_workflow_secret_explicitly"`
 
 Outcome:
 
-- `1 failed, 10 deselected`
-- Expected failure: `prepare_inputs_ok?` had a Code variable
+- `2 failed, 12 deselected`
+- Expected failure: generated and builder-produced
+  `prepare_protocol_artifacts` / `normalize_protocol_confirmation` nodes were
+  missing any `protocol_secret` variable binding, so the assertions raised
+  `StopIteration`.
+
+Second clean-snapshot regression against commit `2b0d9e2`:
+
+`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_merged_dsl.py -q -k "merged_protocol_code_nodes_bind_workflow_secret_explicitly"`
+
+Outcome:
+
+- `1 failed, 12 deselected`
+- Expected failure: merged `prepare_protocol_artifacts` and
+  `normalize_protocol_confirmation` nodes also lacked the explicit
+  `protocol_secret` input.
+
+Earlier August 12, 2026 RED evidence for the file-guard and output-contract
+fixes:
+
+- `tests\test_dify_merged_dsl.py -q -k "prepare_pdf_guard"` failed because
+  `prepare_inputs_ok?` had a Code variable
   `{'value_selector': ['3900000000001', 'paper_pdf'], 'value_type': 'file', 'variable': 'paper_pdf'}`.
-
-An earlier attempt with `.\.venv312\Scripts\python.exe` failed because that venv
-does not exist in this worktree; the Python 3.13 system runner was then used for
-the actual RED/GREEN cycle.
-
-Second RED command:
-
-`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_merged_dsl.py -q -k "protocol_confirmation_outputs"`
-
-Outcome:
-
-- `1 failed, 11 deselected`
-- Expected failure: false branch returned extra `draft_id` compared with the
-  declared Dify Code node outputs.
+- `tests\test_dify_merged_dsl.py -q -k "protocol_confirmation_outputs"` failed
+  because the false branch returned extra `draft_id` compared with the declared
+  Dify Code node outputs.
 
 ## GREEN and verification evidence
 
@@ -78,25 +105,40 @@ Outcome:
 
 - exit `0`
 - regenerated `dify/paper-comparison-merged-workflow.yml`
-- regenerated `dify/paper-comparison-multimodel-workflow.yml` because the
-  shared generated run-branch `normalize_protocol_confirmation` output
-  declaration is used there too
+- regenerated `dify/paper-comparison-multimodel-workflow.yml`
+- regenerated `dify/paper-comparison-prepare-workflow.yml`
 
-Focused GREEN:
+Secret-binding GREEN:
 
-`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_merged_dsl.py -q -k "prepare_pdf_guard or graph_wires_prepare or protocol_confirmation_outputs"`
+`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_multimodel_dsl.py -q -k "generated_protocol_code_nodes_bind_workflow_secret_explicitly or prepare_builders_bind_workflow_secret_explicitly"`
 
 Outcome:
 
-- `3 passed, 9 deselected`
+- `2 passed, 12 deselected`
+
+Merged secret-binding GREEN:
+
+`$env:PYTHONPATH='.;src'; python -m pytest tests\test_dify_merged_dsl.py -q -k "merged_protocol_code_nodes_bind_workflow_secret_explicitly"`
+
+Outcome:
+
+- `1 passed, 12 deselected`
 
 Relevant Dify DSL/helper suite:
 
-`$env:PYTHONPATH='.;src'; python -m pytest -q tests\test_dify_merged_dsl.py tests\test_dify_multimodel_dsl.py tests\test_dify_multimodel_code.py tests\test_dify_comparison_dsl.py tests\test_dify_code.py`
+`$env:PYTHONPATH='.;src'; python -m pytest -q tests\test_dify_multimodel_dsl.py tests\test_dify_merged_dsl.py tests\test_dify_multimodel_code.py`
 
 Outcome:
 
-- `86 passed in 20.14s`
+- `54 passed in 19.62s`
+
+Determinism checks:
+
+`$env:PYTHONPATH='.;src'; python -m pytest -q tests\test_dify_multimodel_dsl.py::test_generator_output_is_deterministic_and_keeps_source_workflow_unchanged tests\test_dify_merged_dsl.py::test_merged_builder_is_deterministic_and_matches_generated_file`
+
+Outcome:
+
+- `2 passed in 4.21s`
 
 Compile check:
 
@@ -106,31 +148,24 @@ Outcome:
 
 - exit `0`
 
-Generated graph inspection:
+Generated graph inspection now confirms:
 
-- `code_file_vars= []`
-- `guard_operator= not empty`
-- `guard_varType= array[file]`
-- `guard_selector= ['3900000000001', 'paper_pdf']`
-- `prepare_failure_variables= []`
-- `parse_form_file= ['3900000000001', 'paper_pdf']`
-- `confirmation_outputs= ['draft_id', 'manifest_json', 'protocol_errors', 'protocol_ok']`
-
-Broader Dify test attempt:
-
-`$env:PYTHONPATH='.;src'; python -m pytest -q tests\test_dify_merged_dsl.py tests\test_dify_multimodel_dsl.py tests\test_dify_multimodel_code.py tests\test_dify_job_workflow.py tests\test_dify_comparison_dsl.py tests\test_dify_code.py`
-
-Outcome:
-
-- `91 passed`, `2 failed`
-- Failures are in the separate `tests/test_dify_job_workflow.py` prepare/run
-  workflow contract, where existing generated prepare code includes
-  `DIFY_PROTOCOL_SECRET` and returns draft readiness fields while that dirty
-  test still expects only `PARSER_API_TOKEN` and two prepare outputs. No
-  `paper-comparison-prepare-workflow.yml` file was changed by this follow-up.
+- multimodel `normalize_protocol_confirmation` binds
+  `protocol_secret <- ["env", "DIFY_PROTOCOL_SECRET"]`
+- merged `prepare_protocol_artifacts` binds
+  `protocol_secret <- ["env", "DIFY_PROTOCOL_SECRET"]`
+- merged `normalize_protocol_confirmation` binds
+  `protocol_secret <- ["env", "DIFY_PROTOCOL_SECRET"]`
+- standalone prepare builders bind the same explicit secret input
+- the blank secret environment declaration remains exported with `value: ""`
+  and `value_type: secret`
 
 ## UI acceptance status
 
+- The remaining live-secret propagation bug is addressed at graph contract
+  level: every affected Code node now receives `protocol_secret` explicitly from
+  the workflow environment selector instead of relying on `os.environ` inside
+  Dify Python.
 - Generated merged DSL is ready for re-import.
 - The previously reproduced UI failure is addressed at graph level: no Code node
   receives raw File variables, and the prepare PDF guard is a Dify IF/ELSE
@@ -140,9 +175,9 @@ Outcome:
   tested false/true branches return exactly the declared key set.
 - Remaining UI acceptance: import the regenerated merged DSL into Dify and rerun
   prepare mode with a PDF plus CSV to confirm the live UI reaches
-  `parse_paper` instead of failing at input preparation, then rerun run mode with
-  `confirm_protocol=false` to confirm Dify accepts
-  `normalize_protocol_confirmation` outputs and follows the false branch.
+  `parse_paper` instead of failing at input preparation, then rerun run mode
+  with the same secret configured on both sides to confirm Dify accepts the
+  protocol-draft write and no longer reports `protocol_token_tampered`.
 
 # Task 7 report - 2026-08-11
 
