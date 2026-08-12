@@ -4,6 +4,16 @@ This workflow is the first step of the confirmed asynchronous experiment path.
 Import it as a separate Dify workflow/app version; do not overwrite the published
 V3 workflow.
 
+The generated path is:
+
+`paper_pdf → paper-parser → bounded parser-response validation → DeepSeek PaperDossier extraction → evidence validation → repro-runner dataset diagnosis → protocol preview`
+
+The parser validator compacts large successful parser responses before passing
+them through Dify Code-node variables. It preserves page numbers and bounded
+evidence text while keeping the serialized value below Dify's Code-node output
+limit; the compacted payload carries the warning
+`parser_output_compacted_for_workflow_limit`.
+
 ## Inputs
 
 - `paper_pdf`: the paper PDF used for dossier parsing;
@@ -32,6 +42,13 @@ store.
 Set `DIFY_PROTOCOL_SECRET` as a runtime secret in both imported Dify workflows.
 The embedded local fallback is only for tests and single-user development; never
 use it for a shared or production deployment.
+
+The imported preparation workflow also declares the `PARSER_API_TOKEN` Secret
+environment variable. Its exported value is intentionally empty; fill it in the
+Dify app after import with the matching `paper-parser` runtime token. The CSV
+diagnosis calls `http://repro-runner:8001/v1/diagnose-dataset` and therefore
+requires the current `repro-runner` image to be attached to Dify's
+`docker_default` network.
 
 ## Handoff to the confirmed run
 

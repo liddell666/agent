@@ -9,6 +9,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
+PAPER_DOSSIER_DSL = PROJECT_ROOT / "dify" / "paper-dossier-workflow.yml"
 TARGET_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
 PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
 DEFAULT_MODELS = [
@@ -28,6 +29,10 @@ PROTOCOL_OK_ID = "1900000000041"
 
 def _load_source() -> dict:
     return yaml.safe_load(SOURCE_DSL.read_text(encoding="utf-8"))
+
+
+def _load_paper_dossier_source() -> dict:
+    return yaml.safe_load(PAPER_DOSSIER_DSL.read_text(encoding="utf-8"))
 
 
 def _nodes(document: dict) -> list[dict]:
@@ -455,6 +460,11 @@ def _embedded_experiment_helper_code(entrypoint: str) -> str:
     helper_path = PROJECT_ROOT / "dify" / "code" / "experiment_workflow.py"
     helper = helper_path.read_text(encoding="utf-8").rstrip()
     return helper + "\n\n" + entrypoint.strip() + "\n"
+
+
+def _embedded_parser_validator_code() -> str:
+    validator_path = PROJECT_ROOT / "dify" / "code" / "validate_parser.py"
+    return validator_path.read_text(encoding="utf-8").rstrip() + "\n"
 
 
 def _protocol_confirmation_code() -> str:
@@ -902,7 +912,7 @@ def _prepare_code() -> str:
 """)
 
 
-def build_prepare_dsl() -> dict:
+def build_prepare_dsl_legacy() -> dict:
     source = _load_source()
     source_nodes = _by_title(source)
     start_id = "2900000000001"
@@ -917,6 +927,9 @@ def build_prepare_dsl() -> dict:
     start["positionAbsolute"] = {"x": 100, "y": 300}
     start["data"]["variables"] = [
         {
+            "allowed_file_extensions": [".PDF"],
+            "allowed_file_types": ["document"],
+            "allowed_file_upload_methods": ["local_file"],
             "default": "",
             "hint": "Upload the paper PDF for dossier parsing.",
             "label": "paper_pdf",
@@ -928,6 +941,9 @@ def build_prepare_dsl() -> dict:
             "variable": "paper_pdf",
         },
         {
+            "allowed_file_extensions": [".CSV"],
+            "allowed_file_types": ["document"],
+            "allowed_file_upload_methods": ["local_file"],
             "default": "",
             "hint": "Upload a UTF-8 tabular binary-classification CSV.",
             "label": "training_csv",
@@ -1038,6 +1054,230 @@ def build_prepare_dsl() -> dict:
     document["workflow"]["graph"]["edges"] = [
         _make_edge(document, start_id, "source", dossier_id),
         _make_edge(document, dossier_id, "source", diagnosis_id),
+        _make_edge(document, diagnosis_id, "source", prepare_id),
+        _make_edge(document, prepare_id, "source", output_id),
+    ]
+    return document
+
+
+def build_prepare_dsl() -> dict:
+    """Compose the PDF-to-protocol workflow from the working dossier workflow pieces."""
+    source = _load_source()
+    source_nodes = _by_title(source)
+    dossier_source = _load_paper_dossier_source()
+    dossier_nodes = _nodes(dossier_source)
+    http_template = next(node for node in dossier_nodes if node["data"]["type"] == "http-request")
+    code_templates = [node for node in dossier_nodes if node["data"]["type"] == "code"]
+    gate_templates = [node for node in dossier_nodes if node["data"]["type"] == "if-else"]
+    llm_template = next(node for node in dossier_nodes if node["data"]["type"] == "llm")
+
+    start_id = "2900000000001"
+    parser_id = "2900000000002"
+    parser_validate_id = "2900000000003"
+    parser_gate_id = "2900000000004"
+    extract_id = "2900000000005"
+    dossier_validate_id = "2900000000006"
+    dossier_gate_id = "2900000000007"
+    diagnosis_id = "2900000000008"
+    prepare_id = "2900000000009"
+    output_id = "2900000000010"
+
+    start = deepcopy(source_nodes["Start"])
+    start["id"] = start_id
+    start["position"] = {"x": 100, "y": 300}
+    start["positionAbsolute"] = {"x": 100, "y": 300}
+    start["data"]["variables"] = [
+        {
+            "allowed_file_extensions": [".PDF"],
+            "allowed_file_types": ["document"],
+            "allowed_file_upload_methods": ["local_file"],
+            "default": "",
+            "hint": "Upload the paper PDF for dossier parsing.",
+            "label": "paper_pdf",
+            "max_length": 0,
+            "options": [],
+            "placeholder": "",
+            "required": True,
+            "type": "file",
+            "variable": "paper_pdf",
+        },
+        {
+            "allowed_file_extensions": [".CSV"],
+            "allowed_file_types": ["document"],
+            "allowed_file_upload_methods": ["local_file"],
+            "default": "",
+            "hint": "Upload a UTF-8 tabular binary-classification CSV.",
+            "label": "training_csv",
+            "max_length": 0,
+            "options": [],
+            "placeholder": "",
+            "required": True,
+            "type": "file",
+            "variable": "training_csv",
+        },
+        {
+            "default": "",
+            "hint": "Optional protocol notes; only a digest is retained in the token.",
+            "label": "protocol_notes",
+            "max_length": 512,
+            "options": [],
+            "placeholder": "",
+            "required": False,
+            "type": "paragraph",
+            "variable": "protocol_notes",
+        },
+        {
+            "default": "",
+            "hint": "Optional target-column suggestion; confirm it in the preview.",
+            "label": "target_column",
+            "max_length": 128,
+            "options": [],
+            "placeholder": "Y_cls",
+            "required": False,
+            "type": "text-input",
+            "variable": "target_column",
+        },
+    ]
+
+    parser = deepcopy(http_template)
+    parser["id"] = parser_id
+    parser["position"] = {"x": 500, "y": 300}
+    parser["positionAbsolute"] = {"x": 500, "y": 300}
+    parser["data"]["title"] = "parse_paper"
+    parser["data"]["url"] = "http://paper-parser:8000/v1/parse"
+    parser["data"]["headers"] = "X-Parser-Token:{{#env.PARSER_API_TOKEN#}}"
+    parser["data"]["body"]["type"] = "form-data"
+    parser["data"]["body"]["data"] = [
+        {"file": [start_id, "paper_pdf"], "id": "key-value-1", "key": "file", "type": "file", "value": ""},
+    ]
+    parser["data"]["retry_config"] = {
+        "max_retries": 2,
+        "retry_enabled": True,
+        "retry_interval": 1000,
+    }
+
+    parser_validate = deepcopy(code_templates[0])
+    parser_validate["id"] = parser_validate_id
+    parser_validate["position"] = {"x": 800, "y": 300}
+    parser_validate["positionAbsolute"] = {"x": 800, "y": 300}
+    parser_validate["data"]["title"] = "validate_parser_response"
+    parser_validate["data"]["code"] = _embedded_parser_validator_code()
+    parser_validate["data"]["variables"] = [
+        {"value_selector": [parser_id, "body"], "value_type": "string", "variable": "body"},
+        {"value_selector": [parser_id, "status_code"], "value_type": "number", "variable": "status_code"},
+    ]
+
+    parser_gate = deepcopy(gate_templates[0])
+    parser_gate["id"] = parser_gate_id
+    parser_gate["position"] = {"x": 1100, "y": 300}
+    parser_gate["positionAbsolute"] = {"x": 1100, "y": 300}
+    parser_gate["data"]["title"] = "paper_parser_ok?"
+    parser_gate["data"]["cases"][0]["conditions"][0]["variable_selector"] = [parser_validate_id, "can_continue"]
+
+    extract = deepcopy(llm_template)
+    extract["id"] = extract_id
+    extract["position"] = {"x": 1400, "y": 300}
+    extract["positionAbsolute"] = {"x": 1400, "y": 300}
+    extract["data"]["title"] = "extract_paper_dossier"
+    for message in extract["data"].get("prompt_template", []):
+        if not isinstance(message, dict) or not isinstance(message.get("text"), str):
+            continue
+        message["text"] = (
+            message["text"]
+            .replace("{{#1785821039306.parsed_json#}}", f"{{{{#{parser_validate_id}.parsed_json#}}}}")
+            .replace("{{#1785820293883.user_notes#}}", f"{{{{#{start_id}.protocol_notes#}}}}")
+            .replace("{{#1785820293883.target_language#}}", "简体中文")
+        )
+
+    dossier_validate = deepcopy(code_templates[1])
+    dossier_validate["id"] = dossier_validate_id
+    dossier_validate["position"] = {"x": 1700, "y": 300}
+    dossier_validate["positionAbsolute"] = {"x": 1700, "y": 300}
+    dossier_validate["data"]["title"] = "validate_paper_dossier"
+    dossier_validate["data"]["variables"] = [
+        {"value_selector": [extract_id, "structured_output"], "value_type": "object", "variable": "dossier_json"},
+        {"value_selector": [parser_validate_id, "parsed_json"], "value_type": "string", "variable": "page_count"},
+    ]
+
+    dossier_gate = deepcopy(gate_templates[1])
+    dossier_gate["id"] = dossier_gate_id
+    dossier_gate["position"] = {"x": 2000, "y": 300}
+    dossier_gate["positionAbsolute"] = {"x": 2000, "y": 300}
+    dossier_gate["data"]["title"] = "paper_dossier_ok?"
+    dossier_gate["data"]["cases"][0]["conditions"][0]["variable_selector"] = [dossier_validate_id, "can_continue"]
+
+    diagnosis = deepcopy(source_nodes["validate_dataset"])
+    diagnosis["id"] = diagnosis_id
+    diagnosis["position"] = {"x": 2300, "y": 300}
+    diagnosis["positionAbsolute"] = {"x": 2300, "y": 300}
+    diagnosis["data"]["title"] = "diagnose_dataset"
+    diagnosis["data"]["url"] = "http://repro-runner:8001/v1/diagnose-dataset"
+    diagnosis["data"]["body"]["data"] = [
+        {"file": [start_id, "training_csv"], "id": "key-value-1", "key": "file", "type": "file", "value": ""},
+        {"id": "key-value-2", "key": "target_column", "type": "text", "value": f"{{{{#{start_id}.target_column#}}}}"},
+    ]
+
+    prepare = _clone_code_node(
+        source_nodes["normalize_experiment_inputs"],
+        prepare_id,
+        "prepare_protocol_artifacts",
+        _prepare_code(),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [dossier_validate_id, "validated_json"], "value_type": "string", "variable": "dossier_response_json"},
+            {"value_selector": [diagnosis_id, "body"], "value_type": "string", "variable": "diagnosis_response_json"},
+            {"value_selector": [start_id, "target_column"], "value_type": "string", "variable": "target_column"},
+            {"value_selector": [start_id, "protocol_notes"], "value_type": "string", "variable": "protocol_notes"},
+        ],
+        2600,
+        300,
+    )
+    output = deepcopy(source_nodes["Output"])
+    output["id"] = output_id
+    output["position"] = {"x": 2900, "y": 300}
+    output["positionAbsolute"] = {"x": 2900, "y": 300}
+    output["data"]["outputs"] = [
+        {"value_selector": [prepare_id, "protocol_preview_json"], "value_type": "string", "variable": "protocol_preview_json"},
+        {"value_selector": [prepare_id, "protocol_token"], "value_type": "string", "variable": "protocol_token"},
+    ]
+
+    document = {
+        "app": {
+            "description": "Prepare a safe protocol preview before confirmed asynchronous training.",
+            "icon": "馃И",
+            "icon_background": "#E4FBCC",
+            "icon_type": "emoji",
+            "mode": "workflow",
+            "name": "paper-comparison-prepare-workflow",
+            "use_icon_as_answer_icon": False,
+        },
+        "dependencies": [],
+        "kind": source.get("kind", "app"),
+        "version": source.get("version", "0.7.0"),
+        "workflow": {
+            "conversation_variables": [],
+            "environment_variables": deepcopy(dossier_source["workflow"].get("environment_variables", [])),
+            "features": deepcopy(source["workflow"]["features"]),
+            "graph": {
+                "edges": [],
+                "nodes": [start, parser, parser_validate, parser_gate, extract, dossier_validate, dossier_gate, diagnosis, prepare, output],
+                "viewport": {"x": 0, "y": 0, "zoom": 0.8},
+            },
+            "rag_pipeline_variables": [],
+            "name": "paper-comparison-prepare-workflow",
+        },
+    }
+    document["workflow"]["graph"]["edges"] = [
+        _make_edge(document, start_id, "source", parser_id),
+        _make_edge(document, parser_id, "source", parser_validate_id),
+        _make_edge(document, parser_validate_id, "source", parser_gate_id),
+        _make_edge(document, parser_gate_id, "true", extract_id),
+        _make_edge(document, extract_id, "source", dossier_validate_id),
+        _make_edge(document, dossier_validate_id, "source", dossier_gate_id),
+        _make_edge(document, dossier_gate_id, "true", diagnosis_id),
         _make_edge(document, diagnosis_id, "source", prepare_id),
         _make_edge(document, prepare_id, "source", output_id),
     ]

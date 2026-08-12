@@ -114,6 +114,25 @@ def test_parser_validator_rejects_oversized_or_incomplete_json() -> None:
         assert missing_key in result["parser_warnings"][0]
 
 
+def test_parser_validator_compacts_large_valid_payload_for_dify_output_limit() -> None:
+    payload = _parsed_paper()
+    payload["markdown"] = "\n".join(f"<!-- page={page} -->\n" + ("important text " * 300) for page in range(1, 156))
+    payload["elements"] = [
+        {"kind": "text", "page": page, "text": "page evidence " * 500, "bbox": [0, 0, 1, 1]}
+        for page in range(1, 156)
+    ]
+
+    result = validate_parser(json.dumps(payload), 200)
+
+    assert result["can_continue"] is True
+    assert len(result["parsed_json"]) < 400_000
+    compacted = json.loads(result["parsed_json"])
+    assert compacted["page_count"] == 2
+    assert compacted["elements"][0]["page"] == 1
+    assert "bbox" not in compacted["elements"][0]
+    assert "parser_output_compacted_for_workflow_limit" in compacted["warnings"]
+
+
 def test_evidence_validator_accepts_page_backed_metric() -> None:
     result = validate_evidence(json.dumps(_dossier()), 2)
 

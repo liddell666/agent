@@ -9,6 +9,42 @@ Overall status: PASS WITH LIMITATIONS
 
 This record covers the Task 9 verification brief only. I did not modify the legacy published workflow YAML. The worktree already contained unrelated unstaged scratch-report edits under `.superpowers/sdd/task-{3,4,5,7,8}-report.md`; they were left untouched.
 
+## Latest continuation: live PDF/CSV preparation
+
+Status: PASS for the preparation workflow; the separate confirmed asynchronous
+run remains outside this record.
+
+- PASS - the generated preparation DSL now declares local-only PDF/CSV upload
+  contracts and the `PARSER_API_TOKEN` Secret environment variable.
+- PASS - the PDF path calls `paper-parser /v1/parse`, validates the response,
+  extracts a `PaperDossier` with the configured DeepSeek model, and validates
+  page-backed evidence before the dataset branch.
+- PASS - large successful parser responses are compacted by
+  `dify/code/validate_parser.py` so the Dify Code-node output stays below the
+  400,000-character limit while preserving page numbers and bounded evidence
+  text.
+- PASS - the focused Dify code/workflow tests passed after this change:
+  `30 passed`.
+- PASS - a fresh Dify app (`b74878e2-70f1-4c9c-b36b-faf708cdd4a6`) completed a
+  real run (`50730681-767d-42e2-ba9c-95cfe728245f`) with the supplied 155-page
+  paper PDF and `2training_samples_15180.csv`.
+- PASS - all preparation nodes succeeded: `parse_paper` (254.6s), parser
+  validation, DeepSeek extraction (112.8s), dossier validation, dataset
+  diagnosis, protocol preparation, and final output.
+- PASS - the final preview contained 15,180 rows, class counts `13800/1380`,
+  target `Y_cls`, all seven configured model names, zero unresolved protocol
+  fields, and the opaque protocol token. It reported duplicate rows and severe
+  class imbalance as warnings; no CSV rows, PDF source text, or token value was
+  written to the verification record.
+- PASS - the stale live `repro-runner` container was replaced with an image
+  built from this worktree, while its existing experiment-data bind mount and
+  `docker_default` network alias were preserved. The old container was stopped
+  but retained as `repro-runner-legacy-20260812` for rollback inspection.
+
+The confirmed run workflow still expects the protocol token and a re-uploaded
+CSV. It was not launched in this continuation, so this is not a claim that all
+seven real-data models have completed through the confirmed Dify workflow.
+
 ## Verification summary
 
 - PASS - required focused pytest gate now passes from a plain shell with repository-managed pytest configuration and `PYTHONPATH` unset.

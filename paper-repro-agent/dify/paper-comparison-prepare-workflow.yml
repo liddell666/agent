@@ -1,6 +1,6 @@
 app:
   description: Prepare a safe protocol preview before confirmed asynchronous training.
-  icon: 🧪
+  icon: 馃И
   icon_background: '#E4FBCC'
   icon_type: emoji
   mode: workflow
@@ -11,7 +11,15 @@ kind: app
 version: 0.7.0
 workflow:
   conversation_variables: []
-  environment_variables: []
+  environment_variables:
+  - description: paper-parser 请求头密钥；导出 DSL 时不包含明文值
+    id: 7caa209d-1f65-47c4-98db-0da6df355cfc
+    name: PARSER_API_TOKEN
+    selector:
+    - env
+    - PARSER_API_TOKEN
+    value: ''
+    value_type: secret
   features:
     file_upload:
       allowed_file_extensions:
@@ -77,7 +85,7 @@ workflow:
         isInIteration: false
         isInLoop: false
         sourceType: http-request
-        targetType: http-request
+        targetType: code
       id: 2900000000002-source-2900000000003-target
       source: '2900000000002'
       sourceHandle: source
@@ -88,8 +96,8 @@ workflow:
     - data:
         isInIteration: false
         isInLoop: false
-        sourceType: http-request
-        targetType: code
+        sourceType: code
+        targetType: if-else
       id: 2900000000003-source-2900000000004-target
       source: '2900000000003'
       sourceHandle: source
@@ -100,12 +108,72 @@ workflow:
     - data:
         isInIteration: false
         isInLoop: false
+        sourceType: if-else
+        targetType: llm
+      id: 2900000000004-true-2900000000005-target
+      source: '2900000000004'
+      sourceHandle: 'true'
+      target: '2900000000005'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: 2900000000005-source-2900000000006-target
+      source: '2900000000005'
+      sourceHandle: source
+      target: '2900000000006'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: if-else
+      id: 2900000000006-source-2900000000007-target
+      source: '2900000000006'
+      sourceHandle: source
+      target: '2900000000007'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: if-else
+        targetType: http-request
+      id: 2900000000007-true-2900000000008-target
+      source: '2900000000007'
+      sourceHandle: 'true'
+      target: '2900000000008'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 2900000000008-source-2900000000009-target
+      source: '2900000000008'
+      sourceHandle: source
+      target: '2900000000009'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
         sourceType: code
         targetType: end
-      id: 2900000000004-source-2900000000005-target
-      source: '2900000000004'
+      id: 2900000000009-source-2900000000010-target
+      source: '2900000000009'
       sourceHandle: source
-      target: '2900000000005'
+      target: '2900000000010'
       targetHandle: target
       type: custom
       zIndex: 0
@@ -115,7 +183,13 @@ workflow:
         title: Start
         type: start
         variables:
-        - default: ''
+        - allowed_file_extensions:
+          - .PDF
+          allowed_file_types:
+          - document
+          allowed_file_upload_methods:
+          - local_file
+          default: ''
           hint: Upload the paper PDF for dossier parsing.
           label: paper_pdf
           max_length: 0
@@ -124,7 +198,13 @@ workflow:
           required: true
           type: file
           variable: paper_pdf
-        - default: ''
+        - allowed_file_extensions:
+          - .CSV
+          allowed_file_types:
+          - document
+          allowed_file_upload_methods:
+          - local_file
+          default: ''
           hint: Upload a UTF-8 tabular binary-classification CSV.
           label: training_csv
           max_length: 0
@@ -178,13 +258,8 @@ workflow:
             key: file
             type: file
             value: ''
-          - id: key-value-2
-            key: metric_overrides_json
-            type: text
-            value: '[]'
           type: form-data
-        error_strategy: fail-branch
-        headers: ''
+        headers: X-Parser-Token:{{#env.PARSER_API_TOKEN#}}
         method: post
         params: ''
         retry_config:
@@ -195,29 +270,340 @@ workflow:
         ssl_verify: true
         timeout:
           connect: 10
-          max_connect_timeout: 10
-          max_read_timeout: 60
-          max_write_timeout: 60
-          read: 60
-          write: 60
-        title: parse_dossier
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+          read: 600
+          write: 600
+        title: parse_paper
         type: http-request
-        url: http://repro-runner:8001/v1/parse-dossier
+        url: http://paper-parser:8000/v1/parse
         variables: []
-      height: 143
+      height: 107
       id: '2900000000002'
       position:
-        x: 600
-        y: 200
+        x: 500
+        y: 300
       positionAbsolute:
-        x: 600
-        y: 200
+        x: 500
+        y: 300
       selected: false
       sourcePosition: right
       targetPosition: left
       type: custom
       width: 242
-      zIndex: 0
+    - data:
+        code: "\"\"\"Validate the HTTP parser response before sending it to an LLM.\"\"\"\n\nimport json\nfrom typing import Any\n\nMAX_RESPONSE_BYTES = 2 * 1024 * 1024\nMAX_OUTPUT_CHARS = 360_000\nMAX_PAGE_TEXT_CHARS = 1_400\nMAX_MARKDOWN_CHARS = 64_000\nCOMPACTION_WARNING = \"parser_output_compacted_for_workflow_limit\"\n\nHTTP_ERRORS = {\n    401: \"解析器鉴权失败（HTTP 401），请检查工作流的 PARSER_API_TOKEN。\",\n    413: \"论文文件过大（HTTP 413），请上传不超过 50 MB 的 PDF。\",\n    422: \"PDF 无法解析（HTTP 422），请确认文件完整且未加密。\",\n    500: \"解析器内部错误（HTTP 500），请查看 paper-parser 日志。\",\n}\n\n\ndef _failure(message: str) -> dict[str, Any]:\n    return {\n        \"parsed_json\": \"\",\n        \"parser_warnings\": [message],\n        \"can_continue\": False,\n    }\n\n\ndef _clip_text(value: str, limit: int) -> str:\n    if len(value) <= limit:\n        return value\n    if limit <= 0:\n        return \"\"\n    marker = \"\\n...[truncated for workflow size]...\\n\"\n    if limit <= len(marker):\n        return value[:limit]\n    remaining = limit - len(marker)\n    head = remaining // 2\n    tail = remaining - head\n    return value[:head] + marker + value[-tail:]\n\n\ndef _compact_elements(elements: list[Any], per_page_limit: int) -> list[dict[str, Any]]:\n    page_text: dict[int, list[str]] = {}\n    for element in elements:\n        if not isinstance(element, dict):\n            continue\n        page = element.get(\"page\")\n        text = element.get(\"text\")\n        if not isinstance(page, int) or isinstance(page, bool):\n            continue\n        if not isinstance(text, str) or not text.strip():\n            continue\n        kind = element.get(\"kind\")\n        prefix = f\"[{kind}] \" if isinstance(kind, str) and kind else \"\"\n        page_text.setdefault(page, []).append(prefix + text.strip())\n\n    return [\n        {\n            \"kind\": \"text\",\n            \"page\": page,\n            \"text\": _clip_text(\"\\n\".join(page_text[page]), per_page_limit),\n        }\n        for page in sorted(page_text)\n    ]\n\n\ndef _serialized(payload: dict[str, Any]) -> str:\n    return json.dumps(payload, ensure_ascii=False, separators=(\",\", \":\"))\n\n\ndef _compact_payload(payload: dict[str, Any]) -> str:\n    serialized = _serialized(payload)\n    if len(serialized) < MAX_OUTPUT_CHARS:\n        return serialized\n\n    warnings = payload.get(\"warnings\", [])\n    if not isinstance(warnings, list):\n        warnings = [str(warnings)]\n    warnings = [str(item) for item in warnings]\n    page_limit = MAX_PAGE_TEXT_CHARS\n    markdown_limit = MAX_MARKDOWN_CHARS\n    for _ in range(12):\n        compact = {\n            \"document_id\": payload.get(\"document_id\", \"\"),\n            \"file_name\": payload.get(\"file_name\", \"\"),\n            \"page_count\": payload.get(\"page_count\", 0),\n            \"markdown\": _clip_text(str(payload.get(\"markdown\", \"\")), markdown_limit),\n            \"elements\": _compact_elements(payload.get(\"elements\", []), page_limit),\n            \"warnings\": warnings + [COMPACTION_WARNING],\n        }\n        serialized = _serialized(compact)\n        if len(serialized) < MAX_OUTPUT_CHARS:\n            return serialized\n        page_limit = max(80, page_limit * 3 // 4)\n        markdown_limit = max(0, markdown_limit * 3 // 4)\n\n    compact[\"markdown\"] = \"\"\n    compact[\"elements\"] = _compact_elements(payload.get(\"elements\", []), 80)\n    return _serialized(compact)\n\n\ndef main(body: str, status_code: int = 200) -> dict[str, Any]:\n    \"\"\"Return Dify-compatible validation outputs without raising user errors.\"\"\"\n\n    try:\n        status = int(status_code)\n    except (TypeError, ValueError):\n        return _failure(\"解析器返回了无效的 HTTP 状态码。\")\n\n    if status in HTTP_ERRORS:\n        return _failure(HTTP_ERRORS[status])\n    if status < 200 or status >= 300:\n        return _failure(f\"解析器请求失败（HTTP {status}）。\")\n    if not isinstance(body, str):\n        return _failure(\"解析器响应 body 不是文本。\")\n    if len(body.encode(\"utf-8\")) > MAX_RESPONSE_BYTES:\n        return _failure(\"解析器 JSON 超过\
+          \ 2 MB，已停止发送给模型。\")\n\n    try:\n        payload = json.loads(body)\n    except json.JSONDecodeError:\n        return _failure(\"解析器响应不是有效 JSON。\")\n    if not isinstance(payload, dict):\n        return _failure(\"解析器 JSON 顶层必须是对象。\")\n\n    page_count = payload.get(\"page_count\")\n    if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:\n        return _failure(\"解析器 JSON 的 page_count 缺失或无效。\")\n\n    markdown = payload.get(\"markdown\")\n    if not isinstance(markdown, str) or not markdown.strip():\n        return _failure(\"解析器 JSON 的 markdown 缺失或为空。\")\n\n    elements = payload.get(\"elements\")\n    if not isinstance(elements, list) or not elements:\n        return _failure(\"解析器 JSON 的 elements 缺失或为空。\")\n\n    warnings = payload.get(\"warnings\", [])\n    if not isinstance(warnings, list):\n        warnings = [\"解析器 warnings 字段格式无效，已忽略。\"]\n    else:\n        warnings = [str(item) for item in warnings]\n\n    return {\n        \"parsed_json\": _compact_payload(payload),\n        \"parser_warnings\": warnings,\n        \"can_continue\": True,\n    }\n"
+        code_language: python3
+        outputs:
+          can_continue:
+            children: null
+            type: boolean
+          parsed_json:
+            children: null
+            type: string
+          parser_warnings:
+            children: null
+            type: array[string]
+        selected: false
+        title: validate_parser_response
+        type: code
+        variables:
+        - value_selector:
+          - '2900000000002'
+          - body
+          value_type: string
+          variable: body
+        - value_selector:
+          - '2900000000002'
+          - status_code
+          value_type: number
+          variable: status_code
+      height: 51
+      id: '2900000000003'
+      position:
+        x: 800
+        y: 300
+      positionAbsolute:
+        x: 800
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 20fad0f9-2bf9-41fc-b6e1-af1cf413b5b9
+            value: true
+            varType: boolean
+            variable_selector:
+            - '2900000000003'
+            - can_continue
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: paper_parser_ok?
+        type: if-else
+      height: 147
+      id: '2900000000004'
+      position:
+        x: 1100
+        y: 300
+      positionAbsolute:
+        x: 1100
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          completion_params:
+            temperature: 0.1
+          mode: chat
+          name: deepseek-v4-flash
+          provider: langgenius/deepseek/deepseek
+        prompt_template:
+        - role: system
+          text: "# Paper Dossier Extractor v1.0\n\nYou extract a reproducibility dossier from one parsed research paper. Your output must conform exactly to the supplied `PaperDossier` JSON Schema.\n\n## Inputs\n\n- `parsed_paper`: parser JSON containing `page_count`, page-aware `elements`, and `markdown`.\n- `user_notes`: optional context supplied by the user. Treat it as non-paper context, never as proof of what the paper reports.\n- `target_language`: `简体中文` or `English`.\n\n## Source-of-truth rules\n\n1. Use only facts present in `parsed_paper`. You may use `user_notes` to clarify the user's goal, but a note cannot establish a paper fact.\n2. Every dataset and method entry must contain at least one evidence object copied from the relevant parsed element.\n3. Every metric with a non-null `reported_value` must contain at least one evidence object.\n4. Copy each paper-reported value exactly. Preserve signs, ranges, uncertainty, units, percent symbols, decimal precision, and inequality symbols. Do not normalize or recalculate it.\n5. `evidence.page` must be the actual 1-based page number attached to the supporting parsed element. Never invent, estimate, or renumber a page.\n6. `evidence.source_text` must be a short, verbatim supporting excerpt from that element. It must not be empty and must not include unsupported surrounding claims.\n7. Use `source: \"paper\"` for PDF evidence. Use another source value only when the corresponding source is explicitly supplied and page-addressable.\n8. If a fact cannot be supported, omit it from the relevant array and add a precise statement to `gaps`. Do not fill missing details from common knowledge.\n9. If the paper mentions a metric name but its value is unreadable or absent, set `reported_value` to `null`, keep evidence for the mention when available, and add the missing value to `gaps`.\n10. Resolve conflicts conservatively. Prefer the most specific result-table or result-text statement, preserve split/dataset qualifiers, and record unresolved conflicts in `gaps`.\n\n## Field guidance\n\n- `title`: paper title as printed; otherwise `\"uncertain\"` and a gap.\n- `research_problem`: concise statement supported by the paper.\n- `task_type`: concise task label supported by the paper; otherwise `\"uncertain\"`.\n- `datasets`: datasets actually used, not merely cited related work.\n- `methods`: the proposed method and material baselines/settings needed to understand reproduction.\n- `metrics`: paper-reported evaluation results. Keep separate objects when dataset or split differs.\n- `gaps`: actionable missing or ambiguous reproduction information, including unavailable code, data splits, preprocessing, hyperparameters, seeds, hardware, or evaluation details.\n\nWrite descriptions and gaps in `target_language`. Do not translate proper nouns, dataset names, model names, metric names, code identifiers, or reported values.\n\nReturn only one JSON object. Do not wrap it in Markdown fences and do not add commentary.\n\n## Positive example\n\nParsed evidence:\n\n```json\n{\n  \"page_count\": 2,\n  \"elements\": [\n    {\"page\": 1, \"text\": \"We evaluate the proposed GeoNet on the Landslide4Sense dataset.\"},\n    {\"page\": 2, \"text\": \"GeoNet achieves an AUC of 0.91 on the test set.\"}\n  ]\n}\n```\n\nCorrect output fragment:\n\n```json\n{\n  \"datasets\": [{\n    \"name\": \"Landslide4Sense\",\n    \"description\": \"用于评估 GeoNet 的数据集。\",\n    \"evidence\": [{\n      \"page\": 1,\n      \"source_text\": \"We evaluate the proposed GeoNet on the Landslide4Sense dataset.\",\n      \"source\": \"paper\",\n      \"confidence\": 1.0\n    }]\n  }],\n  \"metrics\": [{\n    \"name\": \"AUC\",\n    \"reported_value\": \"0.91\",\n    \"dataset\": \"Landslide4Sense\",\n    \"split\": \"test\",\n    \"evidence\": [{\n      \"page\": 2,\n      \"source_text\": \"GeoNet achieves an AUC of 0.91 on the test set.\",\n      \"source\": \"paper\",\n      \"confidence\": 1.0\n    }]\n  }]\n}\n```\n\n## Correct uncertainty example\n\nParsed evidence says only: `\"Experiments use a public benchmark.\"` It does not\
+            \ name the benchmark or provide a page-addressable dataset name.\n\nCorrect handling:\n\n```json\n{\n  \"task_type\": \"uncertain\",\n  \"datasets\": [],\n  \"gaps\": [\n    \"The paper excerpt calls the dataset a public benchmark but does not identify it.\",\n    \"The task type cannot be determined from the supplied parsed evidence.\"\n  ]\n}\n```\n\nIncorrect handling would guess a popular benchmark, attach a fabricated page, or create a dataset entry without evidence.\n\n\n## Runtime inputs\n\nparsed_paper:\n{{#2900000000003.parsed_json#}}\n\nuser_notes:\n{{#2900000000001.protocol_notes#}}\n\ntarget_language:\n简体中文"
+        reasoning_format: separated
+        selected: false
+        structured_output:
+          schema:
+            $defs:
+              Evidence:
+                additionalProperties: false
+                properties:
+                  confidence:
+                    default: 1
+                    maximum: 1
+                    minimum: 0
+                    title: Confidence
+                    type: number
+                  page:
+                    minimum: 1
+                    title: Page
+                    type: integer
+                  source:
+                    enum:
+                    - paper
+                    - supplement
+                    - repository
+                    - user
+                    - inferred
+                    title: Source
+                    type: string
+                  source_text:
+                    maxLength: 2000
+                    minLength: 1
+                    title: Source Text
+                    type: string
+                required:
+                - page
+                - source_text
+                - source
+                title: Evidence
+                type: object
+              EvidenceBackedFact:
+                additionalProperties: false
+                properties:
+                  description:
+                    minLength: 1
+                    title: Description
+                    type: string
+                  evidence:
+                    items:
+                      $ref: '#/$defs/Evidence'
+                    minItems: 1
+                    title: Evidence
+                    type: array
+                  name:
+                    minLength: 1
+                    title: Name
+                    type: string
+                required:
+                - name
+                - description
+                - evidence
+                title: EvidenceBackedFact
+                type: object
+              ReportedMetric:
+                additionalProperties: false
+                properties:
+                  dataset:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Dataset
+                  evidence:
+                    items:
+                      $ref: '#/$defs/Evidence'
+                    title: Evidence
+                    type: array
+                  name:
+                    minLength: 1
+                    title: Name
+                    type: string
+                  reported_value:
+                    anyOf:
+                    - type: number
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Reported Value
+                  split:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Split
+                required:
+                - name
+                title: ReportedMetric
+                type: object
+            additionalProperties: false
+            properties:
+              datasets:
+                items:
+                  $ref: '#/$defs/EvidenceBackedFact'
+                title: Datasets
+                type: array
+              gaps:
+                items:
+                  type: string
+                title: Gaps
+                type: array
+              methods:
+                items:
+                  $ref: '#/$defs/EvidenceBackedFact'
+                title: Methods
+                type: array
+              metrics:
+                items:
+                  $ref: '#/$defs/ReportedMetric'
+                title: Metrics
+                type: array
+              research_problem:
+                title: Research Problem
+                type: string
+              task_type:
+                title: Task Type
+                type: string
+              title:
+                title: Title
+                type: string
+            required:
+            - title
+            - research_problem
+            - task_type
+            - datasets
+            - methods
+            - metrics
+            - gaps
+            title: PaperDossier
+            type: object
+        structured_output_enabled: true
+        title: extract_paper_dossier
+        type: llm
+        vision:
+          enabled: false
+      height: 87
+      id: '2900000000005'
+      position:
+        x: 1400
+        y: 300
+      positionAbsolute:
+        x: 1400
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "\"\"\"Validate dossier citations and build a deterministic Markdown summary.\"\"\"\n\nimport json\nfrom typing import Any\n\n\ndef _evidence_pages(items: Any) -> str:\n    if not isinstance(items, list):\n        return \"\"\n    pages = sorted(\n        {\n            item.get(\"page\")\n            for item in items\n            if isinstance(item, dict)\n            and isinstance(item.get(\"page\"), int)\n            and not isinstance(item.get(\"page\"), bool)\n        }\n    )\n    return \" \".join(f\"[p.{page}]\" for page in pages)\n\n\ndef _summary(dossier: dict[str, Any]) -> str:\n    lines = [f\"# {dossier.get('title') or '未命名论文'}\", \"\"]\n    lines.extend(\n        [\n            \"## 研究任务\",\n            str(dossier.get(\"research_problem\") or \"未提取\"),\n            f\"- 任务类型：{dossier.get('task_type') or 'uncertain'}\",\n            \"\",\n            \"## 数据集\",\n        ]\n    )\n    datasets = dossier.get(\"datasets\") or []\n    lines.extend(\n        f\"- {item.get('name', '未命名')}：{item.get('description', '')} {_evidence_pages(item.get('evidence'))}\".rstrip()\n        for item in datasets\n        if isinstance(item, dict)\n    )\n    if not datasets:\n        lines.append(\"- 未提取到有证据的数据集\")\n\n    lines.extend([\"\", \"## 方法\"])\n    methods = dossier.get(\"methods\") or []\n    lines.extend(\n        f\"- {item.get('name', '未命名')}：{item.get('description', '')} {_evidence_pages(item.get('evidence'))}\".rstrip()\n        for item in methods\n        if isinstance(item, dict)\n    )\n    if not methods:\n        lines.append(\"- 未提取到有证据的方法\")\n\n    lines.extend([\"\", \"## 报告指标\"])\n    metrics = dossier.get(\"metrics\") or []\n    for item in metrics:\n        if not isinstance(item, dict):\n            continue\n        qualifiers = \" / \".join(\n            str(value) for value in (item.get(\"dataset\"), item.get(\"split\")) if value\n        )\n        qualifier_text = f\"（{qualifiers}）\" if qualifiers else \"\"\n        lines.append(\n            f\"- {item.get('name', '未命名')}{qualifier_text}：{item.get('reported_value')} \"\n            f\"{_evidence_pages(item.get('evidence'))}\".rstrip()\n        )\n    if not metrics:\n        lines.append(\"- 未提取到报告指标\")\n\n    lines.extend([\"\", \"## 复现缺口\"])\n    gaps = dossier.get(\"gaps\") or []\n    lines.extend(f\"- {gap}\" for gap in gaps)\n    if not gaps:\n        lines.append(\"- 未发现明确缺口\")\n    return \"\\n\".join(lines)\n\n\ndef main(dossier_json: Any, page_count: Any) -> dict[str, Any]:\n    \"\"\"Return exact invalid JSON paths instead of silently accepting bad evidence.\"\"\"\n\n    try:\n        dossier = dossier_json if isinstance(dossier_json, dict) else json.loads(dossier_json)\n    except (TypeError, json.JSONDecodeError):\n        return {\n            \"validated_json\": \"\",\n            \"markdown_summary\": \"\",\n            \"invalid_paths\": [\"$\"],\n            \"can_continue\": False,\n        }\n    if not isinstance(dossier, dict):\n        return {\n            \"validated_json\": \"\",\n            \"markdown_summary\": \"\",\n            \"invalid_paths\": [\"$\"],\n            \"can_continue\": False,\n        }\n\n    if isinstance(page_count, str) and page_count.lstrip().startswith(\"{\"):\n        try:\n            page_count = json.loads(page_count).get(\"page_count\", 0)\n        except (AttributeError, json.JSONDecodeError):\n            page_count = 0\n    try:\n        maximum_page = int(page_count)\n    except (TypeError, ValueError):\n        maximum_page = 0\n\n    invalid_paths: list[str] = []\n    for collection_name in (\"datasets\", \"methods\", \"metrics\"):\n        collection = dossier.get(collection_name, [])\n        if not isinstance(collection, list):\n            invalid_paths.append(f\"$.{collection_name}\")\n            continue\n        for item_index, item in enumerate(collection):\n            item_path = f\"$.{collection_name}[{item_index}]\"\n            if not isinstance(item, dict):\n                invalid_paths.append(item_path)\n                continue\n            evidence\
+          \ = item.get(\"evidence\")\n            requires_evidence = collection_name != \"metrics\" or item.get(\"reported_value\") is not None\n            if requires_evidence and (not isinstance(evidence, list) or not evidence):\n                invalid_paths.append(f\"{item_path}.evidence\")\n                continue\n            if not isinstance(evidence, list):\n                continue\n            for evidence_index, citation in enumerate(evidence):\n                citation_path = f\"{item_path}.evidence[{evidence_index}]\"\n                if not isinstance(citation, dict):\n                    invalid_paths.append(citation_path)\n                    continue\n                page = citation.get(\"page\")\n                if (\n                    not isinstance(page, int)\n                    or isinstance(page, bool)\n                    or page < 1\n                    or page > maximum_page\n                ):\n                    invalid_paths.append(f\"{citation_path}.page\")\n                source_text = citation.get(\"source_text\")\n                if not isinstance(source_text, str) or not source_text.strip():\n                    invalid_paths.append(f\"{citation_path}.source_text\")\n\n    invalid_paths = list(dict.fromkeys(invalid_paths))\n    if invalid_paths:\n        return {\n            \"validated_json\": \"\",\n            \"markdown_summary\": \"\",\n            \"invalid_paths\": invalid_paths,\n            \"can_continue\": False,\n        }\n\n    normalized = json.dumps(dossier, ensure_ascii=False, separators=(\",\", \":\"))\n    return {\n        \"validated_json\": normalized,\n        \"markdown_summary\": _summary(dossier),\n        \"invalid_paths\": [],\n        \"can_continue\": True,\n    }\n"
+        code_language: python3
+        outputs:
+          can_continue:
+            children: null
+            type: boolean
+          invalid_paths:
+            children: null
+            type: array[string]
+          markdown_summary:
+            children: null
+            type: string
+          validated_json:
+            children: null
+            type: string
+        selected: false
+        title: validate_paper_dossier
+        type: code
+        variables:
+        - value_selector:
+          - '2900000000005'
+          - structured_output
+          value_type: object
+          variable: dossier_json
+        - value_selector:
+          - '2900000000003'
+          - parsed_json
+          value_type: string
+          variable: page_count
+      height: 51
+      id: '2900000000006'
+      position:
+        x: 1700
+        y: 300
+      positionAbsolute:
+        x: 1700
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: 2fe7dca9-ac9b-4a67-adac-1631be6e799f
+            value: true
+            varType: boolean
+            variable_selector:
+            - '2900000000006'
+            - can_continue
+          id: 'true'
+          logical_operator: and
+        selected: false
+        title: paper_dossier_ok?
+        type: if-else
+      height: 147
+      id: '2900000000007'
+      position:
+        x: 2000
+        y: 300
+      positionAbsolute:
+        x: 2000
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
     - data:
         authorization:
           config: null
@@ -258,13 +644,13 @@ workflow:
         url: http://repro-runner:8001/v1/diagnose-dataset
         variables: []
       height: 143
-      id: '2900000000003'
+      id: '2900000000008'
       position:
-        x: 600
-        y: 420
+        x: 2300
+        y: 300
       positionAbsolute:
-        x: 600
-        y: 420
+        x: 2300
+        y: 300
       selected: false
       sourcePosition: right
       targetPosition: left
@@ -293,12 +679,12 @@ workflow:
         type: code
         variables:
         - value_selector:
-          - '2900000000002'
-          - body
+          - '2900000000006'
+          - validated_json
           value_type: string
           variable: dossier_response_json
         - value_selector:
-          - '2900000000003'
+          - '2900000000008'
           - body
           value_type: string
           variable: diagnosis_response_json
@@ -313,12 +699,12 @@ workflow:
           value_type: string
           variable: protocol_notes
       height: 51
-      id: '2900000000004'
+      id: '2900000000009'
       position:
-        x: 1100
+        x: 2600
         y: 300
       positionAbsolute:
-        x: 1100
+        x: 2600
         y: 300
       selected: false
       sourcePosition: right
@@ -329,12 +715,12 @@ workflow:
     - data:
         outputs:
         - value_selector:
-          - '2900000000004'
+          - '2900000000009'
           - protocol_preview_json
           value_type: string
           variable: protocol_preview_json
         - value_selector:
-          - '2900000000004'
+          - '2900000000009'
           - protocol_token
           value_type: string
           variable: protocol_token
@@ -342,12 +728,12 @@ workflow:
         title: Output
         type: end
       height: 218
-      id: '2900000000005'
+      id: '2900000000010'
       position:
-        x: 1500
+        x: 2900
         y: 300
       positionAbsolute:
-        x: 1500
+        x: 2900
         y: 300
       selected: false
       sourcePosition: right

@@ -39,6 +39,54 @@ def test_prepare_workflow_exists_with_preview_and_token_outputs() -> None:
     }
 
 
+def test_file_inputs_declare_local_upload_types_and_extensions() -> None:
+    for path in (PREPARE_DSL, RUN_DSL):
+        document = _document(path)
+        start = next(node for node in _nodes(document) if node["data"]["type"] == "start")
+        variables = {item["variable"]: item for item in start["data"]["variables"]}
+
+        assert variables["training_csv"]["allowed_file_types"] == ["document"]
+        assert variables["training_csv"]["allowed_file_extensions"] == [".CSV"]
+        assert variables["training_csv"]["allowed_file_upload_methods"] == ["local_file"]
+
+        paper_key = "paper_pdf" if "paper_pdf" in variables else "paper_dossier_json"
+        assert variables[paper_key]["allowed_file_types"] == (
+            ["document"] if paper_key == "paper_pdf" else ["custom"]
+        )
+        assert variables[paper_key]["allowed_file_extensions"] == (
+            [".PDF"] if paper_key == "paper_pdf" else [".JSON"]
+        )
+        assert variables[paper_key]["allowed_file_upload_methods"] == ["local_file"]
+
+
+def test_prepare_workflow_parses_pdf_before_building_protocol() -> None:
+    document = _document(PREPARE_DSL)
+    nodes = _node_map(document)
+    http_nodes = [node["data"] for node in _nodes(document) if node["data"]["type"] == "http-request"]
+    urls = {node["url"] for node in http_nodes}
+
+    environment_variables = document["workflow"]["environment_variables"]
+    assert [item["name"] for item in environment_variables] == ["PARSER_API_TOKEN"]
+    assert environment_variables[0]["value_type"] == "secret"
+    assert environment_variables[0]["value"] == ""
+
+    assert urls == {
+        "http://paper-parser:8000/v1/parse",
+        "http://repro-runner:8001/v1/diagnose-dataset",
+    }
+    parser = next(node for node in http_nodes if node["url"] == "http://paper-parser:8000/v1/parse")
+    assert "PARSER_API_TOKEN" in parser["headers"]
+    assert parser["body"]["type"] == "form-data"
+    assert parser["body"]["data"][0]["file"] == ["2900000000001", "paper_pdf"]
+
+    llm_nodes = [node["data"] for node in _nodes(document) if node["data"]["type"] == "llm"]
+    assert len(llm_nodes) == 1
+    assert llm_nodes[0]["model"]["name"] == "deepseek-v4-flash"
+    assert "PaperDossier" in llm_nodes[0]["prompt_template"][0]["text"]
+    assert {"validate_parser_response", "validate_paper_dossier"}.issubset(nodes)
+    assert "parser_output_compacted_for_workflow_limit" in nodes["validate_parser_response"]["data"]["code"]
+
+
 def test_run_workflow_requires_protocol_token_and_keeps_six_string_outputs() -> None:
     document = _document(RUN_DSL)
     start = next(node for node in _nodes(document) if node["data"]["type"] == "start")
