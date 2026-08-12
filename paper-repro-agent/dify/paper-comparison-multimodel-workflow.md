@@ -180,5 +180,6 @@ Interpretation / 解释:
 ## 9. Safety reminders / 安全提醒
 
 - Do not place API keys, bearer tokens, parser tokens, or environment secrets in the DSL, docs, or smoke script.
+- Inject `DIFY_PROTOCOL_SECRET` through the Dify runtime secret mechanism; do not paste its value into the exported DSL.
 - Do not print raw CSV rows, raw dossier JSON, or PDF text in smoke output.
 - Use only safe placeholder local paths in examples, such as `C:\safe-placeholder\training.csv`.

@@ -29,6 +29,10 @@ recomputes and verifies `dataset_id` before staging it for the worker. The token
 therefore binds the confirmed protocol without turning Dify variables into a file
 store.
 
+Set `DIFY_PROTOCOL_SECRET` as a runtime secret in both imported Dify workflows.
+The embedded local fallback is only for tests and single-user development; never
+use it for a shared or production deployment.
+
 ## Handoff to the confirmed run
 
 Pass `protocol_token` to `paper-comparison-multimodel-workflow.yml`, set

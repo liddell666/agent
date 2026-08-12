@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import time
 import urllib.error
@@ -153,7 +154,7 @@ _PROTOCOL_TOKEN_VERSION = 1
 _PROTOCOL_DEFAULT_TTL_SECONDS = 900
 _PROTOCOL_MIN_TTL_SECONDS = 60
 _PROTOCOL_MAX_TTL_SECONDS = 3600
-_PROTOCOL_SECRET = "local-dify-protocol-secret"
+_PROTOCOL_SECRET = os.environ.get("DIFY_PROTOCOL_SECRET") or "local-only-fallback-not-for-production"
 _PROTOCOL_TOKEN_RE = re.compile(r"^pt1\.([A-Za-z0-9_-]+)\.([0-9a-f]{64})$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
