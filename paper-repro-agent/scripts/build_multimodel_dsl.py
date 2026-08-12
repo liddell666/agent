@@ -532,6 +532,10 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 def _embedded_experiment_helper_code(entrypoint: str) -> str:
     helper_path = PROJECT_ROOT / "dify" / "code" / "experiment_workflow.py"
     helper = helper_path.read_text(encoding="utf-8").rstrip()
+    helper = helper.replace(
+        '_PROTOCOL_SECRET = os.environ.get("DIFY_PROTOCOL_SECRET") or "local-only-fallback-not-for-production"',
+        '_PROTOCOL_SECRET = os.environ.get("DIFY_PROTOCOL_SECRET", "")',
+    )
     return helper + "\n\n" + entrypoint.strip() + "\n"
 
 
@@ -646,6 +650,35 @@ def main(dossier_json: str, validation_json: str, protocol_errors: str) -> dict:
     return {
         "dossier_json": json.dumps(dossier, ensure_ascii=False, separators=(",", ":")),
         "validation_json": json.dumps(validation, ensure_ascii=False, separators=(",", ":")),
+        "experiment_json": json.dumps(experiment, ensure_ascii=False, separators=(",", ":")),
+        "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
+        "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": "Protocol confirmation is required before the asynchronous experiment can run.",
+    }
+"""
+
+
+def _protocol_failure_empty_context_code() -> str:
+    return """import json
+
+
+def main(protocol_errors: str) -> dict:
+    try:
+        errors = json.loads(protocol_errors) if isinstance(protocol_errors, str) else []
+    except (TypeError, json.JSONDecodeError):
+        errors = []
+    if not isinstance(errors, list) or not errors:
+        errors = [{"code": "protocol_not_confirmed", "message": "Protocol confirmation is required."}]
+    safe_errors = [
+        item for item in errors
+        if isinstance(item, dict) and isinstance(item.get("code"), str)
+    ] or [{"code": "protocol_not_confirmed", "message": "Protocol confirmation is required."}]
+    experiment = {"status": "failed", "errors": safe_errors}
+    comparison = {"items": [], "errors": [{"code": "comparison_not_run", "message": "Comparison did not run."}]}
+    assessment = {"strict_status": "not_comparable", "approximate_status": "insufficient_metrics", "items": []}
+    return {
+        "dossier_json": "{}",
+        "validation_json": "{}",
         "experiment_json": json.dumps(experiment, ensure_ascii=False, separators=(",", ":")),
         "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
         "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
@@ -1947,6 +1980,22 @@ def _merged_failure_outputs_for_run(document: dict, nodes: dict[str, dict], outp
     return result
 
 
+def _merged_environment_variables() -> list[dict]:
+    variables = deepcopy(_load_paper_dossier_source()["workflow"].get("environment_variables", []))
+    if not any(item.get("name") == "DIFY_PROTOCOL_SECRET" for item in variables):
+        variables.append(
+            {
+                "description": "Protocol signing secret shared with repro-runner; exported without a value.",
+                "id": "39000000-0000-4000-8000-000000000001",
+                "name": "DIFY_PROTOCOL_SECRET",
+                "selector": ["env", "DIFY_PROTOCOL_SECRET"],
+                "value": "",
+                "value_type": "secret",
+            }
+        )
+    return variables
+
+
 def build_merged_dsl() -> dict:
     """Build the deterministic merged prepare/run Dify workflow."""
     prepare_doc = build_prepare_dsl()
@@ -2380,6 +2429,14 @@ def build_merged_dsl() -> dict:
     ]
     run_branch = [_merged_clone_node(run_nodes[title], id_map[run_nodes[title]["id"]], id_map) for title in run_titles]
     run_branch_by_title = {node["data"]["title"]: node for node in run_branch}
+    run_branch_by_title["protocol_confirmation_failure"]["data"]["code"] = _protocol_failure_empty_context_code()
+    run_branch_by_title["protocol_confirmation_failure"]["data"]["variables"] = [
+        {
+            "value_selector": [id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "protocol_errors"],
+            "value_type": "string",
+            "variable": "protocol_errors",
+        }
+    ]
     run_branch_by_title["normalize_protocol_confirmation"]["data"]["code"] = _secret_safe_embedded_experiment_helper_code("""import json
 
 
@@ -2484,6 +2541,27 @@ def main(
         "value_type": "string",
         "variable": "dossier_json",
     }
+    for title in (
+        "normalize_validation_http_failure",
+        "validation_semantic_failure",
+        "experiment_semantic_failure",
+        "request_failure",
+        "normalize_comparison_http_failure",
+        "comparison_semantic_failure",
+    ):
+        for variable in run_branch_by_title[title]["data"].get("variables", []):
+            if variable.get("variable") == "dossier_json":
+                variable["value_selector"] = [MERGED_DRAFT_RESPONSE_ID, "dossier_json"]
+    for variable in run_branch_by_title["normalize_job_submission_http_failure"]["data"].get("variables", []):
+        if variable.get("variable") == "dossier_json":
+            variable["value_selector"] = [MERGED_DRAFT_RESPONSE_ID, "dossier_json"]
+        elif variable.get("variable") == "validation_json":
+            variable["value_selector"] = [id_map[run_nodes["parse_validation_response"]["id"]], "validation_json"]
+    for variable in run_branch_by_title["score_approximate_similarity"]["data"].get("variables", []):
+        if variable.get("variable") == "close_threshold":
+            variable["value_selector"] = [MERGED_START_ID, "close_threshold"]
+        elif variable.get("variable") == "partial_threshold":
+            variable["value_selector"] = [MERGED_START_ID, "partial_threshold"]
 
     validate_dataset = _merged_clone_node(run_nodes["validate_dataset"], id_map[run_nodes["validate_dataset"]["id"]], id_map)
     parse_validation = _merged_clone_node(run_nodes["parse_validation_response"], id_map[run_nodes["parse_validation_response"]["id"]], id_map)
@@ -2528,7 +2606,7 @@ def main(
         "version": source.get("version", "0.7.0"),
         "workflow": {
             "conversation_variables": [],
-            "environment_variables": deepcopy(_load_paper_dossier_source()["workflow"].get("environment_variables", [])),
+            "environment_variables": _merged_environment_variables(),
             "features": deepcopy(source["workflow"]["features"]),
             "graph": {
                 "edges": [],
@@ -2669,8 +2747,15 @@ def main(
         _make_edge(document, id_map[run_nodes["score_approximate_similarity"]["id"]], "source", id_map[run_nodes["format_suite_comparison_report"]["id"]]),
         _make_edge(document, id_map[run_nodes["format_suite_comparison_report"]["id"]], "source", MERGED_OUTPUT_RUN_ID),
     ]
+    output_source_titles = {
+        "Output_protocol_confirmation_failure": "protocol_confirmation_failure",
+        "Output_job_submission_failure": "normalize_job_submission_http_failure",
+    }
     for output in failure_outputs:
-        source_title = output["data"]["title"].removeprefix("Output_")
+        source_title = output_source_titles.get(
+            output["data"]["title"],
+            output["data"]["title"].removeprefix("Output_"),
+        )
         if source_title in nodes_by_title:
             edges.append(_make_edge(document, nodes_by_title[source_title]["id"], "source", output["id"]))
     document["workflow"]["graph"]["edges"] = edges

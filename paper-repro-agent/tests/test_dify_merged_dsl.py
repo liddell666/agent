@@ -37,6 +37,18 @@ def _exec_code_node(title: str):
     return namespace["main"]
 
 
+def _walk_value_selectors(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "value_selector" and isinstance(item, list) and item:
+                yield item
+            else:
+                yield from _walk_value_selectors(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_value_selectors(item)
+
+
 def test_merged_builder_is_deterministic_and_matches_generated_file(tmp_path):
     first = tmp_path / "first.yml"
     second = tmp_path / "second.yml"
@@ -151,6 +163,64 @@ def test_merged_failure_and_false_paths_all_have_direct_edges():
             assert (node["id"], "false") in outgoing, node["data"]["title"]
 
 
+def test_merged_value_selectors_reference_existing_or_runtime_sources():
+    node_ids = {node["id"] for node in _nodes()}
+    allowed_runtime_sources = {"env", "sys"}
+    missing = []
+    for node in _nodes():
+        for selector in _walk_value_selectors(node):
+            source_id = selector[0]
+            if source_id not in node_ids and source_id not in allowed_runtime_sources:
+                missing.append((node["data"]["title"], selector))
+
+    assert missing == []
+
+
+def test_merged_failure_nodes_have_direct_output_edges_and_all_nodes_reach_end():
+    nodes = _node_map()
+    node_by_id = {node["id"]: node for node in _nodes()}
+    edges = _document()["workflow"]["graph"]["edges"]
+    adjacency: dict[str, set[str]] = {node["id"]: set() for node in _nodes()}
+    for edge in edges:
+        adjacency.setdefault(edge["source"], set()).add(edge["target"])
+
+    direct_failure_pairs = {
+        "protocol_confirmation_failure": "Output_protocol_confirmation_failure",
+        "normalize_job_submission_http_failure": "Output_job_submission_failure",
+        "normalize_validation_http_failure": "Output_normalize_validation_http_failure",
+        "validation_semantic_failure": "Output_validation_semantic_failure",
+        "normalize_experiment_http_failure": "Output_normalize_experiment_http_failure",
+        "experiment_semantic_failure": "Output_experiment_semantic_failure",
+        "request_failure": "Output_request_failure",
+        "normalize_comparison_http_failure": "Output_normalize_comparison_http_failure",
+        "comparison_semantic_failure": "Output_comparison_semantic_failure",
+    }
+    for source_title, output_title in direct_failure_pairs.items():
+        assert _has_edge(edges, nodes[source_title], nodes[output_title], "source"), source_title
+
+    end_ids = {node["id"] for node in _nodes() if node["data"]["type"] == "end"}
+    cannot_reach_end = []
+    for node_id, node in node_by_id.items():
+        if node_id in end_ids:
+            continue
+        seen = set()
+        stack = [node_id]
+        found_end = False
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if current in end_ids:
+                found_end = True
+                break
+            stack.extend(adjacency.get(current, set()) - seen)
+        if not found_end:
+            cannot_reach_end.append(node["data"]["title"])
+
+    assert cannot_reach_end == []
+
+
 def test_merged_embedded_python_compiles_and_contains_no_raw_inputs_or_secrets():
     document = _document()
     code_nodes = [node for node in _nodes() if node["data"]["type"] == "code"]
@@ -159,4 +229,14 @@ def test_merged_embedded_python_compiles_and_contains_no_raw_inputs_or_secrets()
     serialized = yaml.safe_dump(document, allow_unicode=True)
     assert "raw_csv_secret_07a1" not in serialized
     assert "sk-" not in serialized.casefold()
-    assert document["workflow"].get("environment_variables", [])
+    assert "local-only-fallback-not-for-production" not in serialized
+    assert "SECRET_TOKEN" not in serialized
+    assert "col_a,col_b\n1,2" not in serialized
+    variables = document["workflow"].get("environment_variables", [])
+    assert variables
+    protocol_secret = next(
+        item for item in variables
+        if item["name"] == "DIFY_PROTOCOL_SECRET"
+    )
+    assert protocol_secret["value_type"] == "secret"
+    assert protocol_secret["value"] == ""

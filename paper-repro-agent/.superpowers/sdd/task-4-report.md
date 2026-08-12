@@ -130,3 +130,105 @@ Outcome:
 - Several files outside this task were already dirty and remain unstaged, including earlier reports, API/helper files, legacy generated YAML, and temporary pytest/live-artifact directories.
 - Running `python scripts/build_multimodel_dsl.py` updated the legacy generated YAML files as the script entrypoint is required to do, but those legacy generated diffs were left unstaged to avoid mixing unrelated pre-existing changes into this Task 4 commit.
 
+## Review fix - 2026-08-13
+
+### Changed files
+
+- `scripts/build_multimodel_dsl.py`
+- `dify/paper-comparison-merged-workflow.yml`
+- `tests/test_dify_merged_dsl.py`
+- `.superpowers/sdd/task-4-report.md`
+
+### Fix details
+
+- Added regression coverage that walks every `value_selector` in the merged YAML and fails when a selector references a node id absent from the merged graph.
+- Added direct failure path coverage for every run failure normalizer, including `normalize_job_submission_http_failure -> Output_job_submission_failure`.
+- Added graph reachability coverage that every non-End node has a path to an End.
+- Replaced pre-draft protocol failure inputs with a dedicated safe empty-context failure code path instead of stale dossier/validation selectors.
+- Retargeted post-draft failure nodes to the merged draft-read dossier output and guaranteed validation output where applicable.
+- Retargeted approximate similarity thresholds to merged Start inputs instead of an absent legacy threshold node.
+- Fixed output edge generation for the actual `normalize_job_submission_http_failure` node.
+- Sanitized embedded generated protocol helper code so exported workflows do not contain `local-only-fallback-not-for-production`; helper code now reads `DIFY_PROTOCOL_SECRET` from the Dify environment and local unit tests can still inject `secret=` explicitly against source helpers.
+- Added `DIFY_PROTOCOL_SECRET` to the merged workflow environment variables with `value_type: secret` and empty `value`.
+
+### RED evidence
+
+Command:
+
+```powershell
+pytest tests/test_dify_merged_dsl.py -q
+```
+
+Outcome before fixes:
+
+- Failed: `3 failed, 7 passed`
+- Failures covered missing selectors to legacy node ids, missing `normalize_job_submission_http_failure` direct output edge, and exported fallback secret text.
+
+### Verification results
+
+Command:
+
+```powershell
+pytest tests/test_dify_merged_dsl.py -q
+```
+
+Outcome:
+
+- Passed: `10 passed in 10.67s`
+
+Command:
+
+```powershell
+pytest tests/test_dify_multimodel_dsl.py tests/test_dify_multimodel_code.py -q
+```
+
+Outcome:
+
+- Passed: `37 passed in 4.57s`
+
+Command:
+
+```powershell
+python -m compileall dify/code
+```
+
+Outcome:
+
+- Exit code 0; output: `Listing 'dify/code'...`
+
+Embedded generated-code compile check:
+
+- `dify\paper-comparison-merged-workflow.yml: 34 code nodes compile`
+- `dify\paper-comparison-multimodel-workflow.yml: 23 code nodes compile`
+- `dify\paper-comparison-prepare-workflow.yml: 3 code nodes compile`
+
+Command:
+
+```powershell
+python scripts/build_multimodel_dsl.py
+git diff --check
+```
+
+Outcome:
+
+- Exit code 0; Git emitted only CRLF conversion warnings for pre-existing dirty files.
+
+Post-generation command:
+
+```powershell
+pytest tests/test_dify_merged_dsl.py -q
+```
+
+Outcome:
+
+- Passed: `10 passed in 10.67s`
+
+### Self-review
+
+- Every merged YAML `value_selector` now references an existing graph node id or runtime `env`/`sys` source.
+- Direct failure normalizers have explicit source-to-End edges; job submission failure no longer depends on title-derived guessing.
+- Protocol confirmation failure happens before draft read and therefore emits safe empty dossier/validation outputs instead of selecting unexecuted nodes.
+- Failure paths after draft read use the merged draft-read dossier output and do not reference prepare-only or legacy dossier nodes.
+- Merged serialized YAML contains no fallback secret literal, no `raw_csv_secret_07a1`, no `sk-`, no `SECRET_TOKEN`, and includes blank secret-typed `DIFY_PROTOCOL_SECRET`.
+- Unrelated dirty files and temporary directories were preserved and not cleaned.
+
