@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -156,6 +157,7 @@ _PROTOCOL_MIN_TTL_SECONDS = 60
 _PROTOCOL_MAX_TTL_SECONDS = 3600
 _PROTOCOL_SECRET = os.environ.get("DIFY_PROTOCOL_SECRET") or "local-only-fallback-not-for-production"
 _PROTOCOL_TOKEN_RE = re.compile(r"^pt1\.([A-Za-z0-9_-]+)\.([0-9a-f]{64})$")
+_DRAFT_ID_RE = re.compile(r"^draft-[A-Za-z0-9_-]{8,128}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
 _EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
@@ -173,6 +175,12 @@ _SAFE_ERROR_CODES = {
     "protocol_target_mismatch",
     "protocol_features_missing",
     "protocol_options_invalid",
+    "protocol_draft_not_found",
+    "protocol_draft_expired",
+    "protocol_draft_token_mismatch",
+    "protocol_draft_response_invalid",
+    "protocol_draft_read_failed",
+    "protocol_draft_write_failed",
     "job_submit_failed",
     "job_submit_rejected",
     "job_response_invalid",
@@ -227,6 +235,13 @@ def _safe_sha(value):
         return None
     candidate = value.strip().casefold()
     return candidate if _SHA256_RE.fullmatch(candidate) else None
+
+
+def _safe_draft_id(value):
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    return candidate if _DRAFT_ID_RE.fullmatch(candidate) else None
 
 
 def _safe_number(value, minimum=None, maximum=None):
@@ -437,6 +452,16 @@ def _protocol_error(code):
     return {"code": safe_code, "message": "The confirmed protocol is not valid."}
 
 
+def _draft_error(code, action):
+    safe_code = code if code in _SAFE_ERROR_CODES else "protocol_payload_invalid"
+    verb = "saved" if action == "save" else "read"
+    return {"code": safe_code, "message": f"Protocol draft could not be {verb}."}
+
+
+def _new_draft_id():
+    return "draft-" + secrets.token_urlsafe(16)
+
+
 def _validate_manifest(manifest):
     if not isinstance(manifest, dict):
         return ["protocol_payload_invalid"]
@@ -508,6 +533,9 @@ def prepare_protocol_artifacts(
     current = _safe_number(now)
     if current is None:
         current = time.time()
+    expires_at = int(current + ttl)
+    ready = not unresolved
+    draft_id = _new_draft_id()
     preview = {
         "protocol_version": _PROTOCOL_TOKEN_VERSION,
         "expires_in_seconds": ttl,
@@ -530,12 +558,20 @@ def prepare_protocol_artifacts(
     }
     payload = {
         "v": _PROTOCOL_TOKEN_VERSION,
-        "exp": int(current + ttl),
-        "ready": not unresolved,
+        "exp": expires_at,
+        "ready": ready,
+        "draft_id": draft_id,
         "notes_digest": preview["protocol_notes_digest"],
         "manifest": manifest,
     }
-    return {"protocol_preview_json": _json(preview), "protocol_token": _token_encode(payload, secret)}
+    return {
+        "protocol_preview_json": _json(preview),
+        "protocol_token": _token_encode(payload, secret) if ready else "",
+        "draft_id": draft_id if ready else "",
+        "draft_expires_at": str(expires_at) if ready else "",
+        "protocol_ready": ready,
+        "protocol_errors": _json([_protocol_error(code) for code in unresolved]),
+    }
 
 
 def normalize_protocol_confirmation(
@@ -556,9 +592,16 @@ def normalize_protocol_confirmation(
     if current is None:
         current = time.time()
     manifest = None
+    draft_id = None
     if payload is not None:
         expires_at = _safe_int(payload.get("exp"), 1)
-        if payload.get("v") != _PROTOCOL_TOKEN_VERSION or payload.get("ready") is not True or expires_at is None:
+        draft_id = _safe_draft_id(payload.get("draft_id"))
+        if (
+            payload.get("v") != _PROTOCOL_TOKEN_VERSION
+            or payload.get("ready") is not True
+            or expires_at is None
+            or draft_id is None
+        ):
             errors.append("protocol_payload_invalid")
         elif current >= expires_at:
             errors.append("protocol_token_expired")
@@ -594,8 +637,88 @@ def normalize_protocol_confirmation(
         errors.extend(_validate_manifest(manifest))
     if errors:
         safe_errors = [_protocol_error(code) for code in dict.fromkeys(errors)]
-        return {"protocol_ok": False, "manifest_json": "{}", "protocol_errors": _json(safe_errors)}
-    return {"protocol_ok": True, "manifest_json": _json(manifest), "protocol_errors": "[]"}
+        return {"protocol_ok": False, "manifest_json": "{}", "draft_id": "", "protocol_errors": _json(safe_errors)}
+    return {"protocol_ok": True, "manifest_json": _json(manifest), "draft_id": draft_id, "protocol_errors": "[]"}
+
+
+def normalize_protocol_draft_write_response(body, status_code, expected_draft_id):
+    errors = []
+    if status_code in {404, 410}:
+        errors.append("protocol_draft_expired" if status_code == 410 else "protocol_draft_not_found")
+    elif status_code in {401, 403, 409, 422}:
+        errors.append("protocol_draft_token_mismatch")
+    elif not isinstance(status_code, int) or status_code < 200 or status_code >= 300:
+        errors.append("protocol_draft_write_failed")
+    response = _object(body)
+    if not errors:
+        if response.get("draft_id") != expected_draft_id or _safe_draft_id(expected_draft_id) is None:
+            errors.append("protocol_draft_token_mismatch")
+        if _safe_sha(response.get("manifest_id")) is None:
+            errors.append("protocol_draft_response_invalid")
+        if _safe_sha(response.get("dataset_id")) is None:
+            errors.append("protocol_draft_response_invalid")
+        expires_at = _safe_int(response.get("expires_at"), 1)
+        if expires_at is None:
+            errors.append("protocol_draft_response_invalid")
+    if errors:
+        safe = [_draft_error(code, "save") for code in dict.fromkeys(errors)]
+        return {
+            "draft_saved_ok": False,
+            "draft_id": "",
+            "manifest_id": "",
+            "dataset_id": "",
+            "draft_expires_at": "",
+            "draft_errors": _json(safe),
+        }
+    return {
+        "draft_saved_ok": True,
+        "draft_id": expected_draft_id,
+        "manifest_id": response["manifest_id"],
+        "dataset_id": response["dataset_id"],
+        "draft_expires_at": str(expires_at),
+        "draft_errors": "[]",
+    }
+
+
+def normalize_protocol_draft_read_response(body, status_code, expected_draft_id, manifest_json):
+    errors = []
+    if status_code == 404:
+        errors.append("protocol_draft_not_found")
+    elif status_code == 410:
+        errors.append("protocol_draft_expired")
+    elif status_code in {401, 403, 409, 422}:
+        errors.append("protocol_draft_token_mismatch")
+    elif not isinstance(status_code, int) or status_code < 200 or status_code >= 300:
+        errors.append("protocol_draft_read_failed")
+    response = _object(body)
+    expected = _object(manifest_json)
+    if not errors:
+        if response.get("draft_id") != expected_draft_id or _safe_draft_id(expected_draft_id) is None:
+            errors.append("protocol_draft_token_mismatch")
+        if response.get("manifest_id") != expected.get("manifest_id"):
+            errors.append("protocol_draft_token_mismatch")
+        if response.get("dataset_id") != expected.get("dataset_id"):
+            errors.append("protocol_draft_token_mismatch")
+        if not isinstance(response.get("dossier"), dict):
+            errors.append("protocol_draft_response_invalid")
+    if errors:
+        safe = [_draft_error(code, "read") for code in dict.fromkeys(errors)]
+        return {
+            "dossier_ok": False,
+            "dossier_json": "{}",
+            "draft_id": "",
+            "manifest_id": "",
+            "dataset_id": "",
+            "draft_errors": _json(safe),
+        }
+    return {
+        "dossier_ok": True,
+        "dossier_json": _json(response["dossier"]),
+        "draft_id": expected_draft_id,
+        "manifest_id": response["manifest_id"],
+        "dataset_id": response["dataset_id"],
+        "draft_errors": "[]",
+    }
 
 
 def _safe_job(value):

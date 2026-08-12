@@ -1,10 +1,16 @@
+import base64
+import hashlib
+import hmac
 import json
+import re
 
 from dify.code.comparison_workflow import (
     build_suite_comparison_request,
     format_suite_comparison_report,
 )
 from dify.code.experiment_workflow import (
+    normalize_protocol_draft_read_response,
+    normalize_protocol_draft_write_response,
     normalize_protocol_confirmation,
     prepare_protocol_artifacts,
     normalize_suite_inputs,
@@ -20,6 +26,14 @@ SECRET_SENTINELS = (
     "sk-123456",
     "col_a,col_b\n1,2",
 )
+
+
+def _legacy_protocol_token(payload: dict[str, object], secret: str) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"pt1.{encoded}.{signature}"
 
 
 def test_normalize_suite_inputs_returns_exact_safe_form_defaults() -> None:
@@ -611,6 +625,175 @@ def test_prepare_protocol_artifacts_builds_safe_preview_and_short_lived_token() 
     manifest = json.loads(confirmed["manifest_json"])
     assert manifest["dataset_id"] == "sha256:" + "a" * 64
     assert manifest["target_column"] == "Y_cls"
+
+
+def test_prepare_protocol_artifacts_returns_bound_draft_id_and_expiry():
+    dossier_json = json.dumps({"title": "Paper", "metrics": []}, ensure_ascii=False)
+    diagnosis_json = json.dumps(
+        {
+            "valid": True,
+            "dataset": {
+                "dataset_id": "sha256:" + "2" * 64,
+                "target": "Y_cls",
+                "rows": 40,
+                "column_names": ["x1", "Y_cls"],
+            },
+            "recommended_options": {
+                "target_column": "Y_cls",
+                "feature_columns": ["x1"],
+                "missing_policy": "reject",
+                "sampling_strategy": "original",
+                "comparison_mode": "paper_comparable",
+            },
+            "columns": [],
+            "target_candidates": ["Y_cls"],
+            "risk_flags": [],
+            "warnings": [],
+        },
+        ensure_ascii=False,
+    )
+    result = prepare_protocol_artifacts(
+        dossier_json, diagnosis_json, target_column="Y_cls",
+        secret="helper-secret", now=1_000, ttl_seconds=900,
+    )
+    assert re.fullmatch(r"draft-[A-Za-z0-9_-]{8,128}", result["draft_id"])
+    assert result["draft_expires_at"] == "1900"
+    assert result["protocol_ready"] is True
+    confirmed = normalize_protocol_confirmation(
+        result["protocol_token"], True, secret="helper-secret", now=1_000,
+    )
+    assert confirmed["protocol_ok"] is True
+    assert confirmed["draft_id"] == result["draft_id"]
+
+
+def test_prepare_protocol_artifacts_with_unresolved_fields_does_not_return_runnable_draft():
+    result = prepare_protocol_artifacts(
+        '{"title":"Paper"}',
+        json.dumps({"valid": False, "dataset": {}, "recommended_options": {}}),
+        secret="helper-secret",
+        now=1_000,
+    )
+
+    assert result["protocol_ready"] is False
+    assert result["protocol_token"] == ""
+    assert result["draft_id"] == ""
+    assert result["draft_expires_at"] == ""
+    assert json.loads(result["protocol_errors"])
+
+
+def test_normalize_protocol_confirmation_rejects_legacy_token_without_draft_id() -> None:
+    manifest = {
+        "manifest_id": "sha256:" + "1" * 64,
+        "dataset_id": "sha256:" + "2" * 64,
+        "target_column": "Y_cls",
+        "feature_columns": ["x1"],
+        "missing_policy": "reject",
+        "sampling_strategy": "original",
+        "comparison_mode": "paper_comparable",
+        "test_size": 0.2,
+        "random_state": 42,
+        "cv_folds": 5,
+        "optimization_metric": "roc_auc",
+        "threshold": 0.5,
+        "models": ["logistic_regression"],
+    }
+    token = _legacy_protocol_token(
+        {"v": 1, "exp": 1_900, "ready": True, "notes_digest": None, "manifest": manifest},
+        "helper-secret",
+    )
+
+    result = normalize_protocol_confirmation(token, True, secret="helper-secret", now=1_000)
+
+    assert result["protocol_ok"] is False
+    assert result["draft_id"] == ""
+    assert json.loads(result["protocol_errors"])[0]["code"] == "protocol_payload_invalid"
+
+
+def test_protocol_draft_response_normalizers_accept_valid_metadata():
+    manifest_json = json.dumps(
+        {"manifest_id": "sha256:" + "1" * 64, "dataset_id": "sha256:" + "2" * 64},
+        ensure_ascii=False,
+    )
+    write_body = json.dumps(
+        {
+            "draft_id": "draft-aaaaaaaa",
+            "manifest_id": "sha256:" + "1" * 64,
+            "dataset_id": "sha256:" + "2" * 64,
+            "expires_at": 1900,
+        },
+        ensure_ascii=False,
+    )
+    read_body = json.dumps(
+        {
+            "draft_id": "draft-aaaaaaaa",
+            "manifest_id": "sha256:" + "1" * 64,
+            "dataset_id": "sha256:" + "2" * 64,
+            "dossier": {"title": "Paper"},
+        },
+        ensure_ascii=False,
+    )
+
+    write_result = normalize_protocol_draft_write_response(write_body, 201, "draft-aaaaaaaa")
+    read_result = normalize_protocol_draft_read_response(
+        read_body, 200, "draft-aaaaaaaa", manifest_json
+    )
+
+    assert write_result == {
+        "draft_saved_ok": True,
+        "draft_id": "draft-aaaaaaaa",
+        "manifest_id": "sha256:" + "1" * 64,
+        "dataset_id": "sha256:" + "2" * 64,
+        "draft_expires_at": "1900",
+        "draft_errors": "[]",
+    }
+    assert read_result == {
+        "dossier_ok": True,
+        "dossier_json": '{"title":"Paper"}',
+        "draft_id": "draft-aaaaaaaa",
+        "manifest_id": "sha256:" + "1" * 64,
+        "dataset_id": "sha256:" + "2" * 64,
+        "draft_errors": "[]",
+    }
+
+
+def test_protocol_draft_response_normalizers_reject_mismatched_metadata():
+    body = json.dumps({
+        "draft_id": "draft-cccccccc",
+        "manifest_id": "sha256:" + "9" * 64,
+        "dataset_id": "sha256:" + "8" * 64,
+        "dossier": {"title": "Paper"},
+    })
+    result = normalize_protocol_draft_read_response(
+        body, 200, "draft-dddddddd", json.dumps({"manifest_id": "sha256:" + "1" * 64, "dataset_id": "sha256:" + "2" * 64}),
+    )
+    assert result["dossier_ok"] is False
+    assert json.loads(result["draft_errors"])[0]["code"] == "protocol_draft_token_mismatch"
+    assert "Paper" not in result["dossier_json"]
+
+
+def test_protocol_draft_http_errors_are_stable_and_do_not_echo_body():
+    result = normalize_protocol_draft_read_response(
+        "RAW_SENTINEL private csv row", 410, "draft-aaaaaaaa", "{}",
+    )
+    assert result["dossier_ok"] is False
+    assert "RAW_SENTINEL" not in result["draft_errors"]
+    assert json.loads(result["draft_errors"])[0]["code"] == "protocol_draft_expired"
+
+
+def test_protocol_draft_write_errors_are_stable_and_do_not_echo_body():
+    result = normalize_protocol_draft_write_response(
+        "RAW_SENTINEL private pdf bytes sk-123456", 422, "draft-aaaaaaaa",
+    )
+
+    assert result == {
+        "draft_saved_ok": False,
+        "draft_id": "",
+        "manifest_id": "",
+        "dataset_id": "",
+        "draft_expires_at": "",
+        "draft_errors": '[{"code":"protocol_draft_token_mismatch","message":"Protocol draft could not be saved."}]',
+    }
+    assert "RAW_SENTINEL" not in result["draft_errors"]
 
 
 def test_normalize_protocol_confirmation_rejects_target_override() -> None:
