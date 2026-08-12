@@ -221,12 +221,34 @@ def classify_feature_columns(
 
 
 def transformed_feature_names(preprocessor: ColumnTransformer) -> list[str]:
-    """Return stable public names without transformer-internal prefixes."""
+    """Return stable public names without exposing category values.
+
+    One-hot encoder names normally include the original category token. Those
+    tokens can be arbitrary user data, so expose ordinal category slots instead
+    (for example ``landform__category_0``).
+    """
     try:
-        names = preprocessor.get_feature_names_out()
+        fitted_transformers = preprocessor.transformers_
     except (AttributeError, RuntimeError) as exc:
         raise ValueError("preprocessor must be fitted before naming features") from exc
-    return [str(name) for name in names]
+
+    names: list[str] = []
+    for name, transformer, columns in fitted_transformers:
+        if name == "numeric":
+            names.extend(str(column) for column in columns)
+            continue
+        if name == "categorical":
+            encoder = transformer.named_steps["onehot"]
+            for column, categories in zip(columns, encoder.categories_):
+                names.extend(
+                    f"{column}__category_{index}"
+                    for index in range(len(categories))
+                )
+            continue
+        if transformer == "drop":
+            continue
+        raise ValueError("unsupported_preprocessor_feature_names")
+    return names
 
 
 def _is_numeric_column(series: pd.Series) -> bool:

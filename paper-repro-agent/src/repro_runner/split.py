@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -58,5 +59,7 @@ test_set_digest.__test__ = False
 def _digest_value(value: object) -> object:
     """Convert pandas/numpy scalars to JSON-safe values for deterministic hashing."""
     if isinstance(value, np.generic):
-        return value.item()
+        value = value.item()
+    if isinstance(value, float) and math.isnan(value):
+        return "<missing>"
     return value

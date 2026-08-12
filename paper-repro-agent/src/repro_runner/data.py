@@ -411,9 +411,12 @@ def _validate_and_prepare_features(
         numeric_count = int(numeric_values.notna().sum())
         nonmissing_count = int(nonmissing.shape[0])
         if numeric_count and numeric_count != nonmissing_count:
-            raise DatasetError(
-                "non_numeric_feature", "feature values must be numeric or categorical"
-            )
+            non_numeric_values = nonmissing[numeric_values.loc[nonmissing.index].isna()]
+            if non_numeric_values.nunique(dropna=True) < 2:
+                raise DatasetError(
+                    "non_numeric_feature",
+                    "feature values must be numeric or categorical",
+                )
         if numeric_count == nonmissing_count and nonmissing_count:
             if any(
                 not math.isfinite(float(value))
@@ -427,10 +430,6 @@ def _validate_and_prepare_features(
                 raise DatasetError("missing_values", "dataset contains missing values")
             frame[column] = numeric_values
             continue
-        if numeric_count:
-            raise DatasetError(
-                "non_numeric_feature", "feature values must be numeric or categorical"
-            )
 
 
 def _validate_preprocessor_limits(

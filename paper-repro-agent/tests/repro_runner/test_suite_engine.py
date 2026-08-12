@@ -401,7 +401,7 @@ def test_run_model_suite_supports_mixed_features_and_reports_transformed_names()
     frame = pd.DataFrame(
         {
             "slope": np.arange(60, dtype=float),
-            "landform": ["A", "B", "C", "A", "B", "C"] * 10,
+            "landform": ["secret-alpha", "secret-beta", "secret-gamma"] * 20,
             "Y_cls": labels,
         }
     )
@@ -427,16 +427,78 @@ def test_run_model_suite_supports_mixed_features_and_reports_transformed_names()
     assert result.preprocessing.categorical_columns == ["landform"]
     assert set(result.preprocessing.transformed_feature_names) == {
         "slope",
-        "landform_A",
-        "landform_B",
-        "landform_C",
+        "landform__category_0",
+        "landform__category_1",
+        "landform__category_2",
     }
+    payload = result.model_dump_json()
+    assert "secret-alpha" not in payload
+    assert "secret-beta" not in payload
+    assert "secret-gamma" not in payload
     for item in result.results:
         assert item.status == "succeeded"
         if item.model == "random_forest":
             assert {importance.feature for importance in item.feature_importance} == set(
                 result.preprocessing.transformed_feature_names
             )
+
+
+def test_run_model_suite_fits_imputation_inside_pipeline_and_hashes_missing_values():
+    labels = np.array([0, 1] * 30)
+    frame = pd.DataFrame(
+        {
+            "slope": np.arange(60, dtype=float),
+            "landform": ["A", "B", "C"] * 20,
+            "Y_cls": labels,
+        }
+    )
+    frame.loc[0, "slope"] = np.nan
+    frame.loc[1, "landform"] = None
+    bundle = load_dataset(
+        frame.to_csv(index=False).encode(),
+        DatasetOptions(target_column="Y_cls", missing_policy="impute"),
+        Settings(),
+    )
+
+    result = suite_engine.run_model_suite(
+        bundle,
+        ModelSuiteConfig(
+            models=["logistic_regression"],
+            cv_folds=3,
+            n_iter=1,
+            n_jobs=1,
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert result.results[0].status == "succeeded"
+    assert result.split_provenance.test_digest.startswith("sha256:")
+
+
+def test_run_model_suite_accepts_mixed_numeric_and_text_tokens_as_category():
+    frame = pd.DataFrame(
+        {
+            "landform": ["1", "A", "1", "B"] * 15,
+            "Y_cls": [0, 0, 1, 1] * 15,
+        }
+    )
+    bundle = load_dataset(
+        frame.to_csv(index=False).encode(),
+        DatasetOptions(target_column="Y_cls"),
+        Settings(),
+    )
+
+    assert bundle.feature_columns == ["landform"]
+    result = suite_engine.run_model_suite(
+        bundle,
+        ModelSuiteConfig(
+            models=["logistic_regression"],
+            cv_folds=3,
+            n_iter=1,
+            n_jobs=1,
+        ),
+    )
+    assert result.status == "succeeded"
 
 
 def test_run_model_suite_rejects_undersampling_until_it_is_fold_safe():
