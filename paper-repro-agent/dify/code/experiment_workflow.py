@@ -169,6 +169,7 @@ _SAFE_ERROR_CODES = {
     "protocol_payload_invalid",
     "protocol_dataset_missing",
     "protocol_target_missing",
+    "protocol_target_mismatch",
     "protocol_features_missing",
     "protocol_options_invalid",
     "job_submit_failed",
@@ -444,10 +445,16 @@ def _validate_manifest(manifest):
     if _safe_sha(manifest.get("dataset_id")) is None:
         errors.append("protocol_dataset_missing")
     target = _safe_text(manifest.get("target_column"), 128)
-    features = _safe_list(manifest.get("feature_columns"))
+    raw_features = manifest.get("feature_columns")
+    features = _safe_list(raw_features)
     if target is None:
         errors.append("protocol_target_missing")
-    if not features or target in features or len(features) != len(manifest.get("feature_columns", [])):
+    if (
+        not isinstance(raw_features, list)
+        or not features
+        or target in features
+        or len(features) != len(raw_features)
+    ):
         errors.append("protocol_features_missing")
     if manifest.get("missing_policy") not in {"reject", "drop_rows", "impute"}:
         errors.append("protocol_options_invalid")
@@ -557,6 +564,9 @@ def normalize_protocol_confirmation(
         manifest = payload.get("manifest")
         if isinstance(manifest, dict) and isinstance(confirmed_options, dict):
             manifest = dict(manifest)
+            confirmed_target = _safe_text(confirmed_options.get("target_column"), 128)
+            if confirmed_target is not None and confirmed_target != manifest.get("target_column"):
+                errors.append("protocol_target_mismatch")
             try:
                 models = json.loads(confirmed_options.get("models_json")) if isinstance(confirmed_options.get("models_json"), str) else confirmed_options.get("models_json")
             except (TypeError, json.JSONDecodeError):
@@ -612,6 +622,8 @@ def _safe_result(value, job_id, status):
     experiment_id = value.get("experiment_id")
     if isinstance(experiment_id, str) and _EXPERIMENT_ID_RE.fullmatch(experiment_id):
         result["experiment_id"] = experiment_id
+    elif not isinstance(value.get("results"), list):
+        return None
     if isinstance(value.get("results"), list):
         safe_results = []
         for raw in value["results"][:64]:

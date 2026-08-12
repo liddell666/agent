@@ -69,7 +69,7 @@ def test_run_workflow_embeds_confirmation_and_polling_code() -> None:
     compile(polling_code, "<dify:poll_confirmed_job>", "exec")
     confirmation_namespace: dict[str, object] = {}
     exec(compile(confirmation_code, "<dify:normalize_protocol_confirmation>", "exec"), confirmation_namespace)
-    confirmation_result = confirmation_namespace["main"]("", False, "[]", "5", "roc_auc", 0.2, 42)
+    confirmation_result = confirmation_namespace["main"]("", False, "Y_cls", "[]", "5", "roc_auc", 0.2, 42)
     assert confirmation_result["protocol_ok"] is False
 
     polling_namespace: dict[str, object] = {}

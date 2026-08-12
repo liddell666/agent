@@ -464,6 +464,7 @@ def _protocol_confirmation_code() -> str:
 def main(
     protocol_token: str,
     confirm_protocol: bool,
+    target_column: str,
     models_json_text: str,
     cv_folds_text: str,
     optimization_metric_text: str,
@@ -475,6 +476,7 @@ def main(
         protocol_token,
         confirm_protocol,
         confirmed_options={
+            "target_column": target_column,
             "models_json": models_json_text,
             "cv_folds": cv_folds_text,
             "optimization_metric": optimization_metric_text,
@@ -704,6 +706,7 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         [
             {"value_selector": [start["id"], "protocol_token"], "value_type": "string", "variable": "protocol_token"},
             {"value_selector": [start["id"], "confirm_protocol"], "value_type": "boolean", "variable": "confirm_protocol"},
+            {"value_selector": [start["id"], "target_column"], "value_type": "string", "variable": "target_column"},
             {"value_selector": [normalize["id"], "models_json_text"], "value_type": "string", "variable": "models_json_text"},
             {"value_selector": [normalize["id"], "cv_folds_text"], "value_type": "string", "variable": "cv_folds_text"},
             {"value_selector": [normalize["id"], "optimization_metric_text"], "value_type": "string", "variable": "optimization_metric_text"},

@@ -613,6 +613,37 @@ def test_prepare_protocol_artifacts_builds_safe_preview_and_short_lived_token() 
     assert manifest["target_column"] == "Y_cls"
 
 
+def test_normalize_protocol_confirmation_rejects_target_override() -> None:
+    prepared = prepare_protocol_artifacts(
+        '{"title":"Paper"}',
+        json.dumps(
+            {
+                "valid": True,
+                "dataset": {
+                    "dataset_id": "sha256:" + "b" * 64,
+                    "target": "Y_cls",
+                    "column_names": ["x1", "Y_cls"],
+                },
+                "recommended_options": {"feature_columns": ["x1"]},
+            }
+        ),
+        target_column="Y_cls",
+        secret="target-test-secret",
+        now=1_786_377_600,
+    )
+
+    result = normalize_protocol_confirmation(
+        prepared["protocol_token"],
+        True,
+        confirmed_options={"target_column": "other_target"},
+        secret="target-test-secret",
+        now=1_786_377_700,
+    )
+
+    assert result["protocol_ok"] is False
+    assert json.loads(result["protocol_errors"])[0]["code"] == "protocol_target_mismatch"
+
+
 def test_poll_job_until_terminal_returns_safe_terminal_result_and_bounds_intervals() -> None:
     calls: list[tuple[str, str]] = []
     sleeps: list[float] = []
@@ -682,3 +713,23 @@ def test_poll_job_until_terminal_redacts_malformed_backend_payloads() -> None:
     payload = json.dumps(result, ensure_ascii=False)
     for sentinel in SECRET_SENTINELS:
         assert sentinel not in payload
+
+
+def test_poll_job_until_terminal_rejects_empty_terminal_result() -> None:
+    def fake_request(method: str, url: str, payload: str | None = None) -> tuple[int, str]:
+        if method == "POST":
+            return 202, '{"job_id":"job-123","status":"queued"}'
+        if url.endswith("/result"):
+            return 200, "{}"
+        return 200, '{"job_id":"job-123","status":"succeeded"}'
+
+    result = poll_job_until_terminal(
+        "http://repro-runner:8001",
+        '{"manifest_id":"manifest-1"}',
+        request_func=fake_request,
+        sleep_func=lambda _seconds: None,
+        max_polls=1,
+    )
+
+    assert result["experiment_ok"] is False
+    assert json.loads(result["experiment_errors"])[0]["code"] == "job_result_failed"
