@@ -5,12 +5,17 @@ import hashlib
 import hmac
 import json
 import logging
+import shutil
 from threading import Barrier, Event
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from dify.code.experiment_workflow import (
+    normalize_protocol_confirmation,
+    prepare_protocol_artifacts,
+)
 from repro_runner import api
 from repro_runner.config import Settings, get_settings
 
@@ -98,6 +103,13 @@ def _protocol_token(secret, draft_id, manifest_id, dataset_id, exp):
     return f"pt1.{encoded}.{signature}"
 
 
+def _job_count(client: TestClient) -> int:
+    store = client.app.state.job_store
+    with store._connect() as connection:
+        row = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()
+    return int(row[0])
+
+
 def test_healthz_is_public(client: TestClient):
     response = client.get("/healthz")
 
@@ -131,6 +143,138 @@ def test_protocol_draft_post_get_round_trip(client: TestClient, settings: Settin
     assert fetched.status_code == 200
     assert fetched.json()["dossier"]["title"] == "Paper"
     assert fetched.json()["manifest_id"] == "sha256:" + "1" * 64
+
+
+def test_generated_protocol_token_flows_through_drafts_and_rejects_unsafe_job_paths(
+    client: TestClient, settings: Settings
+):
+    csv_content = _csv()
+    dataset_id = "sha256:" + hashlib.sha256(csv_content).hexdigest()
+    dossier_json = json.dumps(
+        {
+            "title": "Protocol Paper",
+            "metrics": [
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.91,
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    diagnosis_json = json.dumps(
+        {
+            "valid": True,
+            "dataset": {
+                "dataset_id": dataset_id,
+                "target": "Y_cls",
+                "rows": 40,
+                "effective_rows": 40,
+                "features": 2,
+                "missing_values": 0,
+                "duplicate_rows": 0,
+                "column_names": ["x1", "x2", "Y_cls"],
+                "class_counts": {"0": 20, "1": 20},
+                "class_ratios": {"0": 0.5, "1": 0.5},
+            },
+            "recommended_options": {
+                "target_column": "Y_cls",
+                "feature_columns": ["x1", "x2"],
+                "missing_policy": "reject",
+                "sampling_strategy": "original",
+                "comparison_mode": "paper_comparable",
+                "test_size": 0.2,
+                "random_state": 42,
+                "cv_folds": 3,
+                "optimization_metric": "roc_auc",
+                "threshold": 0.5,
+            },
+            "columns": [],
+            "target_candidates": ["Y_cls"],
+            "risk_flags": [],
+            "warnings": [],
+        },
+        ensure_ascii=False,
+    )
+    prepared = prepare_protocol_artifacts(
+        dossier_json,
+        diagnosis_json,
+        target_column="Y_cls",
+        secret=settings.protocol_secret,
+        now=1_000,
+        ttl_seconds=900,
+    )
+    assert prepared["protocol_ready"] is True
+
+    created = client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": prepared["draft_id"],
+            "protocol_token": prepared["protocol_token"],
+            "dossier_json": dossier_json,
+        },
+    )
+    assert created.status_code == 200
+
+    confirmed = normalize_protocol_confirmation(
+        prepared["protocol_token"],
+        True,
+        secret=settings.protocol_secret,
+        now=1_000,
+    )
+    assert confirmed["protocol_ok"] is True
+
+    fetched = client.get(
+        f"/v1/protocol-drafts/{confirmed['draft_id']}",
+        headers={"X-Protocol-Token": prepared["protocol_token"]},
+    )
+    assert fetched.status_code == 200
+    assert fetched.json()["dossier"] == json.loads(dossier_json)
+
+    changed_csv = csv_content.replace(b"0,0,0\n", b"9,0,0\n", 1)
+    mismatch = client.post(
+        "/v1/jobs",
+        data={"manifest_json": confirmed["manifest_json"]},
+        files={"file": ("changed.csv", changed_csv, "text/csv")},
+    )
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"]["code"] == "manifest_dataset_mismatch"
+    assert _job_count(client) == 0
+
+    unconfirmed = normalize_protocol_confirmation(
+        prepared["protocol_token"],
+        False,
+        secret=settings.protocol_secret,
+        now=1_000,
+    )
+    assert unconfirmed["protocol_ok"] is False
+    assert json.loads(unconfirmed["protocol_errors"])[0]["code"] == "protocol_not_confirmed"
+    assert _job_count(client) == 0
+
+    client.app.state.protocol_draft_store.clock = lambda: int(
+        prepared["draft_expires_at"]
+    )
+    expired = client.get(
+        f"/v1/protocol-drafts/{confirmed['draft_id']}",
+        headers={"X-Protocol-Token": prepared["protocol_token"]},
+    )
+    assert expired.status_code == 410
+    assert expired.json()["detail"]["code"] == "protocol_draft_expired"
+    assert _job_count(client) == 0
+
+    shutil.rmtree(
+        settings.storage_dir / "protocol-drafts" / confirmed["draft_id"],
+    )
+    missing = client.get(
+        f"/v1/protocol-drafts/{confirmed['draft_id']}",
+        headers={"X-Protocol-Token": prepared["protocol_token"]},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "protocol_draft_not_found"
+    assert _job_count(client) == 0
 
 
 @pytest.mark.parametrize("case", ["missing", "expired", "tampered", "wrong_draft"])

@@ -666,6 +666,30 @@ def test_prepare_protocol_artifacts_returns_bound_draft_id_and_expiry():
     assert confirmed["draft_id"] == result["draft_id"]
 
 
+def test_prepare_protocol_artifacts_never_echoes_protocol_secret():
+    protocol_secret = "helper-secret-should-not-appear"
+    result = prepare_protocol_artifacts(
+        '{"title":"Paper"}',
+        json.dumps(
+            {
+                "valid": True,
+                "dataset": {
+                    "dataset_id": "sha256:" + "4" * 64,
+                    "target": "Y_cls",
+                    "column_names": ["x1", "Y_cls"],
+                },
+                "recommended_options": {"feature_columns": ["x1"]},
+            },
+            ensure_ascii=False,
+        ),
+        secret=protocol_secret,
+        now=1_000,
+    )
+
+    assert result["protocol_ready"] is True
+    assert protocol_secret not in json.dumps(result, ensure_ascii=False)
+
+
 def test_prepare_protocol_artifacts_with_unresolved_fields_does_not_return_runnable_draft():
     result = prepare_protocol_artifacts(
         '{"title":"Paper"}',
