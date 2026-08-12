@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     job_store_path: Path = Path("/data/experiments/jobs.sqlite3")
     job_work_dir: Path = Path("/data/experiments/jobs")
     max_concurrent_experiments: int = Field(default=1, ge=1)
+    protocol_secret: str = "local-only-fallback-not-for-production"
+    protocol_draft_ttl_seconds: int = Field(default=900, ge=60, le=3600)
 
 
 @lru_cache(maxsize=1)

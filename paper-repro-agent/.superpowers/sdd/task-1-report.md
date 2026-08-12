@@ -1,11 +1,36 @@
-# Task 1 Report: Normalize paper metric names and values
+# Task 1 Report: protocol draft storage and token verification
 
 - Status: DONE_WITH_CONCERNS
-- Implementation commit: `cfb3c0cbb9958d860ca0159865eafb6d9e07c312`
-- Focused tests: `.venv312\\Scripts\\python.exe -m pytest tests\\repro_runner\\test_dossier.py -q` — 26 passed.
-- Full tests: `.venv312\\Scripts\\python.exe -m pytest -q` — 132 passed, 1 warning.
+- Implementation summary:
+  - Added `src/repro_runner/protocol_drafts.py` with `ProtocolToken`, `ProtocolDraftRecord`, `ProtocolDraftError`, `verify_protocol_token()`, and `ProtocolDraftStore`.
+  - Added protocol settings to `src/repro_runner/config.py` with the required default secret fallback and `protocol_draft_ttl_seconds` bounds of 60–3600, default 900.
+  - Added `tests/repro_runner/test_protocol_drafts.py` covering atomic draft persistence, privacy constraints, HMAC validation, constant-time signature checks via `hmac.compare_digest`, expiry handling, idempotent rewrites, unsafe draft IDs, and stored manifest/dataset mismatch rejection.
+- Storage contract implemented:
+  - Stores only parsed dossier JSON plus safe metadata in `draft.json`.
+  - Never persists token plaintext, PDF bytes, or CSV bytes.
+  - Rejects malformed/unsafe draft IDs and prevents path traversal.
+  - Uses atomic temp-file write + `flush()` + `os.fsync()` + `os.replace()`.
+  - Treats repeated identical writes as idempotent, but never overwrites differing content for an existing draft.
+  - Caps stored draft expiry at `min(token.exp, now + ttl_seconds)`.
+- Error-code mapping implemented:
+  - malformed token -> `protocol_token_malformed`
+  - bad signature -> `protocol_token_tampered`
+  - invalid payload/version/ready -> `protocol_payload_invalid`
+  - expired token or stored draft -> `protocol_draft_expired`
+  - draft ID mismatch or stored manifest/dataset mismatch -> `protocol_draft_token_mismatch`
+- Focused verification:
+  - `pytest tests\repro_runner\test_protocol_drafts.py -q`
+  - Result: 8 passed
+- Relevant full regression:
+  - `pytest tests\repro_runner -q`
+  - Result: 248 passed, 1 warning
+- Self-review notes:
+  - Caught and fixed a subtle idempotency bug where a later identical `save()` would have mismatched on recomputed `created_at` / `expires_at`; repeated writes now compare only invariant token-bound metadata plus dossier and return the existing record.
+  - Existing draft expiry is still enforced on repeat saves and loads with `protocol_draft_expired`.
 - Changed files:
-  - `src/repro_runner/dossier.py`
-  - `tests/repro_runner/test_dossier.py`
+  - `src/repro_runner/config.py`
+  - `src/repro_runner/protocol_drafts.py`
+  - `tests/repro_runner/test_protocol_drafts.py`
   - `.superpowers/sdd/task-1-report.md`
-- Concerns: The full suite emits a pre-existing FastAPI/Starlette `TestClient` deprecation warning about `httpx`; it does not affect the Task 1 tests.
+- Concerns:
+  - The broader regression still emits a pre-existing FastAPI/Starlette deprecation warning about `httpx` in the test client stack; it is unrelated to this task.
