@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from repro_runner import api
 from repro_runner.config import Settings, get_settings
 from repro_runner.job_store import JobStore
+from repro_runner.job_runner import stage_job_inputs
 from repro_runner.schemas import (
     DatasetProfile,
     ExperimentManifest,
@@ -329,3 +330,27 @@ def test_create_job_staging_failure_returns_safe_internal_error(
     assert "traceback" not in response.text.lower()
     assert "raw csv leaked" not in response.text
     assert "123456,654321,1" not in response.text
+
+
+@pytest.mark.parametrize("initial_status", ["queued", "needs_retry"])
+def test_cancel_job_cleans_up_staged_inputs_for_non_running_jobs(
+    client: TestClient,
+    settings: Settings,
+    initial_status: str,
+):
+    api.app.state.job_runner.stop()
+    store = JobStore(settings.job_store_path)
+    content = _csv()
+    manifest = _manifest(content, hex_digit="7" if initial_status == "queued" else "8", model_count=1)
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    stage_job_inputs(job_id, manifest, content, settings)
+    if initial_status == "needs_retry":
+        store.mark_running(job_id, worker_pid=77)
+        store.mark_needs_retry(job_id)
+
+    response = client.post(f"/v1/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert not (settings.job_work_dir / job_id / "manifest.json").exists()
+    assert not (settings.job_work_dir / job_id / "input.csv").exists()

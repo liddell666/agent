@@ -34,7 +34,7 @@ def stage_job_inputs(
         (temporary / "input.csv").write_bytes(csv_bytes)
         if directory.exists():
             shutil.rmtree(directory, ignore_errors=True)
-        temporary.replace(directory)
+        shutil.move(str(temporary), str(directory))
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
@@ -96,7 +96,11 @@ class JobRunner:
                 with self._current_lock:
                     self._current_job_id = job.job_id
                 try:
-                    self._process_job(job.job_id)
+                    try:
+                        self._process_job(job.job_id)
+                    except Exception:
+                        logger.exception("job processing crashed job_id=%s", job.job_id)
+                        self._fail_job_safely(job.job_id, error_code="job_processing_failed")
                 finally:
                     with self._current_lock:
                         self._current_job_id = None
@@ -135,11 +139,11 @@ class JobRunner:
                 return
             if current.status == "cancel_requested":
                 self.store.mark_cancelled(job_id)
-                _cleanup_job_inputs(job_id, self.settings)
+                cleanup_job_inputs(job_id, self.settings)
                 return
             if current.status in {"running", "cancel_requested"}:
                 self.store.mark_failed(job_id, error_code="job_execution_failed")
-                _cleanup_job_inputs(job_id, self.settings)
+                cleanup_job_inputs(job_id, self.settings)
             return
 
         if self._stop_event.is_set():
@@ -148,17 +152,26 @@ class JobRunner:
         current = self.store.get(job_id)
         if current.status == "cancel_requested":
             self.store.mark_cancelled(job_id)
-            _cleanup_job_inputs(job_id, self.settings)
+            cleanup_job_inputs(job_id, self.settings)
             return
 
-        result_id = save_suite_result(result, self.settings)
-        if result.status == "succeeded":
-            self.store.mark_succeeded(job_id, result_id=result_id)
-        elif result.status == "partial":
-            self.store.mark_partial(job_id, result_id=result_id)
-        else:
-            self.store.mark_failed(job_id, result_id=result_id, error_code="model_training_failed")
-        _cleanup_job_inputs(job_id, self.settings)
+        try:
+            result_id = save_suite_result(result, self.settings)
+            if result.status == "succeeded":
+                self.store.mark_succeeded(job_id, result_id=result_id)
+            elif result.status == "partial":
+                self.store.mark_partial(job_id, result_id=result_id)
+            else:
+                self.store.mark_failed(
+                    job_id,
+                    result_id=result_id,
+                    error_code="model_training_failed",
+                )
+        except Exception:
+            logger.exception("job result persistence failed job_id=%s", job_id)
+            self._fail_job_safely(job_id, error_code="result_persistence_failed")
+            return
+        cleanup_job_inputs(job_id, self.settings)
 
     def _resolve_execute_job(self) -> Callable[..., ExperimentSuiteResult]:
         if self._execute_job_resolver is not None:
@@ -177,6 +190,28 @@ class JobRunner:
             except ValueError:
                 return
 
+    def _fail_job_safely(self, job_id: str, *, error_code: str) -> None:
+        try:
+            current = self.store.get(job_id)
+        except LookupError:
+            return
+        if self._stop_event.is_set():
+            self._preserve_retryable_job(job_id)
+            return
+        if current.status == "cancel_requested":
+            try:
+                self.store.mark_cancelled(job_id)
+            except ValueError:
+                return
+            cleanup_job_inputs(job_id, self.settings)
+            return
+        if current.status in {"running", "cancel_requested", "queued"}:
+            try:
+                self.store.mark_failed(job_id, error_code=error_code)
+            except ValueError:
+                return
+            cleanup_job_inputs(job_id, self.settings)
+
 
 def _job_directory(job_id: str, settings: Settings) -> Path:
     return settings.job_work_dir.resolve() / job_id
@@ -190,7 +225,7 @@ def _read_job_inputs(job_id: str, settings: Settings) -> tuple[ExperimentManifes
     return manifest, (directory / "input.csv").read_bytes()
 
 
-def _cleanup_job_inputs(job_id: str, settings: Settings) -> None:
+def cleanup_job_inputs(job_id: str, settings: Settings) -> None:
     directory = _job_directory(job_id, settings)
     if directory.exists():
         shutil.rmtree(directory, ignore_errors=True)

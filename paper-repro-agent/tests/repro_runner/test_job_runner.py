@@ -6,6 +6,7 @@ from time import monotonic, sleep
 
 import pytest
 
+import repro_runner.job_runner as job_runner_module
 from repro_runner.config import Settings
 from repro_runner.job_runner import JobRunner, stage_job_inputs
 from repro_runner.job_store import JobStore
@@ -238,6 +239,77 @@ def test_job_runner_skips_needs_retry_jobs_without_staged_inputs(tmp_path):
         job = store.get(job_id)
         assert job.status == "needs_retry"
         assert job.attempt == 1
+    finally:
+        runner.stop()
+
+
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+def test_job_runner_result_persistence_failure_marks_job_failed_and_keeps_worker_alive(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    content = _csv()
+    settings = Settings(
+        storage_dir=tmp_path / "experiments",
+        job_store_path=tmp_path / "jobs.sqlite3",
+        job_work_dir=tmp_path / "job-inputs",
+    )
+    store = JobStore(settings.job_store_path)
+    first_manifest = _manifest(content, manifest_hex="5", models=["logistic_regression"])
+    second_manifest = _manifest(content, manifest_hex="6", models=["logistic_regression"])
+    first_job_id = store.create(first_manifest.manifest_id, first_manifest.dataset_id)
+    second_job_id = store.create(second_manifest.manifest_id, second_manifest.dataset_id)
+    stage_job_inputs(first_job_id, first_manifest, content, settings)
+    stage_job_inputs(second_job_id, second_manifest, content, settings)
+
+    save_attempts = 0
+    original_save_suite_result = job_runner_module.save_suite_result
+
+    def flaky_save_suite_result(result, current_settings):
+        nonlocal save_attempts
+        save_attempts += 1
+        if save_attempts == 1:
+            raise OSError("disk full while writing terminal result")
+        return original_save_suite_result(result, current_settings)
+
+    monkeypatch.setattr(job_runner_module, "save_suite_result", flaky_save_suite_result)
+
+    def fake_execute_job(**_kwargs):
+        return _suite_result(
+            status="succeeded",
+            model_results=[
+                ModelRunResult(
+                    model="logistic_regression",
+                    status="succeeded",
+                    cv_best_score=0.9,
+                    best_params={"C": 1},
+                    metrics=ExperimentMetrics(
+                        roc_auc=0.91,
+                        accuracy=0.9,
+                        balanced_accuracy=0.9,
+                        precision=0.9,
+                        recall=0.9,
+                        f1=0.9,
+                        confusion_matrix=[[4, 1], [0, 4]],
+                    ),
+                    feature_importance=[FeatureImportance(feature="x1", importance=1.0)],
+                    fit_seconds=0.123,
+                )
+            ],
+        )
+
+    runner = JobRunner(store=store, settings=settings, execute_job=fake_execute_job)
+    runner.start()
+    try:
+        runner.notify()
+        _wait_until(lambda: store.get(first_job_id).status == "failed")
+        _wait_until(lambda: store.get(second_job_id).status == "succeeded")
+
+        failed_job = store.get(first_job_id)
+        assert failed_job.error_code == "result_persistence_failed"
+        assert failed_job.status == "failed"
+        assert not (settings.job_work_dir / first_job_id / "input.csv").exists()
+        assert runner._thread is not None
+        assert runner._thread.is_alive()
     finally:
         runner.stop()
 

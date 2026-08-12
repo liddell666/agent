@@ -1,4 +1,5 @@
 import sqlite3
+from threading import Barrier, Thread
 
 import pytest
 
@@ -74,3 +75,67 @@ def test_job_store_rejects_invalid_transitions_and_supports_cancel_failure(tmp_p
 
     with pytest.raises(ValueError):
         store.mark_running(failed_job_id, worker_pid=99)
+
+
+def test_job_store_conditional_transition_rejects_stale_terminal_overwrite(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    concurrent_store = JobStore(tmp_path / "jobs.sqlite3")
+    job_id = store.create("manifest-race", "sha256:" + "6" * 64)
+    store.mark_running(job_id, worker_pid=42)
+
+    with concurrent_store._connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        stale_job = concurrent_store._get_for_update(connection, job_id)
+        connection.commit()
+
+    store.mark_succeeded(job_id, result_id="exp-20260812T010203Z-deadbeef")
+
+    with concurrent_store._connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        with pytest.raises(ValueError, match="job state changed during update"):
+            concurrent_store._update_locked(
+                connection,
+                stale_job,
+                status="cancel_requested",
+                stage=stale_job.stage,
+                progress=stale_job.progress,
+            )
+        connection.rollback()
+
+    job = store.get(job_id)
+    assert job.status == "succeeded"
+    assert job.result_id == "exp-20260812T010203Z-deadbeef"
+
+
+def test_job_store_admit_job_atomically_deduplicates_under_race(tmp_path):
+    first_store = JobStore(tmp_path / "jobs.sqlite3")
+    second_store = JobStore(tmp_path / "jobs.sqlite3")
+    barrier = Barrier(2)
+    job_ids: list[str] = []
+    created_flags: list[bool] = []
+    errors: list[BaseException] = []
+
+    def admit(store: JobStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            record, created = store.admit_job("manifest-shared", "sha256:" + "7" * 64)
+            job_ids.append(record.job_id)
+            created_flags.append(created)
+        except BaseException as exc:  # pragma: no cover - exercised by assertion
+            errors.append(exc)
+
+    first_thread = Thread(target=admit, args=(first_store,))
+    second_thread = Thread(target=admit, args=(second_store,))
+    first_thread.start()
+    second_thread.start()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not errors
+    assert len(job_ids) == 2
+    assert len(set(job_ids)) == 1
+    assert sorted(created_flags) == [False, True]
+
+    with sqlite3.connect(tmp_path / "jobs.sqlite3") as connection:
+        row_count = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    assert row_count == 1

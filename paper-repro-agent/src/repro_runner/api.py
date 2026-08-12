@@ -26,8 +26,8 @@ from repro_runner.config import (
 from repro_runner.data import DatasetError, diagnose_dataset, load_dataset
 from repro_runner.dossier import parse_dossier
 from repro_runner.engine import ExperimentError, run_random_forest
-from repro_runner.job_runner import JobRunner, stage_job_inputs
-from repro_runner.job_store import JobStore
+from repro_runner.job_runner import JobRunner, cleanup_job_inputs, stage_job_inputs
+from repro_runner.job_store import JobCapacityError, JobStore
 from repro_runner.idempotency import (
     IdempotencyCapacityError,
     IdempotencyConflictError,
@@ -422,22 +422,23 @@ async def create_job(
         )
 
     store = _get_job_store()
-    existing = store.lookup_by_fingerprint(manifest.manifest_id, manifest.dataset_id)
-    if existing is not None:
-        return _job_create_response(existing)
-    if store.has_active_job():
-        raise _job_capacity_error()
-
-    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
     try:
-        stage_job_inputs(job_id, manifest, content, settings)
+        job, created = store.admit_job(manifest.manifest_id, manifest.dataset_id)
+    except JobCapacityError:
+        raise _job_capacity_error() from None
+
+    if not created:
+        return _job_create_response(job)
+
+    try:
+        stage_job_inputs(job.job_id, manifest, content, settings)
     except Exception:
         request_id = _request_id()
         logger.exception("job staging failed request_id=%s", request_id)
-        store.mark_failed(job_id, error_code="input_persistence_failed")
+        store.mark_failed(job.job_id, error_code="input_persistence_failed")
         raise _internal_error("job_create_failed", request_id) from None
     _get_job_runner().notify()
-    return _job_create_response(store.get(job_id))
+    return _job_create_response(store.get(job.job_id))
 
 
 @app.get("/v1/experiments/{experiment_id}", response_model=ExperimentResult)
@@ -481,11 +482,17 @@ async def get_job(job_id: str) -> JobStatusResponse:
 
 
 @app.post("/v1/jobs/{job_id}/cancel", response_model=JobStatusResponse)
-async def cancel_job(job_id: str) -> JobStatusResponse:
+async def cancel_job(
+    job_id: str, settings: Settings = Depends(get_settings)
+) -> JobStatusResponse:
     store = _get_job_store()
     try:
+        before = store.get(job_id)
         store.request_cancel(job_id)
-        return _job_status_response(store.get(job_id))
+        current = store.get(job_id)
+        if before.status in {"queued", "needs_retry"} and current.status == "cancelled":
+            cleanup_job_inputs(job_id, settings)
+        return _job_status_response(current)
     except LookupError:
         raise _job_not_found_error() from None
 
