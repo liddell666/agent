@@ -191,7 +191,7 @@ async def get_protocol_draft(
     protocol_token: Annotated[str, Header(alias="X-Protocol-Token")],
 ) -> ProtocolDraftReadResponse:
     _validate_protocol_draft_id(draft_id)
-    _cleanup_protocol_drafts()
+    _cleanup_protocol_drafts(excluded_draft_id=draft_id)
     if not _protocol_draft_path(draft_id).exists():
         raise _protocol_draft_error(ProtocolDraftError("protocol_draft_not_found"))
     try:
@@ -867,9 +867,9 @@ def _protocol_draft_path(draft_id: str):
     )
 
 
-def _cleanup_protocol_drafts() -> None:
+def _cleanup_protocol_drafts(excluded_draft_id: str | None = None) -> None:
     try:
-        _get_protocol_draft_store().cleanup_expired()
+        _get_protocol_draft_store().cleanup_expired(excluded_draft_id=excluded_draft_id)
     except Exception:
         logger.error("protocol draft cleanup failed")
 

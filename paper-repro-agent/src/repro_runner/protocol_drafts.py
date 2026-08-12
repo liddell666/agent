@@ -174,14 +174,21 @@ class ProtocolDraftStore:
             raise ProtocolDraftError("protocol_draft_token_mismatch")
         return record
 
-    def cleanup_expired(self) -> int:
+    def cleanup_expired(self, excluded_draft_id: str | None = None) -> int:
         """Delete only draft directories whose stored expires_at is in the past."""
         now = int(self.clock())
         if not self.root.exists():
             return 0
+        excluded = (
+            _validate_draft_id(excluded_draft_id)
+            if excluded_draft_id is not None
+            else None
+        )
         removed = 0
         for child in self.root.iterdir():
             if not child.is_dir() or not _DRAFT_ID.fullmatch(child.name):
+                continue
+            if excluded is not None and child.name == excluded:
                 continue
             try:
                 record = self._read_record(child / "draft.json")

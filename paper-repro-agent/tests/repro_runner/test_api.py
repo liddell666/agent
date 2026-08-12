@@ -211,7 +211,32 @@ def test_protocol_draft_rejects_invalid_access(
         assert response.json()["detail"]["code"] == "protocol_draft_token_mismatch"
 
 
-def test_protocol_draft_post_rejects_invalid_json_without_echoing_body_or_token(
+def test_protocol_draft_post_rejects_malformed_json_without_echoing_body_or_token(
+    client: TestClient, settings: Settings
+):
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    response = client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-apiaaaaaa",
+            "protocol_token": token,
+            "dossier_json": "{",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "protocol_payload_invalid"
+    assert token not in response.text
+    assert "traceback" not in response.text.casefold()
+
+
+def test_protocol_draft_post_rejects_sensitive_content_without_echoing_body_or_token(
     client: TestClient, settings: Settings
 ):
     token = _protocol_token(
@@ -235,7 +260,6 @@ def test_protocol_draft_post_rejects_invalid_json_without_echoing_body_or_token(
     assert response.json()["detail"]["code"] == "protocol_payload_invalid"
     assert token not in response.text
     assert "col_a,col_b" not in response.text
-    assert "traceback" not in response.text.casefold()
 
 
 def test_protocol_draft_post_rejects_oversized_json_without_echoing_body_or_token(
@@ -310,9 +334,9 @@ def test_protocol_draft_cleanup_expired_runs_before_reads_and_writes(
     calls: list[str] = []
     original_cleanup = store.cleanup_expired
 
-    def observed_cleanup():
+    def observed_cleanup(excluded_draft_id=None):
         calls.append("cleanup")
-        return original_cleanup()
+        return original_cleanup(excluded_draft_id=excluded_draft_id)
 
     store.cleanup_expired = observed_cleanup
     try:
@@ -334,6 +358,64 @@ def test_protocol_draft_cleanup_expired_runs_before_reads_and_writes(
     assert post.status_code == 200
     assert get.status_code == 200
     assert calls == ["cleanup", "cleanup"]
+
+
+def test_protocol_draft_get_returns_expired_for_requested_draft_while_cleaning_others(
+    client: TestClient, settings: Settings
+):
+    store = client.app.state.protocol_draft_store
+    requested_token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        3_000,
+    )
+    other_token = _protocol_token(
+        settings.protocol_secret,
+        "draft-otherxxx",
+        "sha256:" + "3" * 64,
+        "sha256:" + "4" * 64,
+        3_000,
+    )
+    store.clock = lambda: 1_000
+    assert client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-apiaaaaaa",
+            "protocol_token": requested_token,
+            "dossier_json": '{"title":"Requested"}',
+        },
+    ).status_code == 200
+    assert client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-otherxxx",
+            "protocol_token": other_token,
+            "dossier_json": '{"title":"Other"}',
+        },
+    ).status_code == 200
+
+    store.clock = lambda: 1_950
+    response = client.get(
+        "/v1/protocol-drafts/draft-apiaaaaaa",
+        headers={"X-Protocol-Token": requested_token},
+    )
+
+    assert response.status_code == 410
+    assert response.json()["detail"]["code"] == "protocol_draft_expired"
+    assert (
+        settings.storage_dir
+        / "protocol-drafts"
+        / "draft-apiaaaaaa"
+        / "draft.json"
+    ).exists()
+    assert not (
+        settings.storage_dir
+        / "protocol-drafts"
+        / "draft-otherxxx"
+        / "draft.json"
+    ).exists()
 
 
 def test_protocol_draft_cleanup_failure_is_sanitized(

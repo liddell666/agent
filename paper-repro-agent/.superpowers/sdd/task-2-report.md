@@ -38,3 +38,31 @@
   - `.superpowers/sdd/task-2-report.md`
 - Concerns:
   - The requested regression command still emits one existing third-party deprecation warning from FastAPI/Starlette `TestClient`; it is unrelated to the protocol draft API work.
+
+## Reviewer fix follow-up (2026-08-12)
+
+- Status: DONE_WITH_CONCERNS
+- Fix summary:
+  - Extended `ProtocolDraftStore.cleanup_expired()` in `src/repro_runner/protocol_drafts.py` with an optional `excluded_draft_id` parameter while preserving the existing no-argument cleanup behavior.
+  - Updated `GET /v1/protocol-drafts/{draft_id}` in `src/repro_runner/api.py` to run cleanup before reads while excluding the requested draft from deletion for the current request, so `store.load()` now classifies that stored record as `protocol_draft_expired` when appropriate.
+  - Split the prior “invalid JSON” API test in `tests/repro_runner/test_api.py` into two distinct cases:
+    - true malformed `dossier_json` (`"{"`) -> sanitized 422 `protocol_payload_invalid`
+    - valid JSON with sensitive dossier content -> sanitized 422 `protocol_payload_invalid`
+  - Added a regression test proving that an expired requested draft returns 410/`protocol_draft_expired` while an unrelated expired draft is still cleaned during the same GET request.
+- Commands and results:
+  - `pytest tests\repro_runner\test_api.py -k protocol_draft -q`
+  - Result: 14 passed, 46 deselected, 1 warning
+  - `pytest tests\repro_runner\test_api.py -k "protocol_draft or healthz or parse_dossier or validate_dataset" -q`
+  - Result: 28 passed, 32 deselected, 1 warning
+- Changed files for the fix:
+  - `src/repro_runner/api.py`
+  - `src/repro_runner/protocol_drafts.py`
+  - `tests/repro_runner/test_api.py`
+  - `.superpowers/sdd/task-2-report.md`
+- Self-review:
+  - Verified the requested GET path still runs cleanup before reads, but only shields the in-scope draft from deletion for that one request.
+  - Verified unrelated expired drafts continue to be removed during the same cleanup pass.
+  - Verified malformed JSON, sensitive dossier content, cleanup failures, write failures, and request-validation sanitization all retain their existing API mappings and privacy behavior.
+  - Verified the optional cleanup exclusion does not change startup cleanup or POST cleanup behavior because both still call the no-argument path.
+- Concerns:
+  - The required regression commands still emit the pre-existing FastAPI/Starlette `TestClient` deprecation warning; unrelated to this fix.
