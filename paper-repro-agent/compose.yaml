@@ -36,6 +36,8 @@ services:
     env_file: .env
     environment:
       REPRO_RUNNER_STORAGE_DIR: /data/experiments
+      REPRO_RUNNER_JOB_STORE_PATH: /data/experiments/jobs.sqlite3
+      REPRO_RUNNER_JOB_WORK_DIR: /data/experiments/jobs
       REPRO_RUNNER_MAX_CONCURRENT_EXPERIMENTS: "1"
     ports:
       - "127.0.0.1:8001:8001"

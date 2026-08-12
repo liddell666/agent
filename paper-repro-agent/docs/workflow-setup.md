@@ -56,3 +56,36 @@ DSL 文件为 `dify/paper-dossier-workflow.yml`。
 
 如果 HTTP 节点返回 422 并提示缺少 `file`，检查其 Body 是否为 `form-data`，键名是否为 `file`、类型是否为 `file`，值是否绑定到 `用户输入 / paper_pdf`。
 
+
+## Reliable general-binary runner path
+
+For an ordinary binary CSV, use the runner contract in this order:
+
+`POST /v1/diagnose-dataset` -> create and confirm a manifest -> `POST /v1/jobs` -> poll `GET /v1/jobs/{job_id}` -> `GET /v1/jobs/{job_id}/result` -> `POST /v1/compare-model-suite-result`.
+
+The diagnosis and polling responses contain aggregate metadata only. The
+manifest binds the confirmed target, feature list, dataset identity and split
+settings. The job endpoint is asynchronous and bounded; stop polling on
+`succeeded`, `partial`, `failed`, `cancelled` or `needs_retry` rather than
+waiting forever. A `needs_retry` job keeps its staged input and may be resumed
+after the `repro-runner` container restarts.
+
+The persistent job database and staged input directory are explicitly mounted
+under `/data/experiments` in `compose.yaml`. Configure them with
+`REPRO_RUNNER_JOB_STORE_PATH` and `REPRO_RUNNER_JOB_WORK_DIR`; do not use a
+container-only path for a production deployment.
+
+Fast local contract checks use the committed synthetic fixtures:
+
+```powershell
+pytest -q tests/test_end_to_end_general_binary.py
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+docker compose config
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_multimodel.ps1 `
+  -CsvPath 'E:\论文复现\成果\2training_samples_15180.csv' `
+  -TargetColumn 'Y_cls'
+```
+
+The smoke script reports only dataset aggregates, job/model statuses, ranking,
+the shared held-out digest and comparison counts. It never prints CSV rows,
+PDF text or secrets.

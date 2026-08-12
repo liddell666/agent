@@ -219,22 +219,24 @@ Invoke-RestMethod http://localhost:8001/healthz
 docker inspect repro-runner --format '{{.State.Health.Status}}'
 ```
 
-Run the end-to-end comparison smoke test with a local CSV. The script assigns
-one stable `smoke-comparison-<run-id>` idempotency key to its experiment call,
-uses the host mapping when available, and otherwise performs the same bounded requests
-inside the running `repro-runner` container. It emits only normalized summaries
-and never CSV rows:
+Run the reliable asynchronous binary smoke test with a local CSV. It diagnoses
+the dataset, creates a confirmed manifest, submits one bounded
+`logistic_regression` job, polls terminal states, loads the result and compares
+the held-out metric with complete split provenance. It emits only aggregate
+profile, status, ranking and digest fields; it never prints CSV rows:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_comparison.ps1 `
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke_multimodel.ps1 `
   -CsvPath 'E:\论文复现\成果\2training_samples_15180.csv' `
   -TargetColumn 'Y_cls'
 ```
 
-The bundled dossier fixture deliberately contains no dataset digest or random
-seed. Therefore a successful smoke comparison must contain metric items but
-must remain strictly non-comparable. Approximate similarity is a separate,
-deterministic conclusion: 近似指标一致不等于严格复现。
+`smoke_comparison.ps1` remains a compatibility wrapper for the asynchronous
+job smoke path; its legacy `DossierPath` parameter is accepted but is not
+uploaded. A job that reaches `needs_retry` is a recoverable restart case, not a
+successful smoke result. The persistent SQLite metadata and staged input
+directory are mounted under `/data/experiments` so a service restart can
+recover the same job ID.
 
 For service troubleshooting, inspect the most recent 200 `repro-runner` log
 lines. Do not add request payloads or CSV rows to diagnostic output:
@@ -242,3 +244,43 @@ lines. Do not add request payloads or CSV rows to diagnostic output:
 ```powershell
 docker logs --tail 200 repro-runner
 ```
+
+## 8. Reliable general-binary workflow
+
+The release path for an ordinary binary CSV is:
+
+`diagnose-dataset -> confirmed manifest -> POST /v1/jobs -> bounded polling -> result -> compare-model-suite-result`
+
+The diagnosis is intentionally aggregate-only. A confirmed manifest binds the
+target, selected features, dataset SHA-256 identity, preprocessing policy,
+split parameters and model list. The asynchronous job endpoint returns before
+training completes and exposes `queued`, `running`, `needs_retry`, `succeeded`,
+`partial`, `failed` and `cancelled` states. Only `succeeded` or `partial` jobs
+with a result should be treated as completed experiments.
+
+The runner stores job metadata in `REPRO_RUNNER_JOB_STORE_PATH` and staged
+inputs in `REPRO_RUNNER_JOB_WORK_DIR`. Both default to paths below
+`/data/experiments`, which is mounted by `compose.yaml`. If the container is
+restarted while a job is active, the worker marks it `needs_retry` and keeps
+the staged input; the same job can then be resumed by the worker. Terminal
+results are persisted before staged inputs are removed.
+
+Use the committed fixtures for fast contract checks without copying user data:
+
+```powershell
+pytest -q tests/test_end_to_end_general_binary.py
+```
+
+The full release gate is:
+
+```powershell
+pytest -q
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+docker compose config
+docker compose up -d --build repro-runner
+Invoke-WebRequest http://localhost:8001/healthz
+```
+
+Do not place API keys, raw CSV rows, PDF text or full request payloads in smoke
+output or logs. The existing synchronous V2/V3 endpoints remain available as
+rollback and compatibility paths while the reliable job workflow is verified.
