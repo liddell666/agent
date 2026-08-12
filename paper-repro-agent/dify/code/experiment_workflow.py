@@ -452,6 +452,16 @@ def _protocol_error(code):
     return {"code": safe_code, "message": "The confirmed protocol is not valid."}
 
 
+def _protocol_unresolved_code(code):
+    return {
+        "dataset_not_valid": "protocol_payload_invalid",
+        "dataset_id": "protocol_dataset_missing",
+        "target_column": "protocol_target_missing",
+        "feature_columns": "protocol_features_missing",
+        "sampling_strategy": "protocol_options_invalid",
+    }.get(code, "protocol_payload_invalid")
+
+
 def _draft_error(code, action):
     safe_code = code if code in _SAFE_ERROR_CODES else "protocol_payload_invalid"
     verb = "saved" if action == "save" else "read"
@@ -536,6 +546,7 @@ def prepare_protocol_artifacts(
     expires_at = int(current + ttl)
     ready = not unresolved
     draft_id = _new_draft_id()
+    unresolved_codes = list(dict.fromkeys(_protocol_unresolved_code(code) for code in unresolved))
     preview = {
         "protocol_version": _PROTOCOL_TOKEN_VERSION,
         "expires_in_seconds": ttl,
@@ -554,7 +565,7 @@ def prepare_protocol_artifacts(
             "metrics": _safe_metrics(dossier.get("metrics")),
         },
         "manifest_draft": manifest,
-        "unresolved_protocol_fields": unresolved,
+        "unresolved_protocol_fields": unresolved_codes,
     }
     payload = {
         "v": _PROTOCOL_TOKEN_VERSION,
@@ -570,7 +581,7 @@ def prepare_protocol_artifacts(
         "draft_id": draft_id if ready else "",
         "draft_expires_at": str(expires_at) if ready else "",
         "protocol_ready": ready,
-        "protocol_errors": _json([_protocol_error(code) for code in unresolved]),
+        "protocol_errors": _json([_protocol_error(code) for code in unresolved_codes]),
     }
 
 
@@ -641,7 +652,7 @@ def normalize_protocol_confirmation(
     return {"protocol_ok": True, "manifest_json": _json(manifest), "draft_id": draft_id, "protocol_errors": "[]"}
 
 
-def normalize_protocol_draft_write_response(body, status_code, expected_draft_id):
+def normalize_protocol_draft_write_response(body, status_code, expected_draft_id, expected_manifest_json=None):
     errors = []
     if status_code in {404, 410}:
         errors.append("protocol_draft_expired" if status_code == 410 else "protocol_draft_not_found")
@@ -650,13 +661,25 @@ def normalize_protocol_draft_write_response(body, status_code, expected_draft_id
     elif not isinstance(status_code, int) or status_code < 200 or status_code >= 300:
         errors.append("protocol_draft_write_failed")
     response = _object(body)
+    expected = _object(expected_manifest_json)
     if not errors:
         if response.get("draft_id") != expected_draft_id or _safe_draft_id(expected_draft_id) is None:
             errors.append("protocol_draft_token_mismatch")
-        if _safe_sha(response.get("manifest_id")) is None:
+        response_manifest_id = _safe_sha(response.get("manifest_id"))
+        response_dataset_id = _safe_sha(response.get("dataset_id"))
+        expected_manifest_id = _safe_sha(expected.get("manifest_id"))
+        expected_dataset_id = _safe_sha(expected.get("dataset_id"))
+        if response_manifest_id is None:
             errors.append("protocol_draft_response_invalid")
-        if _safe_sha(response.get("dataset_id")) is None:
+        if response_dataset_id is None:
             errors.append("protocol_draft_response_invalid")
+        if expected_manifest_id is None or expected_dataset_id is None:
+            errors.append("protocol_draft_token_mismatch")
+        elif (
+            response_manifest_id != expected_manifest_id
+            or response_dataset_id != expected_dataset_id
+        ):
+            errors.append("protocol_draft_token_mismatch")
         expires_at = _safe_int(response.get("expires_at"), 1)
         if expires_at is None:
             errors.append("protocol_draft_response_invalid")

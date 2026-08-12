@@ -678,7 +678,62 @@ def test_prepare_protocol_artifacts_with_unresolved_fields_does_not_return_runna
     assert result["protocol_token"] == ""
     assert result["draft_id"] == ""
     assert result["draft_expires_at"] == ""
-    assert json.loads(result["protocol_errors"])
+    assert [item["code"] for item in json.loads(result["protocol_errors"])] == [
+        "protocol_payload_invalid",
+        "protocol_dataset_missing",
+        "protocol_target_missing",
+        "protocol_features_missing",
+    ]
+    preview = json.loads(result["protocol_preview_json"])
+    exposed_error_payloads = json.dumps(
+        {
+            "protocol_errors": json.loads(result["protocol_errors"]),
+            "unresolved_protocol_fields": preview["unresolved_protocol_fields"],
+        },
+        ensure_ascii=False,
+    )
+    for internal_marker in ("dataset_not_valid", "dataset_id", "target_column", "feature_columns"):
+        assert internal_marker not in exposed_error_payloads
+
+
+def test_prepare_protocol_artifacts_maps_unready_sampling_strategy_to_safe_error_code():
+    diagnosis_json = json.dumps(
+        {
+            "valid": True,
+            "dataset": {
+                "dataset_id": "sha256:" + "3" * 64,
+                "target": "Y_cls",
+                "column_names": ["x1", "Y_cls"],
+            },
+            "recommended_options": {
+                "target_column": "Y_cls",
+                "feature_columns": ["x1"],
+                "sampling_strategy": "balanced_undersample",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    result = prepare_protocol_artifacts(
+        '{"title":"Paper"}',
+        diagnosis_json,
+        secret="helper-secret",
+        now=1_000,
+    )
+
+    assert result["protocol_ready"] is False
+    assert [item["code"] for item in json.loads(result["protocol_errors"])] == [
+        "protocol_options_invalid",
+    ]
+    preview = json.loads(result["protocol_preview_json"])
+    exposed_error_payloads = json.dumps(
+        {
+            "protocol_errors": json.loads(result["protocol_errors"]),
+            "unresolved_protocol_fields": preview["unresolved_protocol_fields"],
+        },
+        ensure_ascii=False,
+    )
+    assert "sampling_strategy" not in exposed_error_payloads
 
 
 def test_normalize_protocol_confirmation_rejects_legacy_token_without_draft_id() -> None:
@@ -733,7 +788,12 @@ def test_protocol_draft_response_normalizers_accept_valid_metadata():
         ensure_ascii=False,
     )
 
-    write_result = normalize_protocol_draft_write_response(write_body, 201, "draft-aaaaaaaa")
+    write_result = normalize_protocol_draft_write_response(
+        write_body,
+        201,
+        "draft-aaaaaaaa",
+        manifest_json,
+    )
     read_result = normalize_protocol_draft_read_response(
         read_body, 200, "draft-aaaaaaaa", manifest_json
     )
@@ -769,6 +829,49 @@ def test_protocol_draft_response_normalizers_reject_mismatched_metadata():
     assert result["dossier_ok"] is False
     assert json.loads(result["draft_errors"])[0]["code"] == "protocol_draft_token_mismatch"
     assert "Paper" not in result["dossier_json"]
+
+
+def test_protocol_draft_write_response_rejects_mismatched_expected_metadata_without_echoing():
+    body = json.dumps(
+        {
+            "draft_id": "draft-aaaaaaaa",
+            "manifest_id": "sha256:" + "9" * 64,
+            "dataset_id": "sha256:" + "8" * 64,
+            "expires_at": 1900,
+            "dossier": {"title": "RAW_SENTINEL private pdf bytes"},
+        },
+        ensure_ascii=False,
+    )
+
+    result = normalize_protocol_draft_write_response(
+        body,
+        201,
+        "draft-aaaaaaaa",
+        {"manifest_id": "sha256:" + "1" * 64, "dataset_id": "sha256:" + "2" * 64},
+    )
+
+    assert result["draft_saved_ok"] is False
+    assert json.loads(result["draft_errors"])[0]["code"] == "protocol_draft_token_mismatch"
+    assert "RAW_SENTINEL" not in result["draft_errors"]
+    assert result["manifest_id"] == ""
+    assert result["dataset_id"] == ""
+
+
+def test_protocol_draft_write_response_rejects_absent_expected_metadata_without_unbound_success():
+    body = json.dumps(
+        {
+            "draft_id": "draft-aaaaaaaa",
+            "manifest_id": "sha256:" + "1" * 64,
+            "dataset_id": "sha256:" + "2" * 64,
+            "expires_at": 1900,
+        },
+        ensure_ascii=False,
+    )
+
+    result = normalize_protocol_draft_write_response(body, 201, "draft-aaaaaaaa")
+
+    assert result["draft_saved_ok"] is False
+    assert json.loads(result["draft_errors"])[0]["code"] == "protocol_draft_token_mismatch"
 
 
 def test_protocol_draft_http_errors_are_stable_and_do_not_echo_body():
