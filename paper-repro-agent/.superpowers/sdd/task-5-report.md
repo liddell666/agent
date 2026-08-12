@@ -98,3 +98,18 @@ Resolved both Windows PowerShell 5.1 transport findings.
 - PowerShell AST parse, all embedded Dify Python snippets, and `git diff
   --check` passed. Full tests: `156 passed`, with one existing deprecation
   warning.
+
+## Task 5 - merged workflow operator guide (2026-08-13)
+
+- Added `dify/paper-comparison-merged-workflow.md` as the executable Dify import,
+  prepare/run, protocol lifecycle, output, error-action, safety, and rollback
+  guide.
+- Preserved the two original prepare and multi-model workflows as rollback
+  targets and documented the shared secret names without recording a value.
+- Preserved the pre-existing report content above; this section is the scoped
+  merged-workflow documentation update.
+- Checks: required placeholder scan returned no matches; the merged DSL contract
+  test passed (`10 passed`); scoped `git diff --check` reported no whitespace
+  errors.
+- Full-suite attempt: `384 passed, 4 failed`; the failures are in pre-existing
+  dirty implementation/workflow files outside this documentation-only scope.
