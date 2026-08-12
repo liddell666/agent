@@ -228,7 +228,7 @@ def _dataset_profile_payload(result: ExperimentResult) -> dict[str, object]:
 
 
 def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "experiment_id": result.experiment_id,
         "status": result.status,
         "config": _suite_config_payload(result),
@@ -238,6 +238,16 @@ def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
         "performance_ranking": list(result.performance_ranking),
         "reproducibility_status": result.reproducibility_status,
     }
+    if result.preprocessing is not None:
+        payload["preprocessing"] = {
+            "numeric_columns": list(result.preprocessing.numeric_columns),
+            "categorical_columns": list(result.preprocessing.categorical_columns),
+            "transformed_feature_names": list(
+                result.preprocessing.transformed_feature_names
+            ),
+            "sampling_strategy": result.preprocessing.sampling_strategy,
+        }
+    return payload
 
 
 def _suite_config_payload(result: ExperimentSuiteResult) -> dict[str, object]:

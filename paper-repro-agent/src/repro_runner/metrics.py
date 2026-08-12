@@ -62,6 +62,11 @@ def feature_importances(classifier, feature_columns) -> list[FeatureImportance]:
     else:
         return []
 
+    if len(importances) != len(feature_columns):
+        raise ValueError("feature_importance_length_mismatch")
+    if not feature_columns:
+        return []
+
     sorted_importances = sorted(
         zip(feature_columns, importances),
         key=lambda item: (-float(item[1]), item[0]),

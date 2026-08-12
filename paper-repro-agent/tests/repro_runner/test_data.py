@@ -298,3 +298,43 @@ def test_diagnose_dataset_applies_cardinality_limit():
 
     assert response.valid is False
     assert response.errors[0].code == "diagnostic_cardinality_limit_exceeded"
+
+
+def test_load_dataset_accepts_low_cardinality_categorical_features():
+    content = (
+        "slope,landform,Y_cls\n"
+        "1.0,A,0\n"
+        "2.0,B,0\n"
+        "3.0,A,1\n"
+        "4.0,C,1\n"
+    ).encode()
+
+    bundle = load_dataset(
+        content,
+        DatasetOptions(target_column="Y_cls"),
+        Settings(),
+    )
+
+    assert bundle.feature_columns == ["slope", "landform"]
+    assert bundle.frame["landform"].tolist() == ["A", "B", "A", "C"]
+    assert bundle.frame["slope"].tolist() == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_load_dataset_rejects_high_cardinality_categorical_features_safely():
+    content = (
+        "landform,Y_cls\n"
+        "alpha,0\n"
+        "beta,0\n"
+        "gamma,1\n"
+        "delta,1\n"
+    ).encode()
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(
+            content,
+            DatasetOptions(target_column="Y_cls"),
+            Settings(max_diagnostic_cardinality=3),
+        )
+
+    assert raised.value.code == "high_cardinality_feature"
+    assert "alpha" not in raised.value.message

@@ -4,6 +4,7 @@ import sys
 from types import ModuleType
 
 import pytest
+import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -11,6 +12,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
 import repro_runner.model_registry as model_registry
+from repro_runner.preprocessing import build_preprocessor
 
 
 def test_registry_contains_all_requested_models():
@@ -58,6 +60,36 @@ def test_random_forest_baseline_contract_and_unscaled_split_are_preserved():
     assert params["random_state"] == 7
     assert spec.feature_importance_kind == "tree"
     assert spec.search_space
+
+
+def test_preprocessor_is_inside_each_model_pipeline_when_requested():
+    frame = pd.DataFrame(
+        {"slope": [1.0, 2.0, 3.0, 4.0], "landform": ["A", "B", "A", "C"]}
+    )
+    preprocessor = build_preprocessor(frame, ["slope", "landform"])
+
+    tree = model_registry.get_model_spec(
+        "random_forest",
+        {"0": 2, "1": 2},
+        random_state=42,
+        use_gpu=False,
+        preprocessor=preprocessor,
+        sampling_strategy="original",
+    )
+    linear = model_registry.get_model_spec(
+        "logistic_regression",
+        {"0": 2, "1": 2},
+        random_state=42,
+        use_gpu=False,
+        preprocessor=preprocessor,
+        sampling_strategy="class_weight",
+    )
+
+    assert list(tree.estimator.named_steps) == ["preprocess", "model"]
+    assert list(linear.estimator.named_steps) == ["preprocess", "scale", "model"]
+    assert all(key.startswith("model__") for key in tree.search_space)
+    assert tree.estimator.named_steps["model"].class_weight is None
+    assert linear.estimator.named_steps["model"].class_weight == "balanced"
 
 
 def test_xgboost_missing_dependency_is_lazy_and_has_stable_message(monkeypatch):

@@ -10,10 +10,12 @@ from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from repro_runner.data import DatasetBundle
 from repro_runner.metrics import evaluate_classifier, feature_importances
 from repro_runner.model_registry import get_model_spec
+from repro_runner.preprocessing import build_preprocessor, transformed_feature_names
 from repro_runner.schemas import (
     ExperimentSuiteResult,
     ModelRunResult,
     ModelSuiteConfig,
+    PreprocessingSummary,
     SplitProvenance,
     ValidationErrorItem,
 )
@@ -31,16 +33,28 @@ def run_model_suite(
     bundle: DatasetBundle,
     config: ModelSuiteConfig,
 ) -> ExperimentSuiteResult:
-    features = bundle.frame[bundle.feature_columns].to_numpy(dtype=float)
+    if bundle.sampling_strategy == "balanced_undersample":
+        raise ExperimentError(
+            "unsupported_sampling_strategy",
+            "balanced undersampling is not available for fold-safe training yet",
+        )
+    features = bundle.frame[bundle.feature_columns].copy(deep=True)
     target = bundle.frame[bundle.target_column].to_numpy()
     classes = np.sort(np.unique(target))
+    preprocessor = build_preprocessor(
+        features,
+        bundle.feature_columns,
+        max_cardinality=bundle.max_category_cardinality,
+        max_transformed_features=bundle.max_transformed_features,
+    )
     train_indices, test_indices = make_stratified_split(
         target,
         test_size=config.test_size,
         random_state=config.random_state,
     )
 
-    x_train, x_test = features[train_indices], features[test_indices]
+    x_train = features.iloc[train_indices].reset_index(drop=True)
+    x_test = features.iloc[test_indices].reset_index(drop=True)
     y_train, y_test = target[train_indices], target[test_indices]
     training_class_counts = _training_class_counts(y_train)
     _validate_cv_folds(training_class_counts, config.cv_folds)
@@ -59,6 +73,7 @@ def run_model_suite(
     )
 
     results: list[ModelRunResult] = []
+    observed_transformed_names: list[str] | None = None
     for model_name in config.models:
         try:
             spec = get_model_spec(
@@ -66,6 +81,8 @@ def run_model_suite(
                 training_class_counts,
                 random_state=config.random_state,
                 use_gpu=config.use_gpu,
+                preprocessor=preprocessor,
+                sampling_strategy=bundle.sampling_strategy,
             )
             search = RandomizedSearchCV(
                 estimator=spec.estimator,
@@ -89,9 +106,13 @@ def run_model_suite(
                 classes,
                 config.threshold,
             )
+            transformed_names = _transformed_names(
+                best_estimator, bundle.feature_columns
+            )
+            if observed_transformed_names is None:
+                observed_transformed_names = list(transformed_names)
             feature_importance = feature_importances(
-                _unwrap_feature_estimator(best_estimator),
-                bundle.feature_columns,
+                _unwrap_feature_estimator(best_estimator), transformed_names
             )
             results.append(
                 ModelRunResult(
@@ -144,6 +165,12 @@ def run_model_suite(
         results=results,
         performance_ranking=_performance_ranking(successful_results),
         reproducibility_status="cv_tuned",
+        preprocessing=_preprocessing_summary(
+            preprocessor,
+            bundle.feature_columns,
+            bundle.sampling_strategy,
+            transformed_names=observed_transformed_names,
+        ),
     )
 
 
@@ -168,6 +195,36 @@ def _unwrap_feature_estimator(estimator):
     if hasattr(estimator, "named_steps") and "model" in estimator.named_steps:
         return estimator.named_steps["model"]
     return estimator
+
+
+def _transformed_names(estimator, fallback: Sequence[str]) -> list[str]:
+    if hasattr(estimator, "named_steps") and "preprocess" in estimator.named_steps:
+        return transformed_feature_names(estimator.named_steps["preprocess"])
+    return list(fallback)
+
+
+def _preprocessing_summary(
+    preprocessor,
+    feature_columns: Sequence[str],
+    sampling_strategy: str,
+    *,
+    transformed_names: Sequence[str] | None,
+) -> PreprocessingSummary:
+    names = list(transformed_names or feature_columns)
+    numeric_columns: list[str] = []
+    categorical_columns: list[str] = []
+    if hasattr(preprocessor, "transformers"):
+        for name, _, columns in preprocessor.transformers:
+            if name == "numeric":
+                numeric_columns.extend(str(column) for column in columns)
+            elif name == "categorical":
+                categorical_columns.extend(str(column) for column in columns)
+    return PreprocessingSummary(
+        numeric_columns=numeric_columns,
+        categorical_columns=categorical_columns,
+        transformed_feature_names=names,
+        sampling_strategy=sampling_strategy,
+    )
 
 
 def _performance_ranking(results: Sequence[ModelRunResult]) -> list[str]:

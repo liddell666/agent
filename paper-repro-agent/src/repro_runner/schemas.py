@@ -256,6 +256,15 @@ class ExperimentManifest(BaseModel):
         return self
 
 
+class PreprocessingSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    numeric_columns: list[str] = Field(default_factory=list)
+    categorical_columns: list[str] = Field(default_factory=list)
+    transformed_feature_names: list[str] = Field(default_factory=list)
+    sampling_strategy: SamplingStrategy = "original"
+
+
 class ModelRunResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -280,6 +289,7 @@ class ExperimentSuiteResult(BaseModel):
     results: list[ModelRunResult] = Field(default_factory=list)
     performance_ranking: list[ModelName] = Field(default_factory=list)
     reproducibility_status: Literal["cv_tuned"] = "cv_tuned"
+    preprocessing: PreprocessingSummary | None = None
 
 
 class ReportedMetricInput(BaseModel):

@@ -11,7 +11,11 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from repro_runner.config import Settings
-from repro_runner.preprocessing import ColumnPlan, build_column_plan
+from repro_runner.preprocessing import (
+    ColumnPlan,
+    build_column_plan,
+    build_preprocessor,
+)
 from repro_runner.schemas import (
     ColumnProfile,
     DatasetDiagnosticResponse,
@@ -52,12 +56,15 @@ class DatasetBundle:
     feature_columns: list[str]
     profile: DatasetProfile
     warnings: list[str] = field(default_factory=list)
+    sampling_strategy: str = "original"
+    max_category_cardinality: int = 5000
+    max_transformed_features: int = 2048
 
 
 def load_dataset(
     content: bytes, options: DatasetOptions, settings: Settings
 ) -> DatasetBundle:
-    """Read a CSV, validate the numeric-only V2 contract, and return its profile."""
+    """Read a CSV, validate binary features, and return its profile."""
     parsed = _parse_csv(content, settings)
     frame = parsed.frame
     target_column = options.target_column or settings.default_target_column
@@ -86,11 +93,12 @@ def load_dataset(
 
     prepared_frame = frame.copy(deep=True)
     prepared_frame = _apply_missing_policy(prepared_frame, target_column, options)
-    _validate_numeric_features(
+    _validate_and_prepare_features(
         prepared_frame,
         plan.feature_columns,
         allow_missing=options.missing_policy == "impute",
     )
+    _validate_preprocessor_limits(prepared_frame, plan.feature_columns, settings)
     _validate_target_classes(prepared_frame[target_column])
 
     if options.drop_duplicates:
@@ -103,6 +111,9 @@ def load_dataset(
         feature_columns=plan.feature_columns,
         profile=profile,
         warnings=profile_warnings,
+        sampling_strategy=options.sampling_strategy,
+        max_category_cardinality=settings.max_diagnostic_cardinality,
+        max_transformed_features=settings.max_transformed_features,
     )
 
 
@@ -378,33 +389,82 @@ def _apply_missing_policy(
     return normalized
 
 
-def _validate_numeric_features(
+def _validate_and_prepare_features(
     frame: pd.DataFrame, feature_columns: list[str], *, allow_missing: bool
 ) -> None:
     for column in feature_columns:
         series = frame[column]
-        if any(_is_non_finite_token(value) for value in series):
+        nonmissing = series[series.notna()]
+        non_finite_mask = nonmissing.map(_is_non_finite_token)
+        if non_finite_mask.any():
+            remainder = nonmissing[~non_finite_mask]
+            remainder_numeric = pd.to_numeric(remainder, errors="coerce")
+            if remainder.empty or remainder_numeric.notna().all():
+                raise DatasetError(
+                    "non_finite_numeric_feature",
+                    "feature values must be finite numeric values",
+                )
+        numeric_values = pd.to_numeric(series, errors="coerce")
+        numeric_count = int(numeric_values.notna().sum())
+        nonmissing_count = int(nonmissing.shape[0])
+        if numeric_count and numeric_count != nonmissing_count:
             raise DatasetError(
-                "non_finite_numeric_feature",
-                "feature values must be finite numeric values",
+                "non_numeric_feature", "feature values must be numeric or categorical"
             )
-        try:
-            numeric_values = pd.to_numeric(series, errors="raise")
-        except (TypeError, ValueError) as exc:
+        if numeric_count == nonmissing_count and nonmissing_count:
+            if any(
+                not math.isfinite(float(value))
+                for value in numeric_values.dropna().tolist()
+            ):
+                raise DatasetError(
+                    "non_finite_numeric_feature",
+                    "feature values must be finite numeric values",
+                )
+            if not allow_missing and numeric_values.isna().any():
+                raise DatasetError("missing_values", "dataset contains missing values")
+            frame[column] = numeric_values
+            continue
+        if numeric_count:
             raise DatasetError(
-                "non_numeric_feature", "all feature columns must be numeric"
-            ) from exc
-        if not allow_missing and numeric_values.isna().any():
-            raise DatasetError("missing_values", "dataset contains missing values")
-        if any(
-            not math.isfinite(float(value))
-            for value in numeric_values.dropna().tolist()
-        ):
-            raise DatasetError(
-                "non_finite_numeric_feature",
-                "feature values must be finite numeric values",
+                "non_numeric_feature", "feature values must be numeric or categorical"
             )
-        frame[column] = numeric_values
+
+
+def _validate_preprocessor_limits(
+    frame: pd.DataFrame, feature_columns: list[str], settings: Settings
+) -> None:
+    try:
+        build_preprocessor(
+            frame,
+            feature_columns,
+            max_cardinality=settings.max_diagnostic_cardinality,
+            max_transformed_features=settings.max_transformed_features,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        safe_messages = {
+            "high_cardinality_feature": (
+                "high_cardinality_feature",
+                "a feature exceeds the configured category limit",
+            ),
+            "transformed_feature_limit_exceeded": (
+                "transformed_feature_limit_exceeded",
+                "the transformed feature count exceeds the configured limit",
+            ),
+            "unsupported_feature_type": (
+                "unsupported_feature_type",
+                "datetime features are not supported in this binary workflow",
+            ),
+            "all_missing_feature": (
+                "all_missing_feature",
+                "a selected feature has no observed values",
+            ),
+        }
+        error_code, message = safe_messages.get(
+            code,
+            ("invalid_feature_columns", "selected feature columns are not supported"),
+        )
+        raise DatasetError(error_code, message) from None
 
 
 def _validate_target_classes(target: pd.Series) -> None:

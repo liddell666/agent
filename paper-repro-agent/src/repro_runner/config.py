@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     max_columns: int = 256
     max_diagnostic_rows: int = Field(default=50000, ge=1)
     max_diagnostic_cardinality: int = Field(default=5000, ge=2)
+    max_transformed_features: int = Field(default=2048, ge=1)
     default_target_column: str = "Y_cls"
     storage_dir: Path = Path("/data/experiments")
     max_concurrent_experiments: int = Field(default=1, ge=1)

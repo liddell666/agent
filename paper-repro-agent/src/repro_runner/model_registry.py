@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
@@ -43,7 +44,11 @@ def get_model_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    *,
+    preprocessor=None,
+    sampling_strategy: str | None = None,
 ) -> ModelSpec:
+    _validate_sampling_strategy(sampling_strategy)
     try:
         factory = _MODEL_FACTORIES[name]
     except KeyError as exc:
@@ -52,6 +57,8 @@ def get_model_spec(
         class_counts=class_counts,
         random_state=random_state,
         use_gpu=use_gpu,
+        preprocessor=preprocessor,
+        sampling_strategy=sampling_strategy,
     )
 
 
@@ -59,21 +66,19 @@ def _logistic_regression_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
     del class_counts, use_gpu
-    estimator = Pipeline(
-        [
-            ("scale", StandardScaler()),
-            (
-                "model",
-                LogisticRegression(
-                    class_weight="balanced",
-                    solver="liblinear",
-                    max_iter=1000,
-                    random_state=random_state,
-                ),
-            ),
-        ]
+    estimator = _model_pipeline(
+        LogisticRegression(
+            class_weight=_class_weight(sampling_strategy),
+            solver="liblinear",
+            max_iter=1000,
+            random_state=random_state,
+        ),
+        preprocessor=preprocessor,
+        scale=True,
     )
     return ModelSpec(
         name="logistic_regression",
@@ -88,23 +93,32 @@ def _random_forest_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
     del class_counts, use_gpu
-    estimator = RandomForestClassifier(
-        n_estimators=300,
-        class_weight="balanced",
-        n_jobs=-1,
-        random_state=random_state,
+    estimator = _model_pipeline(
+        RandomForestClassifier(
+            n_estimators=300,
+            class_weight=_class_weight(sampling_strategy),
+            n_jobs=-1,
+            random_state=random_state,
+        ),
+        preprocessor=preprocessor,
+        scale=False,
     )
     return ModelSpec(
         name="random_forest",
         estimator=estimator,
-        search_space={
-            "n_estimators": [300, 500],
-            "max_depth": [None, 10, 20],
-            "min_samples_leaf": [1, 2, 4],
-            "max_features": ["sqrt", "log2"],
-        },
+        search_space=_model_search_space(
+            {
+                "n_estimators": [300, 500],
+                "max_depth": [None, 10, 20],
+                "min_samples_leaf": [1, 2, 4],
+                "max_features": ["sqrt", "log2"],
+            },
+            preprocessor,
+        ),
         optional_dependency=None,
         feature_importance_kind="tree",
     )
@@ -114,30 +128,39 @@ def _xgboost_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
     try:
         from xgboost import XGBClassifier
     except ImportError as exc:
         raise ImportError("xgboost dependency is not installed") from exc
 
-    estimator = XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="logloss",
-        tree_method="hist",
-        scale_pos_weight=_scale_pos_weight(class_counts),
-        random_state=random_state,
-        n_jobs=4,
-        device="cuda" if use_gpu else "cpu",
+    estimator = _model_pipeline(
+        XGBClassifier(
+            objective="binary:logistic",
+            eval_metric="logloss",
+            tree_method="hist",
+            scale_pos_weight=_scale_pos_weight(class_counts, sampling_strategy),
+            random_state=random_state,
+            n_jobs=4,
+            device="cuda" if use_gpu else "cpu",
+        ),
+        preprocessor=preprocessor,
+        scale=False,
     )
     return ModelSpec(
         name="xgboost",
         estimator=estimator,
-        search_space={
-            "n_estimators": [200, 400],
-            "max_depth": [3, 5],
-            "learning_rate": [0.03, 0.1],
-            "subsample": [0.8, 1.0],
-        },
+        search_space=_model_search_space(
+            {
+                "n_estimators": [200, 400],
+                "max_depth": [3, 5],
+                "learning_rate": [0.03, 0.1],
+                "subsample": [0.8, 1.0],
+            },
+            preprocessor,
+        ),
         optional_dependency="xgboost",
         feature_importance_kind="tree",
     )
@@ -147,28 +170,37 @@ def _lightgbm_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
     try:
         from lightgbm import LGBMClassifier
     except ImportError as exc:
         raise ImportError("lightgbm dependency is not installed") from exc
 
-    estimator = LGBMClassifier(
-        objective="binary",
-        scale_pos_weight=_scale_pos_weight(class_counts),
-        random_state=random_state,
-        n_jobs=4,
-        device_type="gpu" if use_gpu else "cpu",
+    estimator = _model_pipeline(
+        LGBMClassifier(
+            objective="binary",
+            scale_pos_weight=_scale_pos_weight(class_counts, sampling_strategy),
+            random_state=random_state,
+            n_jobs=4,
+            device_type="gpu" if use_gpu else "cpu",
+        ),
+        preprocessor=preprocessor,
+        scale=False,
     )
     return ModelSpec(
         name="lightgbm",
         estimator=estimator,
-        search_space={
-            "n_estimators": [200, 400],
-            "num_leaves": [31, 63],
-            "learning_rate": [0.03, 0.1],
-            "subsample": [0.8, 1.0],
-        },
+        search_space=_model_search_space(
+            {
+                "n_estimators": [200, 400],
+                "num_leaves": [31, 63],
+                "learning_rate": [0.03, 0.1],
+                "subsample": [0.8, 1.0],
+            },
+            preprocessor,
+        ),
         optional_dependency="lightgbm",
         feature_importance_kind="tree",
     )
@@ -178,20 +210,18 @@ def _svm_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
     del class_counts, use_gpu
-    estimator = Pipeline(
-        [
-            ("scale", StandardScaler()),
-            (
-                "model",
-                SVC(
-                    probability=True,
-                    class_weight="balanced",
-                    random_state=random_state,
-                ),
-            ),
-        ]
+    estimator = _model_pipeline(
+        SVC(
+            probability=True,
+            class_weight=_class_weight(sampling_strategy),
+            random_state=random_state,
+        ),
+        preprocessor=preprocessor,
+        scale=True,
     )
     return ModelSpec(
         name="svm",
@@ -209,13 +239,14 @@ def _knn_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
-    del class_counts, random_state, use_gpu
-    estimator = Pipeline(
-        [
-            ("scale", StandardScaler()),
-            ("model", KNeighborsClassifier(n_jobs=4)),
-        ]
+    del class_counts, random_state, use_gpu, sampling_strategy
+    estimator = _model_pipeline(
+        KNeighborsClassifier(n_jobs=4),
+        preprocessor=preprocessor,
+        scale=True,
     )
     return ModelSpec(
         name="knn",
@@ -233,20 +264,18 @@ def _mlp_spec(
     class_counts: Mapping[str, int],
     random_state: int,
     use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
 ) -> ModelSpec:
-    del class_counts, use_gpu
-    estimator = Pipeline(
-        [
-            ("scale", StandardScaler()),
-            (
-                "model",
-                MLPClassifier(
-                    early_stopping=True,
-                    max_iter=300,
-                    random_state=random_state,
-                ),
-            ),
-        ]
+    del class_counts, use_gpu, sampling_strategy
+    estimator = _model_pipeline(
+        MLPClassifier(
+            early_stopping=True,
+            max_iter=300,
+            random_state=random_state,
+        ),
+        preprocessor=preprocessor,
+        scale=True,
     )
     return ModelSpec(
         name="mlp",
@@ -261,8 +290,46 @@ def _mlp_spec(
     )
 
 
-def _scale_pos_weight(class_counts: Mapping[str, int]) -> float:
+def _model_pipeline(estimator, *, preprocessor, scale: bool):
+    steps = []
+    if preprocessor is not None:
+        steps.append(("preprocess", clone(preprocessor)))
+    if scale:
+        steps.append(("scale", StandardScaler()))
+    steps.append(("model", estimator))
+    if len(steps) == 1:
+        return estimator
+    return Pipeline(steps)
+
+
+def _model_search_space(
+    values: dict[str, list[Any]], preprocessor
+) -> dict[str, list[Any]]:
+    if preprocessor is None:
+        return values
+    return {f"model__{key}": options for key, options in values.items()}
+
+
+def _validate_sampling_strategy(sampling_strategy: str | None) -> None:
+    if sampling_strategy not in {
+        None,
+        "original",
+        "class_weight",
+        "balanced_undersample",
+    }:
+        raise ValueError("unsupported_sampling_strategy")
+
+
+def _class_weight(sampling_strategy: str | None) -> str | None:
+    return "balanced" if sampling_strategy in {None, "class_weight"} else None
+
+
+def _scale_pos_weight(
+    class_counts: Mapping[str, int], sampling_strategy: str | None
+) -> float:
     negative, positive = _binary_label_counts(class_counts)
+    if sampling_strategy in {"original", "balanced_undersample"}:
+        return 1.0
     return float(max(negative, 1) / max(positive, 1))
 
 

@@ -102,9 +102,13 @@ def test_run_model_suite_uses_shared_holdout_training_only_cv_and_json_safe_para
             self.best_score_ = 0.812345
             return self
 
-    def recording_get_model_spec(name, class_counts, random_state, use_gpu):
+    def recording_get_model_spec(
+        name, class_counts, random_state, use_gpu, **kwargs
+    ):
         observed_class_counts.append((name, dict(class_counts)))
-        return real_get_model_spec(name, class_counts, random_state, use_gpu)
+        return real_get_model_spec(
+            name, class_counts, random_state, use_gpu, **kwargs
+        )
 
     monkeypatch.setattr(suite_engine, "RandomizedSearchCV", SpySearch)
     monkeypatch.setattr(suite_engine, "get_model_spec", recording_get_model_spec)
@@ -172,12 +176,16 @@ def test_run_model_suite_marks_missing_dependency_unavailable_and_continues(
             self.best_score_ = 0.7
             return self
 
-    def failing_get_model_spec(name, class_counts, random_state, use_gpu):
+    def failing_get_model_spec(
+        name, class_counts, random_state, use_gpu, **kwargs
+    ):
         if name == "random_forest":
             raise ImportError(
                 "module missing while reading C:\\sensitive\\private-wheel.whl token=abc123"
             )
-        return real_get_model_spec(name, class_counts, random_state, use_gpu)
+        return real_get_model_spec(
+            name, class_counts, random_state, use_gpu, **kwargs
+        )
 
     monkeypatch.setattr(suite_engine, "RandomizedSearchCV", SpySearch)
     monkeypatch.setattr(suite_engine, "get_model_spec", failing_get_model_spec)
@@ -217,10 +225,14 @@ def test_run_model_suite_preserves_safe_registry_dependency_message_and_sanitize
                 "rows=[1, 2] feature_value=9.5 path=C:\\sensitive\\train.csv secret=shh"
             )
 
-    def controlled_get_model_spec(name, class_counts, random_state, use_gpu):
+    def controlled_get_model_spec(
+        name, class_counts, random_state, use_gpu, **kwargs
+    ):
         if name == "xgboost":
             raise ImportError("xgboost dependency is not installed")
-        return real_get_model_spec(name, class_counts, random_state, use_gpu)
+        return real_get_model_spec(
+            name, class_counts, random_state, use_gpu, **kwargs
+        )
 
     monkeypatch.setattr(suite_engine, "RandomizedSearchCV", FailingSearch)
     monkeypatch.setattr(suite_engine, "get_model_spec", controlled_get_model_spec)
@@ -303,8 +315,11 @@ def test_run_model_suite_ranks_by_auc_then_f1_then_recall_with_stable_ties(
             self.best_score_ = 0.5
             return self
 
-    def fake_get_model_spec(name, class_counts, random_state, use_gpu):
+    def fake_get_model_spec(
+        name, class_counts, random_state, use_gpu, **kwargs
+    ):
         del class_counts, random_state, use_gpu
+        del kwargs
         return ModelSpec(
             name=name,
             estimator=DummyEstimator(name),
@@ -379,3 +394,58 @@ def test_run_model_suite_preserves_linear_pipeline_feature_importance_without_ra
     assert model_result.feature_importance
     assert sum(item.importance for item in model_result.feature_importance) == pytest.approx(1.0)
     assert frame.to_csv(index=False).strip() not in payload
+
+
+def test_run_model_suite_supports_mixed_features_and_reports_transformed_names():
+    labels = np.array([0, 1] * 30)
+    frame = pd.DataFrame(
+        {
+            "slope": np.arange(60, dtype=float),
+            "landform": ["A", "B", "C", "A", "B", "C"] * 10,
+            "Y_cls": labels,
+        }
+    )
+    bundle = load_dataset(
+        frame.to_csv(index=False).encode(),
+        DatasetOptions(target_column="Y_cls"),
+        Settings(),
+    )
+
+    result = suite_engine.run_model_suite(
+        bundle,
+        ModelSuiteConfig(
+            models=["logistic_regression", "random_forest"],
+            cv_folds=3,
+            n_iter=1,
+            n_jobs=1,
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert result.preprocessing is not None
+    assert result.preprocessing.numeric_columns == ["slope"]
+    assert result.preprocessing.categorical_columns == ["landform"]
+    assert set(result.preprocessing.transformed_feature_names) == {
+        "slope",
+        "landform_A",
+        "landform_B",
+        "landform_C",
+    }
+    for item in result.results:
+        assert item.status == "succeeded"
+        if item.model == "random_forest":
+            assert {importance.feature for importance in item.feature_importance} == set(
+                result.preprocessing.transformed_feature_names
+            )
+
+
+def test_run_model_suite_rejects_undersampling_until_it_is_fold_safe():
+    bundle = _bundle(_dataset())
+    bundle.sampling_strategy = "balanced_undersample"
+
+    with pytest.raises(ExperimentError) as raised:
+        suite_engine.run_model_suite(
+            bundle,
+            ModelSuiteConfig(models=["random_forest"], cv_folds=3, n_iter=1),
+        )
+    assert raised.value.code == "unsupported_sampling_strategy"
