@@ -1,6 +1,6 @@
 # Task 6 Report — Cross-layer protocol regression tests
 
-Date: 2026-08-13
+Date: 2026-08-12 (US task date)
 
 ## Scope
 
@@ -19,7 +19,7 @@ Date: 2026-08-13
 - Posted a one-byte changed CSV to `POST /v1/jobs` with the confirmed manifest and asserted `manifest_dataset_mismatch` plus zero job rows.
 - Confirmed `confirm_protocol=False` returns `protocol_not_confirmed` and zero job rows.
 - Advanced draft-store time to the token expiry and asserted `protocol_draft_expired` and zero job rows.
-- Deleted the temporary draft directory and asserted `protocol_draft_not_found` and zero job rows.
+- Reset the fake clock to a still-valid time, deleted the temporary draft directory, and asserted `protocol_draft_not_found` and zero job rows.
 - Asserted `prepare_protocol_artifacts(...)` does not echo the protocol secret in helper outputs.
 
 ## Verification commands and exact results
@@ -30,13 +30,13 @@ Focused new-test checks:
 pytest tests/repro_runner/test_api.py -k generated_protocol_token_flows -q
 ```
 
-Result: `1 passed, 60 deselected, 1 warning in 3.25s`
+Result after review fix: `1 passed, 60 deselected, 1 warning in 2.96s`
 
 ```powershell
 pytest tests/test_dify_multimodel_code.py -k never_echoes_protocol_secret -q
 ```
 
-Result: `1 passed, 26 deselected in 0.12s`
+Result after review fix: `1 passed, 26 deselected in 0.06s`
 
 Required layered regression command:
 
@@ -44,7 +44,7 @@ Required layered regression command:
 pytest tests/repro_runner/test_protocol_drafts.py tests/repro_runner/test_api.py tests/test_dify_multimodel_code.py tests/test_dify_merged_dsl.py -q
 ```
 
-Result: `2 failed, 110 passed, 1 warning in 21.61s`
+Result after review fix: `2 failed, 110 passed, 1 warning in 21.56s`
 
 Failures observed:
 
@@ -77,7 +77,7 @@ python scripts/build_multimodel_dsl.py
 python scripts/build_multimodel_dsl.py
 ```
 
-Result: both runs exited `0`. SHA-256 hashes for generated tracked DSL/Markdown files were unchanged before the first run, after the first run, and after the second run. The second generation was byte-identical and made no generated tracked changes.
+Result after review fix: both runs exited `0`. SHA-256 hashes for generated tracked DSL/Markdown files were unchanged before the first run, after the first run, and after the second run. The second generation was byte-identical and made no generated tracked changes.
 
 Whitespace check:
 
@@ -85,7 +85,7 @@ Whitespace check:
 git diff --check
 ```
 
-Result: exit `0`; output contained only existing LF-to-CRLF working-copy warnings.
+Result after review fix: exit `0`; output contained only existing LF-to-CRLF working-copy warnings.
 
 ## Dirty worktree note
 

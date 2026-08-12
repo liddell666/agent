@@ -265,6 +265,7 @@ def test_generated_protocol_token_flows_through_drafts_and_rejects_unsafe_job_pa
     assert expired.json()["detail"]["code"] == "protocol_draft_expired"
     assert _job_count(client) == 0
 
+    client.app.state.protocol_draft_store.clock = lambda: 1_000
     shutil.rmtree(
         settings.storage_dir / "protocol-drafts" / confirmed["draft_id"],
     )
