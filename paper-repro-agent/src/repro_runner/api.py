@@ -6,11 +6,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +34,7 @@ from repro_runner.idempotency import (
     IdempotencyConflictError,
     IdempotencyRegistry,
 )
+from repro_runner.protocol_drafts import ProtocolDraftError, ProtocolDraftStore
 from repro_runner.schemas import (
     ComparisonResponse,
     DEFAULT_MODEL_NAMES,
@@ -46,6 +48,8 @@ from repro_runner.schemas import (
     JobCreateResponse,
     JobStatusResponse,
     ModelSuiteConfig,
+    ProtocolDraftCreateResponse,
+    ProtocolDraftReadResponse,
     ReportedMetricInput,
     SuiteComparisonRequest,
     SuiteComparisonResponse,
@@ -65,6 +69,7 @@ from repro_runner.storage import (
 
 
 logger = logging.getLogger(__name__)
+_PROTOCOL_DRAFT_ID = re.compile(r"draft-[A-Za-z0-9_-]{8,128}\Z")
 
 
 @asynccontextmanager
@@ -72,6 +77,16 @@ async def _lifespan(application: FastAPI):
     settings = _settings_for_app(application)
     store = JobStore(settings.job_store_path)
     application.state.job_store = store
+    draft_store = ProtocolDraftStore(
+        settings.storage_dir / "protocol-drafts",
+        secret=settings.protocol_secret,
+        ttl_seconds=settings.protocol_draft_ttl_seconds,
+    )
+    try:
+        draft_store.cleanup_expired()
+    except Exception:
+        logger.error("protocol draft cleanup failed during startup")
+    application.state.protocol_draft_store = draft_store
     runner = JobRunner(
         store=store,
         settings=settings,
@@ -149,6 +164,41 @@ async def request_validation_error(
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/v1/protocol-drafts", response_model=ProtocolDraftCreateResponse)
+async def create_protocol_draft(
+    draft_id: Annotated[str, Form()],
+    protocol_token: Annotated[str, Form()],
+    dossier_json: Annotated[str, Form()],
+) -> ProtocolDraftCreateResponse:
+    _cleanup_protocol_drafts()
+    dossier = _parse_protocol_dossier_json(dossier_json)
+    try:
+        record = _get_protocol_draft_store().save(draft_id, protocol_token, dossier)
+    except ProtocolDraftError as exc:
+        raise _protocol_draft_error(exc) from None
+    except Exception:
+        raise _protocol_draft_error(
+            ProtocolDraftError("protocol_draft_write_failed")
+        ) from None
+    return _protocol_draft_create_response(record)
+
+
+@app.get("/v1/protocol-drafts/{draft_id}", response_model=ProtocolDraftReadResponse)
+async def get_protocol_draft(
+    draft_id: str,
+    protocol_token: Annotated[str, Header(alias="X-Protocol-Token")],
+) -> ProtocolDraftReadResponse:
+    _validate_protocol_draft_id(draft_id)
+    _cleanup_protocol_drafts()
+    if not _protocol_draft_path(draft_id).exists():
+        raise _protocol_draft_error(ProtocolDraftError("protocol_draft_not_found"))
+    try:
+        record = _get_protocol_draft_store().load(draft_id, protocol_token)
+    except ProtocolDraftError as exc:
+        raise _protocol_draft_error(exc) from None
+    return _protocol_draft_read_response(record)
 
 
 @app.post("/v1/parse-dossier", response_model=DossierParseResponse)
@@ -706,11 +756,40 @@ def _settings_for_app(application: FastAPI) -> Settings:
     return get_settings()
 
 
+def _protocol_draft_error(exc: ProtocolDraftError) -> HTTPException:
+    status = {
+        "protocol_draft_not_found": 404,
+        "protocol_draft_expired": 410,
+        "protocol_draft_token_mismatch": 422,
+        "protocol_token_malformed": 422,
+        "protocol_token_tampered": 422,
+        "protocol_payload_invalid": 422,
+        "protocol_draft_write_failed": 500,
+    }.get(exc.code, 422)
+    return HTTPException(
+        status_code=status,
+        detail={"code": exc.code, "message": "Protocol draft is not available."},
+    )
+
+
 def _get_job_store() -> JobStore:
     store = getattr(app.state, "job_store", None)
     if store is None:
         store = JobStore(_settings_for_app(app).job_store_path)
         app.state.job_store = store
+    return store
+
+
+def _get_protocol_draft_store() -> ProtocolDraftStore:
+    store = getattr(app.state, "protocol_draft_store", None)
+    if store is None:
+        settings = _settings_for_app(app)
+        store = ProtocolDraftStore(
+            settings.storage_dir / "protocol-drafts",
+            secret=settings.protocol_secret,
+            ttl_seconds=settings.protocol_draft_ttl_seconds,
+        )
+        app.state.protocol_draft_store = store
     return store
 
 
@@ -746,6 +825,65 @@ def _parse_job_manifest(manifest_json: str) -> ExperimentManifest:
         return ExperimentManifest.model_validate_json(manifest_json)
     except Exception:
         raise _invalid_request_exception() from None
+
+
+def _protocol_draft_create_response(record) -> ProtocolDraftCreateResponse:
+    return ProtocolDraftCreateResponse.model_validate(
+        {
+            "draft_id": record.draft_id,
+            "protocol_version": record.protocol_version,
+            "manifest_id": record.manifest_id,
+            "dataset_id": record.dataset_id,
+            "created_at": record.created_at,
+            "expires_at": record.expires_at,
+        }
+    )
+
+
+def _protocol_draft_read_response(record) -> ProtocolDraftReadResponse:
+    return ProtocolDraftReadResponse.model_validate(
+        {
+            "draft_id": record.draft_id,
+            "protocol_version": record.protocol_version,
+            "manifest_id": record.manifest_id,
+            "dataset_id": record.dataset_id,
+            "created_at": record.created_at,
+            "expires_at": record.expires_at,
+            "dossier": record.dossier,
+        }
+    )
+
+
+def _validate_protocol_draft_id(draft_id: str) -> str:
+    if not isinstance(draft_id, str) or not _PROTOCOL_DRAFT_ID.fullmatch(draft_id):
+        raise _protocol_draft_error(ProtocolDraftError("protocol_draft_token_mismatch"))
+    return draft_id
+
+
+def _protocol_draft_path(draft_id: str):
+    safe_draft_id = _validate_protocol_draft_id(draft_id)
+    return (
+        _settings_for_app(app).storage_dir / "protocol-drafts" / safe_draft_id / "draft.json"
+    )
+
+
+def _cleanup_protocol_drafts() -> None:
+    try:
+        _get_protocol_draft_store().cleanup_expired()
+    except Exception:
+        logger.error("protocol draft cleanup failed")
+
+
+def _parse_protocol_dossier_json(dossier_json: str) -> dict[str, object]:
+    if len(dossier_json.encode("utf-8")) > MAX_DOSSIER_BYTES:
+        raise _protocol_draft_error(ProtocolDraftError("protocol_payload_invalid"))
+    try:
+        dossier = json.loads(dossier_json)
+    except json.JSONDecodeError:
+        raise _protocol_draft_error(ProtocolDraftError("protocol_payload_invalid")) from None
+    if not isinstance(dossier, dict):
+        raise _protocol_draft_error(ProtocolDraftError("protocol_payload_invalid"))
+    return dossier
 
 
 def _get_experiment_limiter() -> ExperimentAdmissionLimiter:

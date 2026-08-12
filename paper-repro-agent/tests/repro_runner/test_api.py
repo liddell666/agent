@@ -1,5 +1,8 @@
 import asyncio
+import base64
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import hashlib
+import hmac
 import json
 import logging
 from threading import Barrier, Event
@@ -46,10 +49,20 @@ def _dossier() -> bytes:
 
 
 @pytest.fixture
-def client(tmp_path) -> TestClient:
-    settings = Settings(storage_dir=tmp_path, max_upload_mb=1)
+def settings(tmp_path) -> Settings:
+    return Settings(
+        storage_dir=tmp_path / "experiments",
+        max_upload_mb=1,
+        protocol_secret="test-secret",
+    )
+
+
+@pytest.fixture
+def client(settings: Settings) -> TestClient:
     api.app.dependency_overrides[get_settings] = lambda: settings
     with TestClient(api.app, raise_server_exceptions=False) as test_client:
+        if hasattr(test_client.app.state, "protocol_draft_store"):
+            test_client.app.state.protocol_draft_store.clock = lambda: 1_000
         yield test_client
     api.app.dependency_overrides.clear()
 
@@ -68,11 +81,331 @@ def client_with_raised_dossier_limits(tmp_path) -> TestClient:
     api.app.dependency_overrides.clear()
 
 
+def _protocol_token(secret, draft_id, manifest_id, dataset_id, exp):
+    payload = {
+        "v": 1,
+        "exp": exp,
+        "ready": True,
+        "draft_id": draft_id,
+        "manifest": {"manifest_id": manifest_id, "dataset_id": dataset_id},
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    return f"pt1.{encoded}.{signature}"
+
+
 def test_healthz_is_public(client: TestClient):
     response = client.get("/healthz")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_protocol_draft_post_get_round_trip(client: TestClient, settings: Settings):
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    response = client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-apiaaaaaa",
+            "protocol_token": token,
+            "dossier_json": json.dumps({"title": "Paper", "metrics": []}),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["draft_id"] == "draft-apiaaaaaa"
+    fetched = client.get(
+        "/v1/protocol-drafts/draft-apiaaaaaa",
+        headers={"X-Protocol-Token": token},
+    )
+    assert fetched.status_code == 200
+    assert fetched.json()["dossier"]["title"] == "Paper"
+    assert fetched.json()["manifest_id"] == "sha256:" + "1" * 64
+
+
+@pytest.mark.parametrize("case", ["missing", "expired", "tampered", "wrong_draft"])
+def test_protocol_draft_rejects_invalid_access(
+    client: TestClient, settings: Settings, case: str
+):
+    valid = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-apiaaaaaa",
+            "protocol_token": valid,
+            "dossier_json": '{"title":"Paper"}',
+        },
+    )
+    other = _protocol_token(
+        settings.protocol_secret,
+        "draft-otherxxx",
+        "sha256:" + "3" * 64,
+        "sha256:" + "4" * 64,
+        2_000,
+    )
+    client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-otherxxx",
+            "protocol_token": other,
+            "dossier_json": '{"title":"Other"}',
+        },
+    )
+    if case == "missing":
+        response = client.get(
+            "/v1/protocol-drafts/draft-missingx",
+            headers={
+                "X-Protocol-Token": _protocol_token(
+                    settings.protocol_secret,
+                    "draft-missingx",
+                    "sha256:" + "1" * 64,
+                    "sha256:" + "2" * 64,
+                    2_000,
+                )
+            },
+        )
+        assert response.json()["detail"]["code"] == "protocol_draft_not_found"
+    elif case == "expired":
+        response = client.get(
+            "/v1/protocol-drafts/draft-apiaaaaaa",
+            headers={
+                "X-Protocol-Token": _protocol_token(
+                    settings.protocol_secret,
+                    "draft-apiaaaaaa",
+                    "sha256:" + "1" * 64,
+                    "sha256:" + "2" * 64,
+                    1,
+                )
+            },
+        )
+        assert response.json()["detail"]["code"] == "protocol_draft_expired"
+    elif case == "tampered":
+        response = client.get(
+            "/v1/protocol-drafts/draft-apiaaaaaa",
+            headers={
+                "X-Protocol-Token": valid[:-1] + ("0" if valid[-1] != "0" else "1")
+            },
+        )
+        assert response.json()["detail"]["code"] == "protocol_token_tampered"
+    else:
+        response = client.get(
+            "/v1/protocol-drafts/draft-otherxxx",
+            headers={"X-Protocol-Token": valid},
+        )
+        assert response.json()["detail"]["code"] == "protocol_draft_token_mismatch"
+
+
+def test_protocol_draft_post_rejects_invalid_json_without_echoing_body_or_token(
+    client: TestClient, settings: Settings
+):
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    dossier = '{"title":"Paper","raw_csv":"col_a,col_b\\n1,2"}'
+    response = client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-apiaaaaaa",
+            "protocol_token": token,
+            "dossier_json": dossier,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "protocol_payload_invalid"
+    assert token not in response.text
+    assert "col_a,col_b" not in response.text
+    assert "traceback" not in response.text.casefold()
+
+
+def test_protocol_draft_post_rejects_oversized_json_without_echoing_body_or_token(
+    client: TestClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(api, "MAX_DOSSIER_BYTES", 8)
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    oversized = "x" * 9
+    response = client.post(
+        "/v1/protocol-drafts",
+        data={
+            "draft_id": "draft-apiaaaaaa",
+            "protocol_token": token,
+            "dossier_json": oversized,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "protocol_payload_invalid"
+    assert token not in response.text
+    assert oversized[:64] not in response.text
+
+
+def test_protocol_draft_get_requires_protocol_token_header(client: TestClient):
+    response = client.get("/v1/protocol-drafts/draft-apiaaaaaa")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_request"
+
+
+def test_protocol_draft_post_is_idempotent_for_same_dossier(
+    client: TestClient, settings: Settings
+):
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    payload = {
+        "draft_id": "draft-apiaaaaaa",
+        "protocol_token": token,
+        "dossier_json": '{"title":"Paper","metrics":[]}',
+    }
+
+    first = client.post("/v1/protocol-drafts", data=payload)
+    second = client.post("/v1/protocol-drafts", data=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+def test_protocol_draft_cleanup_expired_runs_before_reads_and_writes(
+    client: TestClient, settings: Settings
+):
+    store = client.app.state.protocol_draft_store
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    calls: list[str] = []
+    original_cleanup = store.cleanup_expired
+
+    def observed_cleanup():
+        calls.append("cleanup")
+        return original_cleanup()
+
+    store.cleanup_expired = observed_cleanup
+    try:
+        post = client.post(
+            "/v1/protocol-drafts",
+            data={
+                "draft_id": "draft-apiaaaaaa",
+                "protocol_token": token,
+                "dossier_json": '{"title":"Paper"}',
+            },
+        )
+        get = client.get(
+            "/v1/protocol-drafts/draft-apiaaaaaa",
+            headers={"X-Protocol-Token": token},
+        )
+    finally:
+        store.cleanup_expired = original_cleanup
+
+    assert post.status_code == 200
+    assert get.status_code == 200
+    assert calls == ["cleanup", "cleanup"]
+
+
+def test_protocol_draft_cleanup_failure_is_sanitized(
+    client: TestClient, settings: Settings, caplog: pytest.LogCaptureFixture
+):
+    caplog.set_level(logging.ERROR, logger="repro_runner.api")
+    store = client.app.state.protocol_draft_store
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    original_cleanup = store.cleanup_expired
+
+    def failing_cleanup():
+        raise OSError("private cleanup traceback with token pt1.secret")
+
+    store.cleanup_expired = failing_cleanup
+    try:
+        response = client.post(
+            "/v1/protocol-drafts",
+            data={
+                "draft_id": "draft-apiaaaaaa",
+                "protocol_token": token,
+                "dossier_json": '{"title":"Paper"}',
+            },
+        )
+    finally:
+        store.cleanup_expired = original_cleanup
+
+    assert response.status_code == 200
+    assert "pt1.secret" not in response.text
+    assert "traceback" not in response.text.casefold()
+    assert "protocol draft cleanup failed" in caplog.text
+    assert "pt1.secret" not in caplog.text
+
+
+def test_protocol_draft_write_failure_is_sanitized(
+    client: TestClient, settings: Settings
+):
+    store = client.app.state.protocol_draft_store
+    token = _protocol_token(
+        settings.protocol_secret,
+        "draft-apiaaaaaa",
+        "sha256:" + "1" * 64,
+        "sha256:" + "2" * 64,
+        2_000,
+    )
+    original_save = store.save
+
+    def failing_save(*_args, **_kwargs):
+        raise OSError("private draft write traceback token")
+
+    store.save = failing_save
+    try:
+        response = client.post(
+            "/v1/protocol-drafts",
+            data={
+                "draft_id": "draft-apiaaaaaa",
+                "protocol_token": token,
+                "dossier_json": '{"title":"Paper"}',
+            },
+        )
+    finally:
+        store.save = original_save
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "protocol_draft_write_failed"
+    assert token not in response.text
+    assert "traceback" not in response.text.casefold()
 
 
 def test_parse_dossier_returns_normalized_metrics(client: TestClient):

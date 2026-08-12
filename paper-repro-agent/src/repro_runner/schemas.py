@@ -435,3 +435,18 @@ class DossierParseResponse(BaseModel):
     metrics: list[DossierMetric] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     errors: list[ValidationErrorItem] = Field(default_factory=list)
+
+
+class ProtocolDraftCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    protocol_version: int
+    manifest_id: str
+    dataset_id: str
+    created_at: int
+    expires_at: int
+
+
+class ProtocolDraftReadResponse(ProtocolDraftCreateResponse):
+    dossier: dict[str, Any]

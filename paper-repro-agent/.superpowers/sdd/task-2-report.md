@@ -1,24 +1,40 @@
-# Task 2 Report: Dossier validation and override merging
+# Task 2 Report: expose protocol draft POST/GET APIs
 
-## Status
-
-Completed.
-
-## Implementation commit
-
-`095347378c556dd19f5b6b16cf70004ffb22462b` — `feat: validate paper comparison dossiers`
-
-## Tests and results
-
-- `.venv312\\Scripts\\python.exe -m pytest tests\\repro_runner\\test_dossier.py -q` — 36 passed.
-- `.venv312\\Scripts\\python.exe -m pytest -q` — 142 passed, 1 existing third-party deprecation warning from Starlette's TestClient.
-
-## Changed files
-
-- `src/repro_runner/schemas.py`
-- `src/repro_runner/dossier.py`
-- `tests/repro_runner/test_dossier.py`
-
-## Concerns
-
-- None. The full suite has one unrelated FastAPI/Starlette TestClient deprecation warning.
+- Status: DONE_WITH_CONCERNS
+- Date: 2026-08-12
+- Implementation summary:
+  - Added `POST /v1/protocol-drafts` and `GET /v1/protocol-drafts/{draft_id}` to `src/repro_runner/api.py`, wired to `app.state.protocol_draft_store`.
+  - Initialized `ProtocolDraftStore` at FastAPI startup with `Settings.storage_dir / "protocol-drafts"`, `protocol_secret`, and `protocol_draft_ttl_seconds`, and ran startup expiry cleanup.
+  - Added `ProtocolDraftCreateResponse` and `ProtocolDraftReadResponse` to `src/repro_runner/schemas.py`.
+  - Added focused API coverage in `tests/repro_runner/test_api.py` for round-trip success, invalid access cases, oversized/unsafe dossier rejection, missing token header, idempotent rewrites, cleanup calls, cleanup-failure sanitization, and write-failure sanitization.
+- API contract implemented:
+  - `POST /v1/protocol-drafts` accepts multipart form fields `draft_id`, `protocol_token`, and `dossier_json`.
+  - `GET /v1/protocol-drafts/{draft_id}` accepts `X-Protocol-Token` and returns safe metadata plus the parsed dossier object.
+  - Request handling runs `cleanup_expired()` before draft reads and writes; cleanup failures are logged with a fixed message and do not expose token/body contents.
+  - Dossier JSON is size-checked against `MAX_DOSSIER_BYTES`, parsed with `json.loads`, and required to be a top-level object before calling the store.
+  - Store write failures are mapped to structured `protocol_draft_write_failed` 500 responses instead of generic FastAPI 500 bodies.
+- Error mapping implemented:
+  - `protocol_draft_not_found` -> 404
+  - `protocol_draft_expired` -> 410
+  - `protocol_draft_token_mismatch` -> 422
+  - `protocol_token_malformed` -> 422
+  - `protocol_token_tampered` -> 422
+  - `protocol_payload_invalid` -> 422
+  - `protocol_draft_write_failed` -> 500
+- Focused verification:
+  - `pytest tests\repro_runner\test_api.py -k protocol_draft -q`
+  - Result: 12 passed
+- Relevant API regression:
+  - `pytest tests\repro_runner\test_api.py -k "protocol_draft or healthz or parse_dossier or validate_dataset" -q`
+  - Result: 26 passed, 1 warning
+- Self-review notes:
+  - Added a late-cycle regression test for raw store write failures after noticing the initial route only mapped `ProtocolDraftError` and would otherwise return FastAPI’s generic `Internal Server Error` body.
+  - Kept request-validation sanitization intact: missing/invalid request shapes still flow through the existing `RequestValidationError` handler with `invalid_request`.
+  - Preserved unrelated dirty-worktree changes by limiting staging/commit scope to the Task 2 files only.
+- Changed files:
+  - `src/repro_runner/api.py`
+  - `src/repro_runner/schemas.py`
+  - `tests/repro_runner/test_api.py`
+  - `.superpowers/sdd/task-2-report.md`
+- Concerns:
+  - The requested regression command still emits one existing third-party deprecation warning from FastAPI/Starlette `TestClient`; it is unrelated to the protocol draft API work.
