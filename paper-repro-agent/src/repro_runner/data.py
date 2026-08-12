@@ -13,6 +13,7 @@ import pandas as pd
 from repro_runner.config import Settings
 from repro_runner.preprocessing import (
     ColumnPlan,
+    DEFAULT_MAX_CARDINALITY,
     build_column_plan,
     build_preprocessor,
 )
@@ -112,7 +113,9 @@ def load_dataset(
         profile=profile,
         warnings=profile_warnings,
         sampling_strategy=options.sampling_strategy,
-        max_category_cardinality=settings.max_diagnostic_cardinality,
+        max_category_cardinality=min(
+            settings.max_diagnostic_cardinality, DEFAULT_MAX_CARDINALITY
+        ),
         max_transformed_features=settings.max_transformed_features,
     )
 
@@ -437,7 +440,9 @@ def _validate_preprocessor_limits(
         build_preprocessor(
             frame,
             feature_columns,
-            max_cardinality=settings.max_diagnostic_cardinality,
+            max_cardinality=min(
+                settings.max_diagnostic_cardinality, DEFAULT_MAX_CARDINALITY
+            ),
             max_transformed_features=settings.max_transformed_features,
         )
     except ValueError as exc:

@@ -64,6 +64,15 @@ def test_preprocessor_rejects_datetime_like_features():
         build_preprocessor(frame, ["event_date", "slope"])
 
 
+def test_preprocessor_rejects_high_cardinality_text_at_default_limit():
+    frame = pd.DataFrame({"comment": [f"token-{i}" for i in range(80)]})
+
+    from repro_runner.preprocessing import build_preprocessor
+
+    with pytest.raises(ValueError, match="high_cardinality_feature"):
+        build_preprocessor(frame, ["comment"])
+
+
 def test_resolve_feature_columns_uses_dataset_order_deterministically():
     columns = ["id", "age", "segment", "constant", "Y_cls"]
 

@@ -13,7 +13,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
-DEFAULT_MAX_CARDINALITY = 5000
+DEFAULT_MAX_CARDINALITY = 64
 DEFAULT_MAX_TRANSFORMED_FEATURES = 2048
 _DATETIME_TOKEN_RE = re.compile(
     r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?)"
@@ -203,7 +203,10 @@ def classify_feature_columns(
         if _looks_datetime_like(nonmissing):
             raise ValueError("unsupported_feature_type")
         unique_count = int(nonmissing.nunique(dropna=True))
-        if unique_count > max_cardinality:
+        relative_cardinality = unique_count / max(len(nonmissing), 1)
+        if unique_count > min(max_cardinality, DEFAULT_MAX_CARDINALITY) or (
+            unique_count >= 8 and relative_cardinality >= 0.8
+        ):
             raise ValueError("high_cardinality_feature")
         categorical.append(column)
         transformed_count += unique_count
