@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     max_transformed_features: int = Field(default=2048, ge=1)
     default_target_column: str = "Y_cls"
     storage_dir: Path = Path("/data/experiments")
+    job_store_path: Path = Path("/data/experiments/jobs.sqlite3")
+    job_work_dir: Path = Path("/data/experiments/jobs")
     max_concurrent_experiments: int = Field(default=1, ge=1)
 
 

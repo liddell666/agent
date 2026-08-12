@@ -32,6 +32,9 @@ _SAFE_MISSING_DEPENDENCY_MESSAGES = frozenset(
 def run_model_suite(
     bundle: DatasetBundle,
     config: ModelSuiteConfig,
+    *,
+    experiment_id: str | None = None,
+    progress_callback=None,
 ) -> ExperimentSuiteResult:
     if bundle.sampling_strategy == "balanced_undersample":
         raise ExperimentError(
@@ -147,6 +150,8 @@ def run_model_suite(
                     ),
                 )
             )
+        if progress_callback is not None:
+            progress_callback(results[-1], len(results), len(config.models))
 
     successful_results = [result for result in results if result.status == "succeeded"]
     if len(successful_results) == len(config.models):
@@ -157,7 +162,7 @@ def run_model_suite(
         status = "failed"
 
     return ExperimentSuiteResult(
-        experiment_id=f"exp-{uuid4().hex}",
+        experiment_id=experiment_id or f"exp-{uuid4().hex}",
         status=status,
         config=config,
         dataset=bundle.profile,

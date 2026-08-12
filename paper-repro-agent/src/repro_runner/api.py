@@ -26,6 +26,8 @@ from repro_runner.config import (
 from repro_runner.data import DatasetError, diagnose_dataset, load_dataset
 from repro_runner.dossier import parse_dossier
 from repro_runner.engine import ExperimentError, run_random_forest
+from repro_runner.job_runner import JobRunner, stage_job_inputs
+from repro_runner.job_store import JobStore
 from repro_runner.idempotency import (
     IdempotencyCapacityError,
     IdempotencyConflictError,
@@ -38,8 +40,11 @@ from repro_runner.schemas import (
     DatasetOptions,
     DossierParseResponse,
     ExperimentConfig,
+    ExperimentManifest,
     ExperimentResult,
     ExperimentSuiteResult,
+    JobCreateResponse,
+    JobStatusResponse,
     ModelSuiteConfig,
     ReportedMetricInput,
     SuiteComparisonRequest,
@@ -51,6 +56,7 @@ from repro_runner.suite_engine import run_model_suite
 from repro_runner.storage import (
     ResultFormatError,
     ResultNotFoundError,
+    create_experiment_id,
     load_result,
     load_suite_result,
     save_result,
@@ -59,7 +65,27 @@ from repro_runner.storage import (
 
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="Reproduction Runner", version="0.2.0")
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    settings = _settings_for_app(application)
+    store = JobStore(settings.job_store_path)
+    application.state.job_store = store
+    runner = JobRunner(
+        store=store,
+        settings=settings,
+        execute_job_resolver=lambda: _default_execute_job,
+    )
+    application.state.job_runner = runner
+    runner.start()
+    try:
+        yield
+    finally:
+        runner.stop()
+
+
+app = FastAPI(title="Reproduction Runner", version="0.2.0", lifespan=_lifespan)
 
 
 class ExperimentIdempotencyRegistry(IdempotencyRegistry[ExperimentResult]):
@@ -356,6 +382,64 @@ async def run_model_suite_route(
         raise _idempotency_capacity_error() from None
 
 
+@app.post("/v1/jobs", response_model=JobCreateResponse, status_code=202)
+async def create_job(
+    file: Annotated[UploadFile, File()],
+    manifest_json: Annotated[str, Form()],
+    settings: Settings = Depends(get_settings),
+) -> JobCreateResponse:
+    content = await _read_experiment_upload(file, settings)
+    manifest = _parse_job_manifest(manifest_json)
+    try:
+        bundle = await run_in_threadpool(
+            load_dataset,
+            content,
+            DatasetOptions(
+                target_column=manifest.target_column,
+                target_column_confirmed=True,
+                missing_policy=manifest.missing_policy,
+                sampling_strategy=manifest.sampling_strategy,
+                comparison_mode=manifest.comparison_mode,
+                feature_columns=list(manifest.feature_columns),
+            ),
+            settings,
+        )
+    except DatasetError as exc:
+        raise _dataset_error(exc) from None
+    except Exception:
+        request_id = _request_id()
+        logger.exception("job validation failed request_id=%s", request_id)
+        raise _internal_error("job_create_failed", request_id) from None
+
+    if bundle.profile.dataset_id != manifest.dataset_id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "manifest_dataset_mismatch",
+                "message": "request parameters are invalid",
+                "request_id": _request_id(),
+            },
+        )
+
+    store = _get_job_store()
+    existing = store.lookup_by_fingerprint(manifest.manifest_id, manifest.dataset_id)
+    if existing is not None:
+        return _job_create_response(existing)
+    if store.has_active_job():
+        raise _job_capacity_error()
+
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    try:
+        stage_job_inputs(job_id, manifest, content, settings)
+    except Exception:
+        request_id = _request_id()
+        logger.exception("job staging failed request_id=%s", request_id)
+        store.mark_failed(job_id, error_code="input_persistence_failed")
+        raise _internal_error("job_create_failed", request_id) from None
+    _get_job_runner().notify()
+    return _job_create_response(store.get(job_id))
+
+
 @app.get("/v1/experiments/{experiment_id}", response_model=ExperimentResult)
 async def get_experiment(
     experiment_id: str, settings: Settings = Depends(get_settings)
@@ -385,6 +469,47 @@ async def get_model_suite(
     except Exception:
         request_id = _request_id()
         logger.exception("model suite retrieval failed request_id=%s", request_id)
+        raise _internal_error("experiment_lookup_failed", request_id) from None
+
+
+@app.get("/v1/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job(job_id: str) -> JobStatusResponse:
+    try:
+        return _job_status_response(_get_job_store().get(job_id))
+    except LookupError:
+        raise _job_not_found_error() from None
+
+
+@app.post("/v1/jobs/{job_id}/cancel", response_model=JobStatusResponse)
+async def cancel_job(job_id: str) -> JobStatusResponse:
+    store = _get_job_store()
+    try:
+        store.request_cancel(job_id)
+        return _job_status_response(store.get(job_id))
+    except LookupError:
+        raise _job_not_found_error() from None
+
+
+@app.get("/v1/jobs/{job_id}/result", response_model=ExperimentSuiteResult)
+async def get_job_result(
+    job_id: str, settings: Settings = Depends(get_settings)
+) -> ExperimentSuiteResult:
+    store = _get_job_store()
+    try:
+        job = store.get(job_id)
+    except LookupError:
+        raise _job_not_found_error() from None
+    if job.result_id is None:
+        raise _job_result_unavailable_error()
+    try:
+        return await run_in_threadpool(load_suite_result, job.result_id, settings)
+    except ResultNotFoundError:
+        raise _job_result_unavailable_error() from None
+    except ResultFormatError:
+        raise _result_format_error() from None
+    except Exception:
+        request_id = _request_id()
+        logger.exception("job result retrieval failed request_id=%s", request_id)
         raise _internal_error("experiment_lookup_failed", request_id) from None
 
 
@@ -565,6 +690,55 @@ def _dataset_error(exc: DatasetError) -> HTTPException:
         status_code=422,
         detail={"code": exc.code, "message": exc.message, "request_id": _request_id()},
     )
+
+
+def _settings_for_app(application: FastAPI) -> Settings:
+    override = application.dependency_overrides.get(get_settings)
+    if override is not None:
+        return override()
+    return get_settings()
+
+
+def _get_job_store() -> JobStore:
+    store = getattr(app.state, "job_store", None)
+    if store is None:
+        store = JobStore(_settings_for_app(app).job_store_path)
+        app.state.job_store = store
+    return store
+
+
+def _get_job_runner() -> JobRunner:
+    runner = getattr(app.state, "job_runner", None)
+    if runner is None:
+        settings = _settings_for_app(app)
+        runner = JobRunner(
+            store=_get_job_store(),
+            settings=settings,
+            execute_job_resolver=lambda: _default_execute_job,
+        )
+        runner.start()
+        app.state.job_runner = runner
+    return runner
+
+
+def _job_create_response(job) -> JobCreateResponse:
+    return _job_response(job, JobCreateResponse)
+
+
+def _job_status_response(job) -> JobStatusResponse:
+    return _job_response(job, JobStatusResponse)
+
+
+def _job_response(job, response_model):
+    payload = job.model_dump(include=set(response_model.model_fields))
+    return response_model.model_validate(payload)
+
+
+def _parse_job_manifest(manifest_json: str) -> ExperimentManifest:
+    try:
+        return ExperimentManifest.model_validate_json(manifest_json)
+    except Exception:
+        raise _invalid_request_exception() from None
 
 
 def _get_experiment_limiter() -> ExperimentAdmissionLimiter:
@@ -761,6 +935,39 @@ def _internal_error(code: str, request_id: str) -> HTTPException:
     )
 
 
+def _job_capacity_error() -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail={
+            "code": "job_capacity_reached",
+            "message": "the job service is at its configured capacity",
+            "request_id": _request_id(),
+        },
+    )
+
+
+def _job_not_found_error() -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={
+            "code": "job_not_found",
+            "message": "job was not found",
+            "request_id": _request_id(),
+        },
+    )
+
+
+def _job_result_unavailable_error() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "job_result_unavailable",
+            "message": "job result is not available",
+            "request_id": _request_id(),
+        },
+    )
+
+
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -772,3 +979,52 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 
 def _request_id() -> str:
     return uuid4().hex
+
+
+def _default_execute_job(
+    *,
+    manifest: ExperimentManifest,
+    csv_bytes: bytes,
+    progress_callback,
+    should_stop,
+    settings: Settings,
+) -> ExperimentSuiteResult:
+    if should_stop():
+        raise RuntimeError("job execution interrupted")
+    bundle = load_dataset(
+        csv_bytes,
+        DatasetOptions(
+            target_column=manifest.target_column,
+            target_column_confirmed=True,
+            missing_policy=manifest.missing_policy,
+            sampling_strategy=manifest.sampling_strategy,
+            comparison_mode=manifest.comparison_mode,
+            feature_columns=list(manifest.feature_columns),
+        ),
+        settings,
+    )
+    if bundle.profile.dataset_id != manifest.dataset_id:
+        raise DatasetError(
+            "manifest_dataset_mismatch",
+            "the uploaded dataset does not match the confirmed manifest",
+        )
+    config = ModelSuiteConfig(
+        models=list(manifest.models),
+        test_size=manifest.test_size,
+        random_state=manifest.random_state,
+        drop_duplicates=False,
+        cv_folds=manifest.cv_folds,
+        optimization_metric=manifest.optimization_metric,
+        threshold=manifest.threshold,
+        n_iter=1,
+        use_gpu=False,
+        n_jobs=1,
+    )
+    return run_model_suite(
+        bundle,
+        config,
+        experiment_id=create_experiment_id(),
+        progress_callback=lambda result, completed, total: progress_callback(
+            result.model, completed, total
+        ),
+    )

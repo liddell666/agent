@@ -292,6 +292,55 @@ class ExperimentSuiteResult(BaseModel):
     preprocessing: PreprocessingSummary | None = None
 
 
+JobStatus = Literal[
+    "queued",
+    "running",
+    "cancel_requested",
+    "cancelled",
+    "needs_retry",
+    "succeeded",
+    "partial",
+    "failed",
+]
+
+
+class JobRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    manifest_id: str
+    dataset_id: str
+    status: JobStatus
+    stage: str
+    progress: float = Field(ge=0.0, le=1.0)
+    attempt: int = Field(ge=0)
+    worker_pid: int | None = None
+    result_id: str | None = None
+    error_code: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class JobCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    manifest_id: str
+    dataset_id: str
+    status: JobStatus
+    stage: str
+    progress: float = Field(ge=0.0, le=1.0)
+    attempt: int = Field(ge=0)
+    result_id: str | None = None
+    error_code: str | None = None
+
+
+class JobStatusResponse(JobCreateResponse):
+    worker_pid: int | None = None
+    created_at: str
+    updated_at: str
+
+
 class ReportedMetricInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
