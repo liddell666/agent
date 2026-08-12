@@ -117,7 +117,10 @@ def test_load_rejects_bad_signature_wrong_draft_and_expired_token(tmp_path):
     store.save("draft-aaaaaaaa", token, {"title": "Paper"})
     with pytest.raises(ProtocolDraftError) as bad_signature:
         store.load("draft-aaaaaaaa", token[:-1] + ("0" if token[-1] != "0" else "1"))
-    assert bad_signature.value.code == "protocol_draft_token_mismatch"
+    assert bad_signature.value.code == "protocol_token_tampered"
+    with pytest.raises(ProtocolDraftError) as malformed:
+        store.load("draft-aaaaaaaa", "not-a-protocol-token")
+    assert malformed.value.code == "protocol_token_malformed"
     with pytest.raises(ProtocolDraftError) as wrong_draft:
         store.load("draft-bbbbbbbb", token)
     assert wrong_draft.value.code == "protocol_draft_token_mismatch"
@@ -199,7 +202,7 @@ class ProtocolDraftStore:
         """Delete only draft directories whose stored expires_at is in the past."""
 ```
 
-`verify_protocol_token` 按现有 Dify helper 的 token 格式解析：用 `hmac.compare_digest` 校验签名，JSON payload 必须含 `v=1`、`ready=true`、`draft_id`、`manifest.manifest_id`、`manifest.dataset_id` 和整数 `exp`；`now >= exp` 返回 `protocol_draft_expired`，draft ID 或 manifest/dataset 不匹配返回 `protocol_draft_token_mismatch`，格式/签名错误也统一映射为该安全错误。草稿文件固定写成：
+`verify_protocol_token` 按现有 Dify helper 的 token 格式解析：用 `hmac.compare_digest` 校验签名，JSON payload 必须含 `v=1`、`ready=true`、`draft_id`、`manifest.manifest_id`、`manifest.dataset_id` 和整数 `exp`；`now >= exp` 返回 `protocol_draft_expired`，draft ID 或 manifest/dataset 不匹配返回 `protocol_draft_token_mismatch`，token 结构错误返回 `protocol_token_malformed`，签名错误返回 `protocol_token_tampered`，payload/version/ready 字段错误返回 `protocol_payload_invalid`。草稿文件固定写成：
 
 ```json
 {
@@ -299,7 +302,7 @@ def test_protocol_draft_rejects_invalid_access(client, settings, case):
         assert response.json()["detail"]["code"] == "protocol_draft_expired"
     elif case == "tampered":
         response = client.get("/v1/protocol-drafts/draft-apiaaaaaa", headers={"X-Protocol-Token": valid[:-1] + "0"})
-        assert response.json()["detail"]["code"] == "protocol_draft_token_mismatch"
+        assert response.json()["detail"]["code"] == "protocol_token_tampered"
     else:
         response = client.get("/v1/protocol-drafts/draft-otherx", headers={"X-Protocol-Token": valid})
         assert response.json()["detail"]["code"] == "protocol_draft_token_mismatch"
@@ -351,6 +354,9 @@ def _protocol_draft_error(exc: ProtocolDraftError) -> HTTPException:
         "protocol_draft_not_found": 404,
         "protocol_draft_expired": 410,
         "protocol_draft_token_mismatch": 422,
+        "protocol_token_malformed": 422,
+        "protocol_token_tampered": 422,
+        "protocol_payload_invalid": 422,
         "protocol_draft_write_failed": 500,
     }.get(exc.code, 422)
     return HTTPException(status_code=status, detail={"code": exc.code, "message": "Protocol draft is not available."})
