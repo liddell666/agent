@@ -2751,7 +2751,7 @@ workflow:
           type: none
           data: []
         error_strategy: fail-branch
-        headers: 'X-Protocol-Token: {{#Start.protocol_token#}}'
+        headers: 'X-Protocol-Token: {{#3900000000001.protocol_token#}}'
         method: get
         params: ''
         retry_config:

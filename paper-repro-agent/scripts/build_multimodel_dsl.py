@@ -2498,7 +2498,9 @@ def main(
         360,
     )
     get_draft["data"]["method"] = "get"
-    get_draft["data"]["headers"] = "X-Protocol-Token: {{#Start.protocol_token#}}"
+    get_draft["data"]["headers"] = (
+        f"X-Protocol-Token: {{{{#{id_map[run_nodes['Start']['id']]}.protocol_token#}}}}"
+    )
     get_draft["data"]["body"] = {"type": "none", "data": []}
     draft_read_response = _clone_code_node(
         run_nodes["normalize_suite_inputs"],

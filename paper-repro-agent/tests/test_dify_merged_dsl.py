@@ -168,7 +168,9 @@ def test_merged_run_path_reads_draft_with_header_token_and_no_prepare_inputs():
     assert get_draft["data"]["url"] == (
         f"http://repro-runner:8001/v1/protocol-drafts/{{{{#{nodes['normalize_protocol_confirmation']['id']}.draft_id#}}}}"
     )
-    assert "X-Protocol-Token: {{#Start.protocol_token#}}" in get_draft["data"]["headers"]
+    assert get_draft["data"]["headers"] == (
+        f"X-Protocol-Token: {{{{#{nodes['Start']['id']}.protocol_token#}}}}"
+    )
     assert "protocol_token" not in get_draft["data"]["url"]
 
     run_titles = {

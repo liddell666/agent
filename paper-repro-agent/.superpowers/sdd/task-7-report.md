@@ -271,3 +271,26 @@ Structural and safety checks covered by tests:
 ## Concerns
 
 - Git reports CRLF normalization warnings for several Task 7 files. They did not affect test outcomes, but the worktree is configured to rewrite line endings on future git writes.
+
+## Final UI acceptance
+
+After the follow-up secret-binding fix, the live Dify workflow was imported into
+a new disposable application. Re-importing intentionally restored Secret fields
+as masked placeholders, so the two runtime secrets were re-entered through the
+UI without putting their values into the DSL.
+
+- Prepare mode with the fixture PDF and CSV completed with `SUCCESS` and
+  returned a non-empty protocol preview/token.
+- Run mode with `confirm_protocol=false` stopped safely with
+  `protocol_not_confirmed` and did not submit an experiment.
+- The confirmed run initially exposed one final generated-reference defect:
+  the draft-read request header used the literal `Start.protocol_token` label
+  instead of the generated Start node ID. The builder now emits the concrete
+  Start selector, and the regression test asserts the exact header.
+- After regenerating and re-importing, prepare completed with `SUCCESS`, the
+  draft was written with HTTP 200, the draft-read request returned HTTP 200,
+  and the confirmed run completed with `SUCCESS` and all six declared outputs:
+  `dossier_json`, `validation_json`, `experiment_json`, `comparison_json`,
+  `assessment_json`, and `markdown_report`.
+- The application remained unpublished; the two original workflows were not
+  overwritten.
