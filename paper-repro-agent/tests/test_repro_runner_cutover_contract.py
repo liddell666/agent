@@ -95,3 +95,16 @@ def test_image_resolution_handles_compose_without_an_existing_container() -> Non
         'Invoke-DockerChecked @("stop", $ContainerName)',
         'Invoke-DockerChecked @("rename", $ContainerName, $legacyName)',
     )
+
+
+def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
+    source = _script_source()
+    assert "$oldDataMount" in source
+    assert "$expectedDataSource" in source
+    assert ".Source" in source
+    mount_guard = source[source.index("$oldDataMount") : source.index("$legacyName = ")]
+    assert "/data/experiments" in mount_guard
+    assert "cutover aborted" in mount_guard
+    assert mount_guard.index("$oldDataMount") < mount_guard.index(
+        'Invoke-DockerChecked @("stop", $ContainerName)'
+    )

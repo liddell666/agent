@@ -64,6 +64,12 @@ function Get-RunnerContainerJson {
     return (($raw -join [Environment]::NewLine) | ConvertFrom-Json)[0]
 }
 
+function Normalize-HostPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
 function Get-ActiveJobs {
     param([Parameter(Mandatory)][string]$Name)
 
@@ -294,12 +300,12 @@ if ($Rollback) {
         throw "no retained legacy runner is available for rollback."
     }
 
-    $legacyName = $legacy[0].Name
-    if ($legacyName -eq $ContainerName) {
+    $rollbackLegacyName = $legacy[0].Name
+    if ($rollbackLegacyName -eq $ContainerName) {
         throw "the selected legacy runner cannot also be the current runner."
     }
 
-    $null = Get-RunnerContainerJson -Name $legacyName
+    $null = Get-RunnerContainerJson -Name $rollbackLegacyName
     $null = Get-RunnerContainerJson -Name $ContainerName
     Assert-NoActiveJobs -Name $ContainerName
 
@@ -315,7 +321,7 @@ if ($Rollback) {
         Invoke-DockerChecked @("rm", "-f", $ContainerName) | Out-Null
         $replacementRemoved = $true
 
-        Invoke-DockerChecked @("rename", $legacyName, $ContainerName) | Out-Null
+        Invoke-DockerChecked @("rename", $rollbackLegacyName, $ContainerName) | Out-Null
         $legacyRenamed = $true
 
         Connect-RunnerNetworkAlias -NetworkName $networkName -Container $ContainerName
@@ -330,7 +336,7 @@ if ($Rollback) {
         $failure = $_
         if ($replacementRemoved) {
             try {
-                Restore-RollbackLegacy -Container $ContainerName -LegacyName $legacyName -NetworkName $networkName -LegacyRenamed $legacyRenamed
+                Restore-RollbackLegacy -Container $ContainerName -LegacyName $rollbackLegacyName -NetworkName $networkName -LegacyRenamed $legacyRenamed
             } catch {
                 Write-Warning "Rollback restoration encountered an additional error while restoring the legacy runner."
             }
@@ -381,10 +387,22 @@ try {
     & docker rm -f $smokeName 2>$null | Out-Null
 }
 
-$null = Get-RunnerContainerJson -Name $ContainerName
+$oldRunner = Get-RunnerContainerJson -Name $ContainerName
 Assert-NoActiveJobs -Name $ContainerName
 
-$legacyName = "repro-runner-legacy-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$oldDataMounts = @($oldRunner.Mounts | Where-Object { $_.Destination -eq "/data/experiments" })
+if ($oldDataMounts.Count -ne 1) {
+    throw "runner data mount cutover aborted: expected exactly one /data/experiments mount on $ContainerName"
+}
+
+$oldDataMount = $oldDataMounts[0]
+$expectedDataSource = Normalize-HostPath -Path (Resolve-Path -LiteralPath (Join-Path $projectRoot "data/experiments")).Path
+$actualDataSource = Normalize-HostPath -Path $oldDataMount.Source
+if (-not [string]::Equals($actualDataSource, $expectedDataSource, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "runner data mount cutover aborted: live /data/experiments source '$actualDataSource' does not match expected '$expectedDataSource'"
+}
+
+$legacyName=$null
 $oldStopped = $false
 $oldRenamed = $false
 $replacementMayExist = $false
@@ -394,6 +412,7 @@ try {
     Invoke-DockerChecked @("stop", $ContainerName) | Out-Null
     $oldStopped = $true
 
+    $legacyName = "repro-runner-legacy-$(Get-Date -Format yyyyMMdd-HHmmss)"
     Invoke-DockerChecked @("rename", $ContainerName, $legacyName) | Out-Null
     $oldRenamed = $true
 
