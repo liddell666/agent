@@ -112,7 +112,11 @@ def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
     assert ".source" in compose_resolver
     assert "return Normalize-HostPath -Path $composeDataMount.source" in compose_resolver
     assert "if ($composeDataMounts.Count -ne 1)" in compose_resolver
-    mount_guard = source[source.index("$oldDataMount") : source.index("$legacyName = ")]
+    mount_guard = source[
+        source.index("$oldDataMounts = @(") : source.index(
+            'Invoke-DockerChecked @("rename", $ContainerName, $legacyName)'
+        )
+    ]
     assert "/data/experiments" in mount_guard
     assert "cutover aborted" in mount_guard
     assert "if ($oldDataMounts.Count -ne 1)" in mount_guard
@@ -120,6 +124,13 @@ def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
     assert "$actualDataSource = Normalize-HostPath -Path $oldDataMount.Source" in mount_guard
     assert "[System.StringComparison]::OrdinalIgnoreCase" in mount_guard
     assert "[string]::Equals($actualDataSource, $expectedDataSource" in mount_guard
-    assert mount_guard.index("$oldDataMount") < mount_guard.index(
-        'Invoke-DockerChecked @("stop", $ContainerName)'
+    _assert_in_order(
+        mount_guard,
+        "$oldDataMounts = @(",
+        "if ($oldDataMounts.Count -ne 1)",
+        "$oldDataMount = $oldDataMounts[0]",
+        "$expectedDataSource = Get-ComposeExperimentDataSource",
+        "$actualDataSource = Normalize-HostPath -Path $oldDataMount.Source",
+        "if (-not [string]::Equals($actualDataSource, $expectedDataSource",
+        'Invoke-DockerChecked @("stop", $ContainerName)',
     )
