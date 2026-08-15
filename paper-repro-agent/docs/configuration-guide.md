@@ -303,6 +303,15 @@ and staged input under `/data/experiments`; after the replacement is healthy,
 the worker can resume that job. The retained legacy container and experiment
 data are not deleted by either procedure.
 
+Provenance has two layers: the temporary image smoke checks the built image
+without Compose bind mounts, while the active Compose runner mounts the host
+`./src` tree read-only at `/app/src`. Therefore the active `/healthz`
+`source_digest` describes the live mounted source tree as well as the baked
+image metadata; it is not, by itself, an immutable image-content proof. Treat
+the image-smoke provenance and active-runner provenance as separate checks.
+The forward preflight compares the existing `/data/experiments` bind Source
+with the Compose-resolved Source and aborts before stop/rename if they differ.
+
 Operator output and diagnostic logs must contain only status and provenance
 metadata. Never print secrets, protocol tokens, raw CSV rows, PDF text, raw
 inputs, or full request payloads.
