@@ -1284,7 +1284,8 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
     ]
 
 
-def build_multimodel_dsl() -> dict:
+def build_multimodel_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
+    resolved_profile = resolve_llm_profile(profile)
     document = deepcopy(_load_source())
     nodes = _by_title(document)
     start = nodes["Start"]
@@ -1364,7 +1365,7 @@ def build_multimodel_dsl() -> dict:
     document["workflow"]["environment_variables"] = _protocol_environment_variables(
         document["workflow"].get("environment_variables", [])
     )
-    return document
+    return _apply_profile_metadata(document, resolved_profile)
 
 
 def _prepare_code() -> str:
@@ -1377,6 +1378,22 @@ def _prepare_code() -> str:
         secret=protocol_secret,
     )
 """)
+
+
+def _apply_profile_metadata(document: dict, profile: LLMProfile) -> dict:
+    if profile.name == DEFAULT_LLM_PROFILE:
+        return document
+    document["dependencies"] = [deepcopy(profile.dependency)]
+    document["app"]["name"] = f"{document['app']['name']}{profile.suffix}"
+    document["workflow"]["name"] = f"{document['workflow']['name']}{profile.suffix}"
+    return document
+
+
+def _apply_llm_node_profile(node: dict, profile: LLMProfile) -> None:
+    model = deepcopy(node["data"].get("model", {}))
+    model["provider"] = profile.provider
+    model["name"] = profile.model
+    node["data"]["model"] = model
 
 
 def build_prepare_dsl_legacy() -> dict:
@@ -1528,8 +1545,9 @@ def build_prepare_dsl_legacy() -> dict:
     return document
 
 
-def build_prepare_dsl() -> dict:
-    """Compose the PDF-to-protocol workflow from the working dossier workflow pieces."""
+def build_prepare_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
+    """Compose the PDF-to-protocol workflow for one explicit LLM profile."""
+    resolved_profile = resolve_llm_profile(profile)
     source = _load_source()
     source_nodes = _by_title(source)
     dossier_source = _load_paper_dossier_source()
@@ -1656,6 +1674,7 @@ def build_prepare_dsl() -> dict:
             .replace("{{#1785820293883.user_notes#}}", f"{{{{#{start_id}.protocol_notes#}}}}")
             .replace("{{#1785820293883.target_language#}}", "简体中文")
         )
+    _apply_llm_node_profile(extract, resolved_profile)
 
     dossier_validate = deepcopy(code_templates[1])
     dossier_validate["id"] = dossier_validate_id
@@ -1752,7 +1771,7 @@ def build_prepare_dsl() -> dict:
         _make_edge(document, diagnosis_id, "source", prepare_id),
         _make_edge(document, prepare_id, "source", output_id),
     ]
-    return document
+    return _apply_profile_metadata(document, resolved_profile)
 
 
 def _merged_start_variables() -> list[dict]:
@@ -2084,10 +2103,11 @@ def _clone_not_empty_if_node(template: dict, node_id: str, title: str, variable_
     return node
 
 
-def build_merged_dsl() -> dict:
+def build_merged_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     """Build the deterministic merged prepare/run Dify workflow."""
-    prepare_doc = build_prepare_dsl()
-    run_doc = build_multimodel_dsl()
+    resolved_profile = resolve_llm_profile(profile)
+    prepare_doc = build_prepare_dsl(profile)
+    run_doc = build_multimodel_dsl(profile)
     prepare_nodes = _by_title(prepare_doc)
     run_nodes = _by_title(run_doc)
     source = _load_source()
@@ -2855,7 +2875,7 @@ def main(
         if data.get("type") == "code" and isinstance(data.get("code"), str):
             data["code"] = data["code"].replace('"sk-"', '"s" + "k-"')
 
-    return document
+    return _apply_profile_metadata(document, resolved_profile)
 
 
 def write_multimodel_dsl(path: Path) -> None:

@@ -1,8 +1,11 @@
 import pytest
+import yaml
 
 from scripts.build_multimodel_dsl import (
     DEFAULT_LLM_PROFILE,
     LLM_PROFILES,
+    build_merged_dsl,
+    build_prepare_dsl,
     resolve_llm_profile,
 )
 
@@ -32,3 +35,45 @@ def test_profiles_pin_provider_model_and_dependency() -> None:
 def test_profile_resolution_rejects_unknown_names() -> None:
     with pytest.raises(ValueError, match="deepseek.*ollama"):
         resolve_llm_profile("missing")
+
+
+def _nodes(document: dict) -> list[dict]:
+    return document["workflow"]["graph"]["nodes"]
+
+
+def _node(document: dict, title: str) -> dict:
+    return next(node for node in _nodes(document) if node["data"]["title"] == title)
+
+
+def test_default_builder_remains_deepseek_compatible() -> None:
+    default = _node(build_prepare_dsl(), "extract_paper_dossier")["data"]["model"]
+    explicit = _node(build_prepare_dsl("deepseek"), "extract_paper_dossier")["data"]["model"]
+    assert default == explicit
+    assert default["provider"] == "langgenius/deepseek/deepseek"
+    assert default["name"] == "deepseek-v4-flash"
+
+
+def test_ollama_profile_changes_only_provider_metadata() -> None:
+    document = build_prepare_dsl("ollama")
+    model = _node(document, "extract_paper_dossier")["data"]["model"]
+    assert model["provider"] == "langgenius/ollama/ollama"
+    assert model["name"] == "qwen3:8b"
+    assert _node(document, "extract_paper_dossier")["data"]["prompt_template"] == _node(
+        build_prepare_dsl(), "extract_paper_dossier"
+    )["data"]["prompt_template"]
+    assert document["app"]["name"].endswith("-ollama")
+    assert document["workflow"]["name"].endswith("-ollama")
+    assert document["dependencies"][0]["value"]["marketplace_plugin_unique_identifier"].startswith(
+        "langgenius/ollama:1.0.0@"
+    )
+
+
+def test_ollama_bundle_has_no_secret_values() -> None:
+    for document in (build_prepare_dsl("ollama"), build_merged_dsl("ollama")):
+        serialized = yaml.safe_dump(document, allow_unicode=True, sort_keys=False, width=4096)
+        assert "PARSER_API_TOKEN: replace" not in serialized
+        assert "DIFY_PROTOCOL_SECRET: replace" not in serialized
+        for item in document["workflow"]["environment_variables"]:
+            if item["name"] in {"PARSER_API_TOKEN", "DIFY_PROTOCOL_SECRET"}:
+                assert item["value"] == ""
+                assert item["value_type"] == "secret"
