@@ -4,8 +4,23 @@ from pathlib import Path
 SCRIPT = Path("scripts/switch_repro_runner.ps1")
 
 
+def _script_source() -> str:
+    return SCRIPT.read_text(encoding="utf-8")
+
+
+def _between(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.index(start_marker)
+    end = source.index(end_marker, start)
+    return source[start:end]
+
+
+def _assert_in_order(source: str, *needles: str) -> None:
+    positions = [source.index(needle) for needle in needles]
+    assert positions == sorted(positions), f"expected ordered tokens: {needles}"
+
+
 def test_cutover_script_has_read_only_job_guard_and_reversible_steps() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = _script_source()
     for required in (
         "queued",
         "running",
@@ -25,14 +40,14 @@ def test_cutover_script_has_read_only_job_guard_and_reversible_steps() -> None:
 
 
 def test_cutover_script_never_uses_broad_data_deletion() -> None:
-    source = SCRIPT.read_text(encoding="utf-8").lower()
+    source = _script_source().lower()
     assert "docker volume rm" not in source
     assert "docker system prune" not in source
     assert "remove-item" not in source
 
 
 def test_cutover_script_validates_image_before_and_container_after_switch() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = _script_source()
     for required in (
         "docker run",
         "Invoke-RestMethod",
@@ -47,7 +62,7 @@ def test_cutover_script_validates_image_before_and_container_after_switch() -> N
 
 
 def test_rollback_requires_no_active_jobs_and_restores_alias() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
+    source = _script_source()
     assert "Sort-Object Name -Descending" in source
     assert "docker rm -f" in source
     assert "docker rename" in source
@@ -56,6 +71,27 @@ def test_rollback_requires_no_active_jobs_and_restores_alias() -> None:
 
 
 def test_image_resolution_handles_compose_without_an_existing_container() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
-    assert "--images" in source
-    assert "docker image inspect" in source
+    source = _script_source()
+    resolver = _between(
+        source,
+        "function Resolve-ReproRunnerImageId {",
+        "function Get-RunnerContainerJson {",
+    )
+
+    _assert_in_order(
+        resolver,
+        'Invoke-ComposeChecked -Arguments @("images", "-q", "repro-runner")',
+        'Invoke-ComposeChecked -Arguments @("config", "--images")',
+        'docker image inspect --format "{{.Id}}"',
+    )
+    assert "Select-Object -Unique" in resolver
+    assert r"(^|[\/_-])repro-runner($|[:@])" in resolver
+    assert "$runnerImages.Count -ne 1" in resolver
+    assert '$composeImageId -match "^sha256:"' in resolver
+    assert '$LASTEXITCODE -eq 0 -and $inspectedImageId -match "^sha256:"' in resolver
+    cutover = source[source.index("$imageId = Resolve-ReproRunnerImageId") :]
+    _assert_in_order(
+        cutover,
+        'Invoke-DockerChecked @("stop", $ContainerName)',
+        'Invoke-DockerChecked @("rename", $ContainerName, $legacyName)',
+    )
