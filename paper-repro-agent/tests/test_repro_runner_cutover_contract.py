@@ -134,3 +134,7 @@ def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
         "if (-not [string]::Equals($actualDataSource, $expectedDataSource",
         'Invoke-DockerChecked @("stop", $ContainerName)',
     )
+    assert (
+        "if (-not [string]::Equals($actualDataSource, $expectedDataSource, [System.StringComparison]::OrdinalIgnoreCase)) {\n"
+        '    throw "runner data mount cutover aborted:'
+    ) in mount_guard
