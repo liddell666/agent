@@ -1,0 +1,31 @@
+from pathlib import Path
+
+
+SCRIPT = Path("scripts/switch_repro_runner.ps1")
+
+
+def test_cutover_script_has_read_only_job_guard_and_reversible_steps() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    for required in (
+        "queued",
+        "running",
+        "sqlite3",
+        "docker stop",
+        "docker rename",
+        "repro-runner-legacy-",
+        "docker network disconnect",
+        "docker network connect",
+        "docker compose up -d --no-deps repro-runner",
+        "/healthz",
+        "REPRO_RUNNER_GIT_COMMIT",
+        "REPRO_RUNNER_WORKFLOW_VERSION",
+        "-Rollback",
+    ):
+        assert required in source
+
+
+def test_cutover_script_never_uses_broad_data_deletion() -> None:
+    source = SCRIPT.read_text(encoding="utf-8").lower()
+    assert "docker volume rm" not in source
+    assert "docker system prune" not in source
+    assert "remove-item" not in source
