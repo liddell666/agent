@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from copy import deepcopy
 import json
@@ -2878,37 +2879,87 @@ def main(
     return _apply_profile_metadata(document, resolved_profile)
 
 
-def write_multimodel_dsl(path: Path) -> None:
-    content = yaml.safe_dump(
-        build_multimodel_dsl(),
-        allow_unicode=True,
-        sort_keys=False,
-        width=4096,
+def _profile_path(path: Path, profile: LLMProfile) -> Path:
+    if not profile.suffix:
+        return path
+    return path.with_name(f"{path.stem}{profile.suffix}{path.suffix}")
+
+
+def write_profile_dsls(
+    profile: str,
+    output_dir: Path = PROJECT_ROOT / "dify",
+) -> tuple[Path, Path, Path]:
+    resolved_profile = resolve_llm_profile(profile)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_path = _profile_path(output_dir / TARGET_DSL.name, resolved_profile)
+    prepare_path = _profile_path(output_dir / PREPARE_DSL.name, resolved_profile)
+    merged_path = _profile_path(output_dir / MERGED_DSL.name, resolved_profile)
+    run_path.write_text(
+        yaml.safe_dump(
+            build_multimodel_dsl(profile),
+            allow_unicode=True,
+            sort_keys=False,
+            width=4096,
+        ),
+        encoding="utf-8",
     )
-    path.write_text(content, encoding="utf-8")
+    prepare_path.write_text(
+        yaml.safe_dump(
+            build_prepare_dsl(profile),
+            allow_unicode=True,
+            sort_keys=False,
+            width=4096,
+        ),
+        encoding="utf-8",
+    )
+    merged_path.write_text(
+        yaml.safe_dump(
+            build_merged_dsl(profile),
+            allow_unicode=True,
+            sort_keys=False,
+            width=4096,
+        ),
+        encoding="utf-8",
+    )
+    return run_path, prepare_path, merged_path
+
+
+def write_multimodel_dsl(path: Path) -> None:
+    output_dir = path.parent
+    written_path, _, _ = write_profile_dsls(DEFAULT_LLM_PROFILE, output_dir)
+    if written_path != path:
+        path.write_text(written_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def write_prepare_dsl(path: Path) -> None:
-    content = yaml.safe_dump(
-        build_prepare_dsl(),
-        allow_unicode=True,
-        sort_keys=False,
-        width=4096,
-    )
-    path.write_text(content, encoding="utf-8")
+    output_dir = path.parent
+    _, written_path, _ = write_profile_dsls(DEFAULT_LLM_PROFILE, output_dir)
+    if written_path != path:
+        path.write_text(written_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def write_merged_dsl(path: Path) -> None:
-    content = yaml.safe_dump(
-        build_merged_dsl(),
-        allow_unicode=True,
-        sort_keys=False,
-        width=4096,
+    output_dir = path.parent
+    _, _, written_path = write_profile_dsls(DEFAULT_LLM_PROFILE, output_dir)
+    if written_path != path:
+        path.write_text(written_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--profile",
+        choices=sorted(LLM_PROFILES),
+        default=DEFAULT_LLM_PROFILE,
     )
-    path.write_text(content, encoding="utf-8")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=PROJECT_ROOT / "dify",
+    )
+    return parser
 
 
 if __name__ == "__main__":
-    write_multimodel_dsl(TARGET_DSL)
-    write_prepare_dsl(PREPARE_DSL)
-    write_merged_dsl(MERGED_DSL)
+    args = _build_parser().parse_args()
+    write_profile_dsls(args.profile, args.output_dir)

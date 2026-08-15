@@ -1,5 +1,6 @@
 import pytest
 import yaml
+from pathlib import Path
 
 from scripts.build_multimodel_dsl import (
     DEFAULT_LLM_PROFILE,
@@ -7,6 +8,7 @@ from scripts.build_multimodel_dsl import (
     build_merged_dsl,
     build_prepare_dsl,
     resolve_llm_profile,
+    write_profile_dsls,
 )
 
 
@@ -77,3 +79,24 @@ def test_ollama_bundle_has_no_secret_values() -> None:
             if item["name"] in {"PARSER_API_TOKEN", "DIFY_PROTOCOL_SECRET"}:
                 assert item["value"] == ""
                 assert item["value_type"] == "secret"
+
+
+def test_ollama_output_paths_are_suffixed_and_deterministic(tmp_path: Path) -> None:
+    first = write_profile_dsls("ollama", tmp_path)
+    first_bytes = tuple(path.read_bytes() for path in first)
+    second = write_profile_dsls("ollama", tmp_path)
+    assert tuple(path.name for path in first) == (
+        "paper-comparison-multimodel-workflow-ollama.yml",
+        "paper-comparison-prepare-workflow-ollama.yml",
+        "paper-comparison-merged-workflow-ollama.yml",
+    )
+    assert tuple(path.read_bytes() for path in second) == first_bytes
+
+
+def test_default_output_paths_have_no_profile_suffix(tmp_path: Path) -> None:
+    paths = write_profile_dsls("deepseek", tmp_path)
+    assert tuple(path.name for path in paths) == (
+        "paper-comparison-multimodel-workflow.yml",
+        "paper-comparison-prepare-workflow.yml",
+        "paper-comparison-merged-workflow.yml",
+    )
