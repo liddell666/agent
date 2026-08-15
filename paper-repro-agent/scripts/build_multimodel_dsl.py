@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -13,6 +14,54 @@ PAPER_DOSSIER_DSL = PROJECT_ROOT / "dify" / "paper-dossier-workflow.yml"
 TARGET_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
 PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
 MERGED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-merged-workflow.yml"
+DEFAULT_LLM_PROFILE = "deepseek"
+
+
+@dataclass(frozen=True)
+class LLMProfile:
+    name: str
+    provider: str
+    model: str
+    dependency: dict[str, object]
+    suffix: str
+
+
+LLM_PROFILES = {
+    "deepseek": LLMProfile(
+        name="deepseek",
+        provider="langgenius/deepseek/deepseek",
+        model="deepseek-v4-flash",
+        dependency={
+            "current_identifier": None,
+            "type": "marketplace",
+            "value": {
+                "marketplace_plugin_unique_identifier": (
+                    "langgenius/deepseek:0.0.19@5b68617c637b62d31e7f33a9f5677b76e88f81868fb04a728e208588564b72ea"
+                ),
+                "version": None,
+            },
+        },
+        suffix="",
+    ),
+    "ollama": LLMProfile(
+        name="ollama",
+        provider="langgenius/ollama/ollama",
+        model="qwen3:8b",
+        dependency={
+            "current_identifier": None,
+            "type": "marketplace",
+            "value": {
+                "marketplace_plugin_unique_identifier": (
+                    "langgenius/ollama:1.0.0@86dd6101fbd9de94e6681782700fa98c8a785c982918e6fe0e3f"
+                    "d507e15ba3f"
+                ),
+                "version": None,
+            },
+        },
+        suffix="-ollama",
+    ),
+}
+
 DEFAULT_MODELS = [
     "logistic_regression",
     "random_forest",
@@ -22,6 +71,15 @@ DEFAULT_MODELS = [
     "knn",
     "mlp",
 ]
+
+
+def resolve_llm_profile(profile: str = DEFAULT_LLM_PROFILE) -> LLMProfile:
+    try:
+        return LLM_PROFILES[profile]
+    except KeyError:
+        allowed = ", ".join(sorted(LLM_PROFILES))
+        raise ValueError(f"unknown LLM profile {profile!r}; expected one of: {allowed}") from None
+
 PROTOCOL_CONFIRMATION_ID = "1900000000038"
 POLL_CONFIRMED_JOB_ID = "1900000000039"
 PROTOCOL_FAILURE_ID = "1900000000040"
