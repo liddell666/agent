@@ -102,6 +102,17 @@ def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
     assert "$oldDataMount" in source
     assert "$expectedDataSource" in source
     assert ".Source" in source
+    assert "Get-ComposeExperimentDataSource" in source
+    assert 'Invoke-ComposeChecked -Arguments @("config", "--format", "json")' in source
+    compose_resolver = _between(
+        source,
+        "function Get-ComposeExperimentDataSource {",
+        "function Get-ActiveJobs {",
+    )
+    assert "ConvertFrom-Json" in compose_resolver
+    assert "target -eq \"/data/experiments\"" in compose_resolver
+    assert ".source" in compose_resolver
+    assert "$composeDataMounts.Count -ne 1" in compose_resolver
     mount_guard = source[source.index("$oldDataMount") : source.index("$legacyName = ")]
     assert "/data/experiments" in mount_guard
     assert "cutover aborted" in mount_guard

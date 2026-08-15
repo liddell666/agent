@@ -70,6 +70,25 @@ function Normalize-HostPath {
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
 }
 
+function Get-ComposeExperimentDataSource {
+    $composeConfigRaw = Invoke-ComposeChecked -Arguments @("config", "--format", "json")
+    $composeConfig = (($composeConfigRaw -join [Environment]::NewLine) | ConvertFrom-Json)
+    $composeDataMounts = @(
+        $composeConfig.services.'repro-runner'.volumes |
+            Where-Object { $_.target -eq "/data/experiments" }
+    )
+    if ($composeDataMounts.Count -ne 1) {
+        throw "runner data mount cutover aborted: expected exactly one /data/experiments volume in compose config"
+    }
+
+    $composeDataMount = $composeDataMounts[0]
+    if ([string]::IsNullOrWhiteSpace($composeDataMount.source)) {
+        throw "runner data mount cutover aborted: compose /data/experiments volume is missing a source"
+    }
+
+    return Normalize-HostPath -Path $composeDataMount.source
+}
+
 function Get-ActiveJobs {
     param([Parameter(Mandatory)][string]$Name)
 
@@ -396,7 +415,7 @@ if ($oldDataMounts.Count -ne 1) {
 }
 
 $oldDataMount = $oldDataMounts[0]
-$expectedDataSource = Normalize-HostPath -Path (Resolve-Path -LiteralPath (Join-Path $projectRoot "data/experiments")).Path
+$expectedDataSource = Get-ComposeExperimentDataSource
 $actualDataSource = Normalize-HostPath -Path $oldDataMount.Source
 if (-not [string]::Equals($actualDataSource, $expectedDataSource, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "runner data mount cutover aborted: live /data/experiments source '$actualDataSource' does not match expected '$expectedDataSource'"
