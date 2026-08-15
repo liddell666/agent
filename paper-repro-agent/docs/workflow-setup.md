@@ -45,6 +45,42 @@ DSL 文件为 `dify/paper-dossier-workflow.yml`。
 6. 确保 Dify 的 Docker 网络中存在名为 `paper-parser` 的服务，并且 `http://paper-parser:8000/v1/parse` 可访问。
 7. 用 `tests/fixtures/minimal-paper.pdf` 运行一次验收测试。
 
+## LLM profile workflows
+
+默认产物仍然是 DeepSeek 配置。直接运行不带参数的 DSL 构建脚本时，生成的仍然是现有的 DeepSeek 文件；本地 Ollama 仅作为单独导入的显式 profile 使用，不替换默认产物。
+
+需要生成本地 Ollama 导入包时，运行：
+
+```powershell
+python scripts/build_multimodel_dsl.py --profile ollama
+```
+
+这会额外生成带 `-ollama` 后缀的 DSL 文件，其中合并工作流为 `dify/paper-comparison-merged-workflow-ollama.yml`。把它作为新的 Dify 应用导入，不要覆盖现有 DeepSeek 应用。
+
+导入 `dify/paper-comparison-merged-workflow-ollama.yml` 后，按以下方式配置：
+
+1. 安装 DSL 中固定声明的 Ollama marketplace dependency。
+2. 在 Dify 的模型供应商里选择 `qwen3:8b`。
+3. 将该 provider 的 Base URL 设置为 `http://ollama:11434`，并确保这是 Dify Docker 网络内可访问的地址，不要追加 `/api`。
+4. 只在 Dify UI 中填写 `PARSER_API_TOKEN` 和 `DIFY_PROTOCOL_SECRET`；不要把这两个 secret 写进 Markdown、YAML、Git 或截图。
+5. 保留 DeepSeek 产物作为默认共享配置；不要把本地 Ollama profile 回写成默认 DSL。
+
+在打开 Dify 之前，先做只读健康检查：
+
+```powershell
+Invoke-RestMethod http://localhost:11434/api/tags
+docker run --rm --network docker_default curlimages/curl:8.10.1 http://ollama:11434/api/tags
+```
+
+两条命令都应返回包含 `qwen3:8b` 的模型列表；若临时 `curlimages/curl:8.10.1` 镜像不可用，可改用现有 Dify 容器内的等价只读请求，并在验收记录中说明替代方式。
+
+本地 Ollama 验收时，导入后的新应用使用以下固定夹具：
+
+1. `prepare`：上传 `tests/fixtures/minimal-paper.pdf` 与 `tests/fixtures/general_binary_numeric.csv`。
+2. `run`：重新上传完全相同的 CSV，并使用包含 `logistic_regression` 的短模型列表。
+
+验收记录只保留这些信息：状态、耗时、validation aggregates、experiment status、model status、comparison status、runner provenance。还要确认 LLM 节点完成、dossier 仍通过校验、protocol 路径成功，且最终报告包含 `git_commit`、`source_digest` 和 `workflow_version`。不要记录 PDF 正文、CSV 行内容、API key、protocol token 或完整请求负载。
+
 ## 验收结果
 
 2026-08-04 的端到端测试成功生成：

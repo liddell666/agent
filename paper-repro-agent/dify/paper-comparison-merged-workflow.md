@@ -1,8 +1,12 @@
 # Merged paper-comparison workflow: Dify import and operator guide
 
-This guide is the runbook for `dify/paper-comparison-merged-workflow.yml`. Import
-it as a new Dify workflow. It combines paper preparation and the confirmed
-multi-model experiment in one workflow with two modes:
+This guide is the runbook for `dify/paper-comparison-merged-workflow.yml`. The
+default/shared artifact remains the DeepSeek profile. For local Ollama
+acceptance, first generate and import
+`dify/paper-comparison-merged-workflow-ollama.yml` as a separate Dify app
+rather than replacing the DeepSeek app. The merged workflow combines paper
+preparation and the confirmed multi-model experiment in one workflow with two
+modes:
 
 - `prepare` parses the paper, diagnoses the CSV, creates a short-lived protocol
   draft, and returns a preview plus the values needed for the next run.
@@ -52,18 +56,45 @@ the configured lifetime is bounded by the service to 60 through 3600 seconds.
 
 ## 2. Import the workflow as a new Dify workflow
 
+For local Ollama acceptance, generate the profile-specific bundle first:
+
+```powershell
+python scripts/build_multimodel_dsl.py --profile ollama
+```
+
+That command leaves the existing DeepSeek files as the default output and adds
+the separate `-ollama` artifacts.
+
 1. In Dify, open the workflow import action and select
-   `dify/paper-comparison-merged-workflow.yml` from this repository.
+   `dify/paper-comparison-merged-workflow-ollama.yml` for local Ollama
+   acceptance, or `dify/paper-comparison-merged-workflow.yml` when you intend
+   to keep the default DeepSeek profile.
 2. Import it as a new workflow/application. Do not import over either rollback
    workflow listed above.
-3. In the new workflow's environment settings, configure
+3. Install the pinned Ollama marketplace dependency declared in the imported
+   DSL when using the `-ollama` artifact.
+4. In the model provider settings for the imported Ollama app, select model
+   `qwen3:8b` and set the provider Base URL to `http://ollama:11434` from the
+   Dify Docker network. Do not append `/api`.
+5. In the new workflow's environment settings, configure
    `PARSER_API_TOKEN` and `DIFY_PROTOCOL_SECRET` as secret variables. Keep the
-   variable names unchanged.
-4. Verify that the imported `Start` node has `run_mode` with options
+   variable names unchanged, and enter both values only in the Dify UI.
+6. Verify that the imported `Start` node has `run_mode` with options
    `prepare` and `run`, and that `training_csv` is required while `paper_pdf`
    is conditionally required by `prepare`.
-5. Verify that the service containers use the network names above and that
+7. Verify that the service containers use the network names above and that
    `repro-runner` is healthy before starting a real run.
+
+Before opening Dify, run the read-only Ollama health checks:
+
+```powershell
+Invoke-RestMethod http://localhost:11434/api/tags
+docker run --rm --network docker_default curlimages/curl:8.10.1 http://ollama:11434/api/tags
+```
+
+Both responses should list `qwen3:8b`. If the temporary curl image is
+unavailable, substitute an equivalent read-only request from an existing Dify
+container and record that substitution in the acceptance notes.
 
 The imported workflow owns the following internal sequence. Operators do not
 need to recreate these nodes manually:
@@ -245,8 +276,20 @@ identity has changed.
 Before calling the import usable, verify all of the following without pasting
 private input contents into logs or documentation:
 
-- The new Dify workflow was imported from
-  `dify/paper-comparison-merged-workflow.yml`.
+- For local Ollama acceptance, `python scripts/build_multimodel_dsl.py --profile ollama`
+  was run and `dify/paper-comparison-merged-workflow-ollama.yml` was imported
+  as a separate app while the DeepSeek artifact remained the default/shared
+  profile.
+- The imported Ollama app uses the pinned marketplace dependency, model
+  `qwen3:8b`, and Base URL `http://ollama:11434` from the Dify Docker network.
+- `PARSER_API_TOKEN` and `DIFY_PROTOCOL_SECRET` were entered only in the Dify
+  UI and not written into the DSL, repository files, logs, or screenshots.
+- The read-only localhost and Docker-network Ollama health checks both listed
+  `qwen3:8b` before the Dify run.
+- The new Dify workflow was imported from the intended profile artifact:
+  `dify/paper-comparison-merged-workflow.yml` for the default DeepSeek profile
+  or `dify/paper-comparison-merged-workflow-ollama.yml` for local Ollama
+  acceptance.
 - `DIFY_PROTOCOL_SECRET` and `REPRO_RUNNER_PROTOCOL_SECRET` are configured to
   the same externally supplied value, and neither value appears in the DSL,
   docs, logs, or screenshots.
@@ -256,6 +299,12 @@ private input contents into logs or documentation:
   unchanged protocol value, and set `confirm_protocol=true`.
 - `Output_run` exposed `dossier_json`, `validation_json`, `experiment_json`,
   `comparison_json`, `assessment_json`, and `markdown_report`.
+- The local acceptance record retained only status, duration, validation
+  aggregates, experiment status, model status, comparison status, and runner
+  provenance; it did not include PDF text, CSV rows, API keys, protocol
+  values, or full request payloads.
+- The final report included `git_commit`, `source_digest`, and
+  `workflow_version`.
 - An expired value was handled by rerunning prepare rather than editing it or
   bypassing confirmation.
 - The two original workflows remain available as rollback targets.
