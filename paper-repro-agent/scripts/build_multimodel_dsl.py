@@ -2885,6 +2885,19 @@ def _profile_path(path: Path, profile: LLMProfile) -> Path:
     return path.with_name(f"{path.stem}{profile.suffix}{path.suffix}")
 
 
+def _write_dsl(path: Path, document: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(
+            document,
+            allow_unicode=True,
+            sort_keys=False,
+            width=4096,
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_profile_dsls(
     profile: str,
     output_dir: Path = PROJECT_ROOT / "dify",
@@ -2894,55 +2907,22 @@ def write_profile_dsls(
     run_path = _profile_path(output_dir / TARGET_DSL.name, resolved_profile)
     prepare_path = _profile_path(output_dir / PREPARE_DSL.name, resolved_profile)
     merged_path = _profile_path(output_dir / MERGED_DSL.name, resolved_profile)
-    run_path.write_text(
-        yaml.safe_dump(
-            build_multimodel_dsl(profile),
-            allow_unicode=True,
-            sort_keys=False,
-            width=4096,
-        ),
-        encoding="utf-8",
-    )
-    prepare_path.write_text(
-        yaml.safe_dump(
-            build_prepare_dsl(profile),
-            allow_unicode=True,
-            sort_keys=False,
-            width=4096,
-        ),
-        encoding="utf-8",
-    )
-    merged_path.write_text(
-        yaml.safe_dump(
-            build_merged_dsl(profile),
-            allow_unicode=True,
-            sort_keys=False,
-            width=4096,
-        ),
-        encoding="utf-8",
-    )
+    _write_dsl(run_path, build_multimodel_dsl(profile))
+    _write_dsl(prepare_path, build_prepare_dsl(profile))
+    _write_dsl(merged_path, build_merged_dsl(profile))
     return run_path, prepare_path, merged_path
 
 
 def write_multimodel_dsl(path: Path) -> None:
-    output_dir = path.parent
-    written_path, _, _ = write_profile_dsls(DEFAULT_LLM_PROFILE, output_dir)
-    if written_path != path:
-        path.write_text(written_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _write_dsl(path, build_multimodel_dsl())
 
 
 def write_prepare_dsl(path: Path) -> None:
-    output_dir = path.parent
-    _, written_path, _ = write_profile_dsls(DEFAULT_LLM_PROFILE, output_dir)
-    if written_path != path:
-        path.write_text(written_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _write_dsl(path, build_prepare_dsl())
 
 
 def write_merged_dsl(path: Path) -> None:
-    output_dir = path.parent
-    _, _, written_path = write_profile_dsls(DEFAULT_LLM_PROFILE, output_dir)
-    if written_path != path:
-        path.write_text(written_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _write_dsl(path, build_merged_dsl())
 
 
 def _build_parser() -> argparse.ArgumentParser:

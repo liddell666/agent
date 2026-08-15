@@ -8,6 +8,7 @@ from scripts.build_multimodel_dsl import (
     build_merged_dsl,
     build_prepare_dsl,
     resolve_llm_profile,
+    write_merged_dsl,
     write_profile_dsls,
 )
 
@@ -100,3 +101,10 @@ def test_default_output_paths_have_no_profile_suffix(tmp_path: Path) -> None:
         "paper-comparison-prepare-workflow.yml",
         "paper-comparison-merged-workflow.yml",
     )
+
+
+def test_single_file_writer_writes_only_requested_path(tmp_path: Path) -> None:
+    target = tmp_path / "custom-merged.yml"
+    write_merged_dsl(target)
+    assert target.exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["custom-merged.yml"]
