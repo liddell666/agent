@@ -151,6 +151,8 @@ def test_active_job_guard_uses_effective_job_store_path() -> None:
     )
     assert "Config.Env" in store_resolver
     assert "/data/experiments/jobs.sqlite3" in store_resolver
+    assert "[-1]" in store_resolver
+    assert "IsNullOrWhiteSpace($jobStorePath)" in store_resolver
     active_jobs = _between(
         source,
         "function Get-ActiveJobs {",

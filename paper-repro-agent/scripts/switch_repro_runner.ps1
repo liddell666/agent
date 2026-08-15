@@ -100,14 +100,11 @@ function Get-RunnerJobStorePath {
                 $_.StartsWith("REPRO_RUNNER_JOB_STORE_PATH=", [System.StringComparison]::Ordinal)
             }
     )
-    if ($jobStoreEntries.Count -gt 1) {
-        throw "runner job store path configuration is ambiguous; cutover aborted."
-    }
     if ($jobStoreEntries.Count -eq 0) {
         return "/data/experiments/jobs.sqlite3"
     }
 
-    $jobStorePath = $jobStoreEntries[0].Substring("REPRO_RUNNER_JOB_STORE_PATH=".Length)
+    $jobStorePath = $jobStoreEntries[-1].Substring("REPRO_RUNNER_JOB_STORE_PATH=".Length)
     if ([string]::IsNullOrWhiteSpace($jobStorePath)) {
         throw "runner job store path configuration is blank; cutover aborted."
     }
