@@ -29,3 +29,18 @@ def test_cutover_script_never_uses_broad_data_deletion() -> None:
     assert "docker volume rm" not in source
     assert "docker system prune" not in source
     assert "remove-item" not in source
+
+
+def test_cutover_script_validates_image_before_and_container_after_switch() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    for required in (
+        "docker run",
+        "Invoke-RestMethod",
+        "source_digest",
+        "expectedCommit",
+        "workflow_version",
+        "/data/experiments",
+        "Aliases",
+        "127.0.0.1",
+    ):
+        assert required in source
