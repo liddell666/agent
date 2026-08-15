@@ -138,3 +138,24 @@ def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
         "if (-not [string]::Equals($actualDataSource, $expectedDataSource, [System.StringComparison]::OrdinalIgnoreCase)) {\n"
         '    throw "runner data mount cutover aborted:'
     ) in mount_guard
+
+
+def test_active_job_guard_uses_effective_job_store_path() -> None:
+    source = _script_source()
+    assert "function Get-RunnerJobStorePath" in source
+    assert "REPRO_RUNNER_JOB_STORE_PATH" in source
+    store_resolver = _between(
+        source,
+        "function Get-RunnerJobStorePath {",
+        "function Get-ActiveJobs {",
+    )
+    assert "Config.Env" in store_resolver
+    assert "/data/experiments/jobs.sqlite3" in store_resolver
+    active_jobs = _between(
+        source,
+        "function Get-ActiveJobs {",
+        "function Assert-NoActiveJobs {",
+    )
+    assert "$jobStorePath = Get-RunnerJobStorePath" in active_jobs
+    assert "sys.argv[1]" in active_jobs
+    assert '"python", "-c", $query, $jobStorePath' in active_jobs

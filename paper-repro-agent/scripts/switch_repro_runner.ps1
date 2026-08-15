@@ -89,14 +89,42 @@ function Get-ComposeExperimentDataSource {
     return Normalize-HostPath -Path $composeDataMount.source
 }
 
+function Get-RunnerJobStorePath {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $runner = Get-RunnerContainerJson -Name $Name
+    $jobStoreEntries = @(
+        @($runner.Config.Env) |
+            Where-Object {
+                $_ -is [string] -and
+                $_.StartsWith("REPRO_RUNNER_JOB_STORE_PATH=", [System.StringComparison]::Ordinal)
+            }
+    )
+    if ($jobStoreEntries.Count -gt 1) {
+        throw "runner job store path configuration is ambiguous; cutover aborted."
+    }
+    if ($jobStoreEntries.Count -eq 0) {
+        return "/data/experiments/jobs.sqlite3"
+    }
+
+    $jobStorePath = $jobStoreEntries[0].Substring("REPRO_RUNNER_JOB_STORE_PATH=".Length)
+    if ([string]::IsNullOrWhiteSpace($jobStorePath)) {
+        throw "runner job store path configuration is blank; cutover aborted."
+    }
+
+    return $jobStorePath
+}
+
 function Get-ActiveJobs {
     param([Parameter(Mandatory)][string]$Name)
 
+    $jobStorePath = Get-RunnerJobStorePath -Name $Name
     $query = @'
 import json
 import sqlite3
+import sys
 
-with sqlite3.connect("/data/experiments/jobs.sqlite3") as connection:
+with sqlite3.connect(sys.argv[1]) as connection:
     rows = connection.execute(
         "SELECT job_id, status FROM jobs WHERE status IN (?, ?)",
         ("queued", "running"),
@@ -104,7 +132,7 @@ with sqlite3.connect("/data/experiments/jobs.sqlite3") as connection:
 print(json.dumps([{"job_id": job_id, "status": status} for job_id, status in rows]))
 '@
 
-    $raw = Invoke-DockerChecked @("exec", $Name, "python", "-c", $query)
+    $raw = Invoke-DockerChecked @("exec", $Name, "python", "-c", $query, $jobStorePath)
     return (($raw -join [Environment]::NewLine) | ConvertFrom-Json)
 }
 
