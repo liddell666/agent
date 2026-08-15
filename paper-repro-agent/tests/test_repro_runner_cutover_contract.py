@@ -99,23 +99,27 @@ def test_image_resolution_handles_compose_without_an_existing_container() -> Non
 
 def test_forward_cutover_preserves_experiment_data_mount_source() -> None:
     source = _script_source()
-    assert "$oldDataMount" in source
-    assert "$expectedDataSource" in source
-    assert ".Source" in source
-    assert "Get-ComposeExperimentDataSource" in source
-    assert 'Invoke-ComposeChecked -Arguments @("config", "--format", "json")' in source
     compose_resolver = _between(
         source,
         "function Get-ComposeExperimentDataSource {",
         "function Get-ActiveJobs {",
     )
+    assert 'Invoke-ComposeChecked -Arguments @("config", "--format", "json")' in compose_resolver
     assert "ConvertFrom-Json" in compose_resolver
     assert "target -eq \"/data/experiments\"" in compose_resolver
+    assert "IsNullOrWhiteSpace" in compose_resolver
+    assert "Normalize-HostPath" in compose_resolver
     assert ".source" in compose_resolver
-    assert "$composeDataMounts.Count -ne 1" in compose_resolver
+    assert "return Normalize-HostPath -Path $composeDataMount.source" in compose_resolver
+    assert "if ($composeDataMounts.Count -ne 1)" in compose_resolver
     mount_guard = source[source.index("$oldDataMount") : source.index("$legacyName = ")]
     assert "/data/experiments" in mount_guard
     assert "cutover aborted" in mount_guard
+    assert "if ($oldDataMounts.Count -ne 1)" in mount_guard
+    assert "$expectedDataSource = Get-ComposeExperimentDataSource" in mount_guard
+    assert "$actualDataSource = Normalize-HostPath -Path $oldDataMount.Source" in mount_guard
+    assert "[System.StringComparison]::OrdinalIgnoreCase" in mount_guard
+    assert "[string]::Equals($actualDataSource, $expectedDataSource" in mount_guard
     assert mount_guard.index("$oldDataMount") < mount_guard.index(
         'Invoke-DockerChecked @("stop", $ContainerName)'
     )
