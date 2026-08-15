@@ -53,3 +53,9 @@ def test_rollback_requires_no_active_jobs_and_restores_alias() -> None:
     assert "docker rename" in source
     assert "--alias" in source
     assert "Assert-NoActiveJobs" in source
+
+
+def test_image_resolution_handles_compose_without_an_existing_container() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "--images" in source
+    assert "docker image inspect" in source

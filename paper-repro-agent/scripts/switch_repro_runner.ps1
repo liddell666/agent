@@ -30,6 +30,33 @@ function Invoke-ComposeChecked {
     }
 }
 
+function Resolve-ReproRunnerImageId {
+    $composeImageId = "$((Invoke-ComposeChecked -Arguments @("images", "-q", "repro-runner") | Select-Object -Last 1))".Trim()
+    if ($composeImageId -match "^sha256:") {
+        return $composeImageId
+    }
+
+    $imageNames = @(
+        Invoke-ComposeChecked -Arguments @("config", "--images") |
+            ForEach-Object { "$_".Trim() } |
+            Where-Object { $_ } |
+            Select-Object -Unique
+    )
+    $runnerImages = @(
+        $imageNames | Where-Object { $_ -match '(^|[\/_-])repro-runner($|[:@])' }
+    )
+    if ($runnerImages.Count -ne 1) {
+        throw "Compose did not produce a runner image"
+    }
+
+    $inspectedImageId = "$((& docker image inspect --format "{{.Id}}" $runnerImages[0] 2>$null | Select-Object -Last 1))".Trim()
+    if ($LASTEXITCODE -eq 0 -and $inspectedImageId -match "^sha256:") {
+        return $inspectedImageId
+    }
+
+    throw "Compose did not produce a runner image"
+}
+
 function Get-RunnerContainerJson {
     param([Parameter(Mandatory)][string]$Name)
 
@@ -337,10 +364,7 @@ if (-not $SkipBuild) {
     }
 }
 
-$imageId = (Invoke-ComposeChecked -Arguments @("images", "-q", "repro-runner") | Select-Object -Last 1).Trim()
-if ($imageId -notmatch "^sha256:") {
-    throw "Compose did not produce a runner image"
-}
+$imageId = Resolve-ReproRunnerImageId
 
 $smokeName = "repro-runner-provenance-$PID"
 $smokePort = 18081
