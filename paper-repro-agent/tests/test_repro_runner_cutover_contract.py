@@ -44,3 +44,12 @@ def test_cutover_script_validates_image_before_and_container_after_switch() -> N
         "127.0.0.1",
     ):
         assert required in source
+
+
+def test_rollback_requires_no_active_jobs_and_restores_alias() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "Sort-Object Name -Descending" in source
+    assert "docker rm -f" in source
+    assert "docker rename" in source
+    assert "--alias" in source
+    assert "Assert-NoActiveJobs" in source

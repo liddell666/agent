@@ -118,6 +118,95 @@ function Disconnect-RunnerNetworkIfPresent {
     throw "docker network disconnect failed for $Container on ${NetworkName}: $detail"
 }
 
+function Connect-RunnerNetworkAlias {
+    param(
+        [Parameter(Mandatory)][string]$NetworkName,
+        [Parameter(Mandatory)][string]$Container
+    )
+
+    $output = & docker network connect --alias repro-runner $NetworkName $Container 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        return
+    }
+
+    $detail = ($output -join [Environment]::NewLine)
+    if ($detail -notmatch "already exists in network|is already connected to network") {
+        throw "docker network connect failed for $Container on $NetworkName"
+    }
+
+    $connected = Get-RunnerContainerJson -Name $Container
+    $connectedNetwork = $connected.NetworkSettings.Networks.$NetworkName
+    if ($null -ne $connectedNetwork -and @($connectedNetwork.Aliases) -contains "repro-runner") {
+        return
+    }
+
+    Disconnect-RunnerNetworkIfPresent -NetworkName $NetworkName -Container $Container
+    Invoke-DockerChecked @("network", "connect", "--alias", "repro-runner", $NetworkName, $Container) | Out-Null
+}
+
+function Wait-RollbackHealth {
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [int]$MaxAttempts = 60,
+        [int]$DelaySeconds = 2
+    )
+
+    for ($attempt = 0; $attempt -lt $MaxAttempts; $attempt++) {
+        try {
+            $health = Invoke-RestMethod -Uri $Url
+            if ($health.status -eq "ok") {
+                return $health
+            }
+        } catch {
+            $health = $null
+        }
+
+        Start-Sleep -Seconds $DelaySeconds
+    }
+
+    throw "restored runner failed health check."
+}
+
+function Restore-RollbackLegacy {
+    param(
+        [Parameter(Mandatory)][string]$Container,
+        [Parameter(Mandatory)][string]$LegacyName,
+        [Parameter(Mandatory)][string]$NetworkName,
+        [Parameter(Mandatory)][bool]$LegacyRenamed
+    )
+
+    $restoreErrors = 0
+    if (-not $LegacyRenamed) {
+        try {
+            Invoke-DockerChecked @("rename", $LegacyName, $Container) | Out-Null
+            $LegacyRenamed = $true
+        } catch {
+            $restoreErrors++
+        }
+    }
+
+    if ($LegacyRenamed) {
+        try {
+            Connect-RunnerNetworkAlias -NetworkName $NetworkName -Container $Container
+        } catch {
+            $restoreErrors++
+        }
+
+        try {
+            $restored = Get-RunnerContainerJson -Name $Container
+            if (-not [bool]$restored.State.Running) {
+                Invoke-DockerChecked @("start", $Container) | Out-Null
+            }
+        } catch {
+            $restoreErrors++
+        }
+    }
+
+    if ($restoreErrors -gt 0) {
+        throw "legacy runner restoration was incomplete."
+    }
+}
+
 function Restore-RunnerState {
     param(
         [Parameter(Mandatory)][string]$Container,
@@ -167,7 +256,73 @@ function Restore-RunnerState {
 # -Rollback
 
 if ($Rollback) {
-    throw "Rollback is deferred to Task 3. Task 2 implements forward cutover only."
+    $legacy = @(
+        Invoke-DockerChecked @("ps", "-a", "--format", "{{.Names}}") |
+            ForEach-Object { [pscustomobject]@{ Name = ([string]$_).Trim() } } |
+            Where-Object { $_.Name -like "repro-runner-legacy-*" } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+    )
+    if ($legacy.Count -eq 0 -or [string]::IsNullOrWhiteSpace($legacy[0].Name)) {
+        throw "no retained legacy runner is available for rollback."
+    }
+
+    $legacyName = $legacy[0].Name
+    if ($legacyName -eq $ContainerName) {
+        throw "the selected legacy runner cannot also be the current runner."
+    }
+
+    $null = Get-RunnerContainerJson -Name $legacyName
+    $null = Get-RunnerContainerJson -Name $ContainerName
+    Assert-NoActiveJobs -Name $ContainerName
+
+    $currentStopped = $false
+    $replacementRemoved = $false
+    $legacyRenamed = $false
+    $rollbackHealth = $null
+
+    try {
+        Invoke-DockerChecked @("stop", $ContainerName) | Out-Null
+        $currentStopped = $true
+
+        Invoke-DockerChecked @("rm", "-f", $ContainerName) | Out-Null
+        $replacementRemoved = $true
+
+        Invoke-DockerChecked @("rename", $legacyName, $ContainerName) | Out-Null
+        $legacyRenamed = $true
+
+        Connect-RunnerNetworkAlias -NetworkName $networkName -Container $ContainerName
+
+        $restored = Get-RunnerContainerJson -Name $ContainerName
+        if (-not [bool]$restored.State.Running) {
+            Invoke-DockerChecked @("start", $ContainerName) | Out-Null
+        }
+
+        $rollbackHealth = Wait-RollbackHealth -Url "http://127.0.0.1:8001/healthz" -MaxAttempts 60 -DelaySeconds 2
+    } catch {
+        $failure = $_
+        if ($replacementRemoved) {
+            try {
+                Restore-RollbackLegacy -Container $ContainerName -LegacyName $legacyName -NetworkName $networkName -LegacyRenamed $legacyRenamed
+            } catch {
+                Write-Warning "Rollback restoration encountered an additional error while restoring the legacy runner."
+            }
+        } elseif ($currentStopped) {
+            try {
+                Invoke-DockerChecked @("start", $ContainerName) | Out-Null
+            } catch {
+                Write-Warning "Rollback restoration encountered an additional error while restarting the current runner."
+            }
+        }
+        throw $failure
+    }
+
+    Write-Host "Status: $($rollbackHealth.status)"
+    Write-Host "Service version: $($rollbackHealth.service_version)"
+    Write-Host "Git commit: $($rollbackHealth.git_commit)"
+    Write-Host "Source digest: $($rollbackHealth.source_digest)"
+    Write-Host "Workflow version: $($rollbackHealth.workflow_version)"
+    exit 0
 }
 
 $expectedCommit = (& git -C $projectRoot rev-parse HEAD 2>$null).Trim()

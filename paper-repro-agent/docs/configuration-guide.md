@@ -284,3 +284,25 @@ Invoke-WebRequest http://localhost:8001/healthz
 Do not place API keys, raw CSV rows, PDF text or full request payloads in smoke
 output or logs. The existing synchronous V2/V3 endpoints remain available as
 rollback and compatibility paths while the reliable job workflow is verified.
+
+## 9. repro-runner cutover and rollback
+
+Run the guarded operator commands from the project directory:
+
+```powershell
+# Build, preflight, and switch. The command aborts if a job is queued/running.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\switch_repro_runner.ps1
+
+# Roll back to the retained legacy container after confirming no active job.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\switch_repro_runner.ps1 -Rollback
+```
+
+Both forward cutover and rollback stop before mutation when the current runner
+has a `queued` or `running` job. A job marked `needs_retry` keeps its metadata
+and staged input under `/data/experiments`; after the replacement is healthy,
+the worker can resume that job. The retained legacy container and experiment
+data are not deleted by either procedure.
+
+Operator output and diagnostic logs must contain only status and provenance
+metadata. Never print secrets, protocol tokens, raw CSV rows, PDF text, raw
+inputs, or full request payloads.
