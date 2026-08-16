@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 import subprocess
+import tempfile
 
 
 SCRIPT = Path("scripts/switch_repro_runner.ps1")
@@ -173,10 +175,11 @@ def test_explicit_data_source_is_validated_before_build() -> None:
         "compose.runner-data-source.yaml",
         "ComposeOverrideFile",
         "composeFileArguments",
-        "IsPathFullyQualified",
+        "GetPathRoot",
         "PSIsContainer",
     ):
         assert required in source
+    assert "IsPathFullyQualified" not in source
 
 
 def test_compose_wrapper_uses_effective_file_arguments() -> None:
@@ -209,6 +212,43 @@ foreach ($root in $roots) {{
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_resolve_experiment_data_source_runs_under_windows_powershell_5_1() -> None:
+    source = _script_source()
+    normalize_and_resolve = (
+        _between(
+            source,
+            "function Normalize-HostPath {",
+            "function Resolve-ExperimentDataSource {",
+        )
+        + _between(
+            source,
+            "function Resolve-ExperimentDataSource {",
+            "function Get-ComposeExperimentDataSource {",
+        )
+    )
+    command = f'''if ($PSVersionTable.PSVersion.Major -ne 5) {{
+    throw "regression must execute under Windows PowerShell 5.1"
+}}
+{normalize_and_resolve}
+$resolved = Resolve-ExperimentDataSource -Path $env:CUTOVER_TEST_DATA_SOURCE
+$expected = [System.IO.Path]::GetFullPath($env:CUTOVER_TEST_DATA_SOURCE)
+if ($resolved -ne $expected) {{
+    throw "resolved experiment data source was not normalized correctly"
+}}
+'''
+    with tempfile.TemporaryDirectory() as data_source:
+        environment = os.environ.copy()
+        environment["CUTOVER_TEST_DATA_SOURCE"] = data_source
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+    assert result.returncode == 0 and not result.stderr, result.stderr
 
 
 def test_configuration_guide_documents_explicit_data_source_cutover() -> None:

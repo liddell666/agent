@@ -84,7 +84,11 @@ function Normalize-HostPath {
 function Resolve-ExperimentDataSource {
     param([Parameter(Mandatory)][string]$Path)
 
-    if (-not [System.IO.Path]::IsPathFullyQualified($Path)) {
+    $pathRoot = [System.IO.Path]::GetPathRoot($Path)
+    if (
+        [string]::IsNullOrWhiteSpace($pathRoot) -or
+        ($pathRoot.Length -eq 2 -and $pathRoot[1] -eq ':')
+    ) {
         throw "runner data source must be an absolute host directory"
     }
 
