@@ -2,12 +2,17 @@ param(
     [string]$WorkflowVersion = "multimodel-0.8.0",
     [switch]$SkipBuild,
     [switch]$Rollback,
-    [string]$ContainerName = "repro-runner"
+    [string]$ContainerName = "repro-runner",
+    [string]$ExperimentDataSource = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $networkName = "docker_default"
+$composeBaseFile = Join-Path $projectRoot "compose.yaml"
+$composeOverrideFile = Join-Path $projectRoot "compose.runner-data-source.yaml"
+$composeFileArguments = @("-f", $composeBaseFile)
+$composeDataSourceEnvName = "REPRO_RUNNER_CUTOVER_DATA_SOURCE"
 
 function Invoke-DockerChecked {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -24,7 +29,7 @@ function Invoke-ComposeChecked {
 
     Push-Location $projectRoot
     try {
-        return Invoke-DockerChecked -Arguments (@("compose") + $Arguments)
+        return Invoke-DockerChecked -Arguments (@("compose") + ($composeFileArguments + $Arguments))
     } finally {
         Pop-Location
     }
@@ -68,6 +73,21 @@ function Normalize-HostPath {
     param([Parameter(Mandatory)][string]$Path)
 
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
+
+function Resolve-ExperimentDataSource {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not [System.IO.Path]::IsPathFullyQualified($Path)) {
+        throw "runner data source must be an absolute host directory"
+    }
+
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if (-not [bool]$item.PSIsContainer) {
+        throw "runner data source must be a directory"
+    }
+
+    return Normalize-HostPath -Path $item.FullName
 }
 
 function Get-ComposeExperimentDataSource {
@@ -332,6 +352,10 @@ function Restore-RunnerState {
 # REPRO_RUNNER_WORKFLOW_VERSION
 # -Rollback
 
+if ($Rollback -and -not [string]::IsNullOrWhiteSpace($ExperimentDataSource)) {
+    throw "runner data source cannot be supplied during rollback"
+}
+
 if ($Rollback) {
     $legacy = @(
         Invoke-DockerChecked @("ps", "-a", "--format", "{{.Names}}") |
@@ -402,99 +426,126 @@ if ($Rollback) {
     exit 0
 }
 
-$expectedCommit = (& git -C $projectRoot rev-parse HEAD 2>$null).Trim()
-if ($expectedCommit -notmatch "^[0-9a-f]{7,64}$") {
-    throw "could not resolve a valid Git commit"
+$previousDataSourceEnvExists = Test-Path "Env:$composeDataSourceEnvName"
+$previousDataSourceEnvValue = $env:REPRO_RUNNER_CUTOVER_DATA_SOURCE
+$dataSourceEnvConfigured = $false
+
+if (-not [string]::IsNullOrWhiteSpace($ExperimentDataSource)) {
+    $resolvedDataSource = Resolve-ExperimentDataSource -Path $ExperimentDataSource
+    $env:REPRO_RUNNER_CUTOVER_DATA_SOURCE = $resolvedDataSource
+    $dataSourceEnvConfigured = $true
+    $composeFileArguments += @("-f", $composeOverrideFile)
 }
-
-if (-not $SkipBuild) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts/build_repro_runner.ps1") -WorkflowVersion $WorkflowVersion
-    if ($LASTEXITCODE -ne 0) {
-        throw "runner image build failed"
-    }
-}
-
-$imageId = Resolve-ReproRunnerImageId
-
-$smokeName = "repro-runner-provenance-$PID"
-$smokePort = 18081
-try {
-    Invoke-DockerChecked @("run", "-d", "--name", $smokeName, "-p", "127.0.0.1:$($smokePort):8001", $imageId) | Out-Null
-    $smokeContainer = Get-RunnerContainerJson -Name $smokeName
-    $smokeNetworks = @($smokeContainer.NetworkSettings.Networks.PSObject.Properties.Name)
-    if ($smokeNetworks -contains $networkName) {
-        throw "smoke container must not be attached to $networkName"
-    }
-
-    $smokeHealth = Wait-RunnerHealth -Url "http://127.0.0.1:$($smokePort)/healthz" -ExpectedCommit $expectedCommit -ExpectedWorkflowVersion $WorkflowVersion -Context "new runner image" -MaxAttempts 30 -DelaySeconds 1
-} finally {
-    & docker rm -f $smokeName 2>$null | Out-Null
-}
-
-$oldRunner = Get-RunnerContainerJson -Name $ContainerName
-Assert-NoActiveJobs -Name $ContainerName
-
-$oldDataMounts = @($oldRunner.Mounts | Where-Object { $_.Destination -eq "/data/experiments" })
-if ($oldDataMounts.Count -ne 1) {
-    throw "runner data mount cutover aborted: expected exactly one /data/experiments mount on $ContainerName"
-}
-
-$oldDataMount = $oldDataMounts[0]
-$expectedDataSource = Get-ComposeExperimentDataSource
-$actualDataSource = Normalize-HostPath -Path $oldDataMount.Source
-if (-not [string]::Equals($actualDataSource, $expectedDataSource, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "runner data mount cutover aborted: live /data/experiments source '$actualDataSource' does not match expected '$expectedDataSource'"
-}
-
-$legacyName=$null
-$oldStopped = $false
-$oldRenamed = $false
-$replacementMayExist = $false
-$cutoverHealth = $null
 
 try {
-    Invoke-DockerChecked @("stop", $ContainerName) | Out-Null
-    $oldStopped = $true
-
-    $legacyName = "repro-runner-legacy-$(Get-Date -Format yyyyMMdd-HHmmss)"
-    Invoke-DockerChecked @("rename", $ContainerName, $legacyName) | Out-Null
-    $oldRenamed = $true
-
-    Disconnect-RunnerNetworkIfPresent -NetworkName $networkName -Container $legacyName
-
-    $replacementMayExist = $true
-    Invoke-ComposeChecked -Arguments @("up", "-d", "--no-deps", "repro-runner") | Out-Null
-
-    $cutoverHealth = Wait-RunnerHealth -Url "http://127.0.0.1:8001/healthz" -ExpectedCommit $expectedCommit -ExpectedWorkflowVersion $WorkflowVersion -Context "active runner" -MaxAttempts 60 -DelaySeconds 2
-
-    $active = Get-RunnerContainerJson -Name $ContainerName
-    $mounts = @($active.Mounts | ForEach-Object { $_.Destination })
-    if ($mounts -notcontains "/data/experiments") {
-        throw "active runner lost /data/experiments mount"
+    $expectedDataSource = Get-ComposeExperimentDataSource
+    $buildArguments = @("-WorkflowVersion", $WorkflowVersion)
+    if ($dataSourceEnvConfigured) {
+        $buildArguments += @("-ComposeOverrideFile", $composeOverrideFile)
     }
 
-    $network = $active.NetworkSettings.Networks.$networkName
-    if ($null -eq $network) {
-        throw "active runner is not attached to $networkName"
+    $expectedCommit = (& git -C $projectRoot rev-parse HEAD 2>$null).Trim()
+    if ($expectedCommit -notmatch "^[0-9a-f]{7,64}$") {
+        throw "could not resolve a valid Git commit"
     }
 
-    $aliases = @($network.Aliases)
-    if ($aliases -notcontains "repro-runner") {
-        throw "active runner lost repro-runner network alias"
+    if (-not $SkipBuild) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $projectRoot "scripts/build_repro_runner.ps1") @buildArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "runner image build failed"
+        }
     }
-} catch {
-    $failure = $_
+
+    $imageId = Resolve-ReproRunnerImageId
+
+    $smokeName = "repro-runner-provenance-$PID"
+    $smokePort = 18081
     try {
-        Restore-RunnerState -Container $ContainerName -LegacyName $legacyName -NetworkName $networkName -OldStopped $oldStopped -OldRenamed $oldRenamed -ReplacementMayExist $replacementMayExist
-    } catch {
-        Write-Warning "Cutover restoration encountered an additional error while attempting to restore the legacy runner."
-    }
-    throw $failure
-}
+        Invoke-DockerChecked @("run", "-d", "--name", $smokeName, "-p", "127.0.0.1:$($smokePort):8001", $imageId) | Out-Null
+        $smokeContainer = Get-RunnerContainerJson -Name $smokeName
+        $smokeNetworks = @($smokeContainer.NetworkSettings.Networks.PSObject.Properties.Name)
+        if ($smokeNetworks -contains $networkName) {
+            throw "smoke container must not be attached to $networkName"
+        }
 
-Write-Host "Runner cutover succeeded."
-Write-Host "Status: $($cutoverHealth.status)"
-Write-Host "Git commit: $($cutoverHealth.git_commit)"
-Write-Host "Workflow version: $($cutoverHealth.workflow_version)"
-Write-Host "Source digest: $($cutoverHealth.source_digest)"
-Write-Host "Legacy container retained as $legacyName"
+        $smokeHealth = Wait-RunnerHealth -Url "http://127.0.0.1:$($smokePort)/healthz" -ExpectedCommit $expectedCommit -ExpectedWorkflowVersion $WorkflowVersion -Context "new runner image" -MaxAttempts 30 -DelaySeconds 1
+    } finally {
+        & docker rm -f $smokeName 2>$null | Out-Null
+    }
+
+    $oldRunner = Get-RunnerContainerJson -Name $ContainerName
+    Assert-NoActiveJobs -Name $ContainerName
+
+    $oldDataMounts = @($oldRunner.Mounts | Where-Object { $_.Destination -eq "/data/experiments" })
+    if ($oldDataMounts.Count -ne 1) {
+        throw "runner data mount cutover aborted: expected exactly one /data/experiments mount on $ContainerName"
+    }
+
+    $oldDataMount = $oldDataMounts[0]
+    $expectedDataSource = Get-ComposeExperimentDataSource
+    $actualDataSource = Normalize-HostPath -Path $oldDataMount.Source
+    if (-not [string]::Equals($actualDataSource, $expectedDataSource, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "runner data mount cutover aborted: live /data/experiments source '$actualDataSource' does not match expected '$expectedDataSource'"
+    }
+
+    $legacyName=$null
+    $oldStopped = $false
+    $oldRenamed = $false
+    $replacementMayExist = $false
+    $cutoverHealth = $null
+
+    try {
+        Invoke-DockerChecked @("stop", $ContainerName) | Out-Null
+        $oldStopped = $true
+
+        $legacyName = "repro-runner-legacy-$(Get-Date -Format yyyyMMdd-HHmmss)"
+        Invoke-DockerChecked @("rename", $ContainerName, $legacyName) | Out-Null
+        $oldRenamed = $true
+
+        Disconnect-RunnerNetworkIfPresent -NetworkName $networkName -Container $legacyName
+
+        $replacementMayExist = $true
+        Invoke-ComposeChecked -Arguments @("up", "-d", "--no-deps", "repro-runner") | Out-Null
+
+        $cutoverHealth = Wait-RunnerHealth -Url "http://127.0.0.1:8001/healthz" -ExpectedCommit $expectedCommit -ExpectedWorkflowVersion $WorkflowVersion -Context "active runner" -MaxAttempts 60 -DelaySeconds 2
+
+        $active = Get-RunnerContainerJson -Name $ContainerName
+        $mounts = @($active.Mounts | ForEach-Object { $_.Destination })
+        if ($mounts -notcontains "/data/experiments") {
+            throw "active runner lost /data/experiments mount"
+        }
+
+        $network = $active.NetworkSettings.Networks.$networkName
+        if ($null -eq $network) {
+            throw "active runner is not attached to $networkName"
+        }
+
+        $aliases = @($network.Aliases)
+        if ($aliases -notcontains "repro-runner") {
+            throw "active runner lost repro-runner network alias"
+        }
+    } catch {
+        $failure = $_
+        try {
+            Restore-RunnerState -Container $ContainerName -LegacyName $legacyName -NetworkName $networkName -OldStopped $oldStopped -OldRenamed $oldRenamed -ReplacementMayExist $replacementMayExist
+        } catch {
+            Write-Warning "Cutover restoration encountered an additional error while attempting to restore the legacy runner."
+        }
+        throw $failure
+    }
+
+    Write-Host "Runner cutover succeeded."
+    Write-Host "Status: $($cutoverHealth.status)"
+    Write-Host "Git commit: $($cutoverHealth.git_commit)"
+    Write-Host "Workflow version: $($cutoverHealth.workflow_version)"
+    Write-Host "Source digest: $($cutoverHealth.source_digest)"
+    Write-Host "Legacy container retained as $legacyName"
+} finally {
+    if ($dataSourceEnvConfigured) {
+        if ($previousDataSourceEnvExists) {
+            Set-Item -Path "Env:$composeDataSourceEnvName" -Value $previousDataSourceEnvValue
+        } else {
+            [Environment]::SetEnvironmentVariable($composeDataSourceEnvName, $null, [System.EnvironmentVariableTarget]::Process)
+        }
+    }
+}

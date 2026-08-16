@@ -161,3 +161,24 @@ def test_active_job_guard_uses_effective_job_store_path() -> None:
     assert "$jobStorePath = Get-RunnerJobStorePath" in active_jobs
     assert "sys.argv[1]" in active_jobs
     assert '"python", "-c", $query, $jobStorePath' in active_jobs
+
+
+def test_explicit_data_source_is_validated_before_build() -> None:
+    source = _script_source()
+    for required in (
+        "ExperimentDataSource",
+        "Resolve-ExperimentDataSource",
+        "REPRO_RUNNER_CUTOVER_DATA_SOURCE",
+        "compose.runner-data-source.yaml",
+        "ComposeOverrideFile",
+        "composeFileArguments",
+        "IsPathFullyQualified",
+        "PSIsContainer",
+    ):
+        assert required in source
+
+
+def test_compose_wrapper_uses_effective_file_arguments() -> None:
+    source = _script_source()
+    wrapper = _between(source, "function Invoke-ComposeChecked {", "function Resolve-ReproRunnerImageId {")
+    assert "($composeFileArguments + $Arguments)" in wrapper
