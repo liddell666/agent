@@ -209,3 +209,11 @@ foreach ($root in $roots) {{
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_configuration_guide_documents_explicit_data_source_cutover() -> None:
+    guide = Path("docs/configuration-guide.md").read_text(encoding="utf-8")
+    assert "-ExperimentDataSource" in guide
+    assert "paper-repro-agent\\data\\experiments" in guide
+    assert "does not copy" in guide.lower()
+    assert "does not delete" in guide.lower()

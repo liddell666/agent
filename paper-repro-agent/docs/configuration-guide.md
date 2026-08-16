@@ -293,6 +293,9 @@ Run the guarded operator commands from the project directory:
 # Build, preflight, and switch. The command aborts if a job is queued/running.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\switch_repro_runner.ps1
 
+# Build and switch using an explicit external experiment-data directory.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\switch_repro_runner.ps1 -ExperimentDataSource 'C:\Users\17716\Documents\arcgis\paper-repro-agent\data\experiments'
+
 # Roll back to the retained legacy container after confirming no active job.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\switch_repro_runner.ps1 -Rollback
 ```
@@ -301,7 +304,10 @@ Both forward cutover and rollback stop before mutation when the current runner
 has a `queued` or `running` job. A job marked `needs_retry` keeps its metadata
 and staged input under `/data/experiments`; after the replacement is healthy,
 the worker can resume that job. The retained legacy container and experiment
-data are not deleted by either procedure.
+data are not deleted by either procedure. When an explicit `-ExperimentDataSource`
+is supplied, the effective Compose source is compared with the live
+`/data/experiments` bind source before stop/rename. The cutover does not copy
+the directory and does not delete the directory.
 
 Provenance has two layers: the temporary image smoke checks the built image
 without Compose bind mounts, while the active Compose runner mounts the host
