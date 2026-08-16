@@ -251,7 +251,7 @@ Files:
 - Verify: scripts/switch_repro_runner.ps1
 - Verify: compose.runner-data-source.yaml
 - Verify: docs/configuration-guide.md
-- Update report: docs/superpowers/sdd/2026-08-15-runner-cutover/task-4-report.md
+- Update report: .superpowers/sdd/2026-08-15-runner-cutover/task-4-report.md
 
 Interfaces:
 - Forward: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\switch_repro_runner.ps1 -ExperimentDataSource 'C:\Users\17716\Documents\arcgis\paper-repro-agent\data\experiments'.
