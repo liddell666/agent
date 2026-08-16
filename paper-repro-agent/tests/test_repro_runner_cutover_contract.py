@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 SCRIPT = Path("scripts/switch_repro_runner.ps1")
@@ -182,3 +183,29 @@ def test_compose_wrapper_uses_effective_file_arguments() -> None:
     source = _script_source()
     wrapper = _between(source, "function Invoke-ComposeChecked {", "function Resolve-ReproRunnerImageId {")
     assert "($composeFileArguments + $Arguments)" in wrapper
+
+
+def test_normalize_host_path_preserves_filesystem_roots() -> None:
+    source = _script_source()
+    normalizer = _between(
+        source,
+        "function Normalize-HostPath {",
+        "function Resolve-ExperimentDataSource {",
+    )
+    command = f'''{normalizer}
+$roots = @("C:\\", "/")
+foreach ($root in $roots) {{
+    $expected = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($root))
+    $actual = Normalize-HostPath -Path $root
+    if ($actual -ne $expected) {{
+        throw "normalized root path was malformed"
+    }}
+}}
+'''
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

@@ -72,7 +72,13 @@ function Get-RunnerContainerJson {
 function Normalize-HostPath {
     param([Parameter(Mandatory)][string]$Path)
 
-    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $rootPath = [System.IO.Path]::GetPathRoot($fullPath)
+    if ([string]::Equals($fullPath, $rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $fullPath
+    }
+
+    return $fullPath.TrimEnd('\', '/')
 }
 
 function Resolve-ExperimentDataSource {
