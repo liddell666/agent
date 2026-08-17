@@ -17,11 +17,31 @@ $composeDataSourceEnvName = "REPRO_RUNNER_CUTOVER_DATA_SOURCE"
 function Invoke-DockerChecked {
     param([Parameter(Mandatory)][string[]]$Arguments)
 
-    $output = & docker @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & docker @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($exitCode -ne 0) {
         throw "docker $($Arguments -join ' ') failed: $output"
     }
     return $output
+}
+
+function Invoke-DockerPython {
+    param(
+        [Parameter(Mandatory)][string]$Container,
+        [Parameter(Mandatory)][string]$Source,
+        [string[]]$Arguments = @()
+    )
+
+    $encodedSource = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Source))
+    $bootstrap = "import base64; exec(compile(base64.b64decode('$encodedSource'), '<runner-python>', 'exec'))"
+    return Invoke-DockerChecked -Arguments (@("exec", $Container, "python", "-c", $bootstrap) + $Arguments)
 }
 
 function Invoke-ComposeChecked {
@@ -159,7 +179,7 @@ with sqlite3.connect(sys.argv[1]) as connection:
 print(json.dumps([{"job_id": job_id, "status": status} for job_id, status in rows]))
 '@
 
-    $raw = Invoke-DockerChecked @("exec", $Name, "python", "-c", $query, $jobStorePath)
+    $raw = Invoke-DockerPython -Container $Name -Source $query -Arguments @($jobStorePath)
     return (($raw -join [Environment]::NewLine) | ConvertFrom-Json)
 }
 
@@ -514,8 +534,9 @@ try {
 
         Disconnect-RunnerNetworkIfPresent -NetworkName $networkName -Container $legacyName
 
+        $cutoverProjectName = "repro-runner-cutover-$(Get-Date -Format yyyyMMdd-HHmmss)-$PID"
         $replacementMayExist = $true
-        Invoke-ComposeChecked -Arguments @("up", "-d", "--no-deps", "repro-runner") | Out-Null
+        Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName) + $composeFileArguments + @("up", "-d", "--no-build", "--no-deps", "repro-runner")) | Out-Null
 
         $cutoverHealth = Wait-RunnerHealth -Url "http://127.0.0.1:8001/healthz" -ExpectedCommit $expectedCommit -ExpectedWorkflowVersion $WorkflowVersion -Context "active runner" -MaxAttempts 60 -DelaySeconds 2
 

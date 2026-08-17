@@ -1,5 +1,6 @@
 services:
   repro-runner:
+    image: paper-repro-agent-repro-runner
     volumes:
       - type: bind
         source: "${REPRO_RUNNER_CUTOVER_DATA_SOURCE:?REPRO_RUNNER_CUTOVER_DATA_SOURCE must be set when using this override}"

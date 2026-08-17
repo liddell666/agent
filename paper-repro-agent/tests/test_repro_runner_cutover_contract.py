@@ -1,7 +1,10 @@
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
+
+import pytest
 
 
 SCRIPT = Path("scripts/switch_repro_runner.ps1")
@@ -62,6 +65,28 @@ def test_cutover_script_validates_image_before_and_container_after_switch() -> N
         "127.0.0.1",
     ):
         assert required in source
+
+
+def test_forward_cutover_uses_a_fresh_compose_project_after_renaming_runner() -> None:
+    source = _script_source()
+    cutover = source[source.index("$legacyName=$null") :]
+
+    assert "$cutoverProjectName = \"repro-runner-cutover-$(Get-Date -Format yyyyMMdd-HHmmss)-$PID\"" in cutover
+    assert (
+        'Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName) + '
+        '$composeFileArguments + @("up", "-d", "--no-build", "--no-deps", "repro-runner"))'
+    ) in cutover
+    _assert_in_order(
+        cutover,
+        'Invoke-DockerChecked @("rename", $ContainerName, $legacyName)',
+        "$cutoverProjectName =",
+        'Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName)',
+    )
+
+
+def test_external_data_source_override_pins_the_built_runner_image() -> None:
+    override = Path("compose.runner-data-source.yaml").read_text(encoding="utf-8")
+    assert "image: paper-repro-agent-repro-runner" in override
 
 
 def test_rollback_requires_no_active_jobs_and_restores_alias() -> None:
@@ -163,7 +188,91 @@ def test_active_job_guard_uses_effective_job_store_path() -> None:
     )
     assert "$jobStorePath = Get-RunnerJobStorePath" in active_jobs
     assert "sys.argv[1]" in active_jobs
-    assert '"python", "-c", $query, $jobStorePath' in active_jobs
+    assert "Invoke-DockerPython -Container $Name -Source $query -Arguments @($jobStorePath)" in active_jobs
+
+
+def test_active_job_guard_transports_python_source_safely_for_windows_powershell() -> None:
+    source = _script_source()
+    active_jobs = _between(
+        source,
+        "function Get-ActiveJobs {",
+        "function Assert-NoActiveJobs {",
+    )
+
+    assert "function Invoke-DockerPython" in source
+    assert "[Convert]::ToBase64String" in source
+    assert "base64.b64decode" in source
+    assert "Invoke-DockerPython -Container $Name -Source $query -Arguments @($jobStorePath)" in active_jobs
+    assert '"python", "-c", $query, $jobStorePath' not in active_jobs
+
+
+def test_checked_docker_accepts_successful_stderr_under_windows_powershell_5_1() -> None:
+    source = _script_source()
+    checked = _between(
+        source,
+        "function Invoke-DockerChecked {",
+        "function Invoke-DockerPython {",
+    )
+    assert "$previousErrorActionPreference" in checked
+    assert '$ErrorActionPreference = "Continue"' in checked
+    assert "$ErrorActionPreference = $previousErrorActionPreference" in checked
+    command = f'''if ($PSVersionTable.PSVersion.Major -ne 5) {{
+    throw "regression must execute under Windows PowerShell 5.1"
+}}
+{checked}
+'''
+
+    if shutil.which("docker") is None:
+        pytest.skip("Docker is required for the native stderr compatibility regression")
+    image_check = subprocess.run(
+        ["docker", "image", "inspect", "paper-repro-agent-repro-runner"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if image_check.returncode != 0:
+        pytest.skip("the locally built runner image is required for the native stderr compatibility regression")
+
+    with tempfile.TemporaryDirectory() as compose_dir:
+        compose_file = Path(compose_dir, "compose.yaml")
+        compose_file.write_text(
+            "services:\n"
+            "  stderr-probe:\n"
+            "    image: paper-repro-agent-repro-runner\n"
+            "    command: [\"sh\", \"-c\", \"sleep 2\"]\n",
+            encoding="utf-8",
+        )
+        project_name = f"runner-ps51-stderr-{os.getpid()}"
+        escaped_compose_file = str(compose_file).replace("'", "''")
+        command += (
+            f"Invoke-DockerChecked -Arguments @('compose', '-p', '{project_name}', "
+            f"'-f', '{escaped_compose_file}', 'up', '-d') | Out-Null\n"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", command],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-p",
+                    project_name,
+                    "-f",
+                    str(compose_file),
+                    "down",
+                    "--remove-orphans",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+    assert result.returncode == 0 and not result.stderr, result.stderr
 
 
 def test_explicit_data_source_is_validated_before_build() -> None:
