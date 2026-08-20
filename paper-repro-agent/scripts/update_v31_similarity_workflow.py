@@ -11,7 +11,22 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+try:
+    from scripts.workflow_release_integrity import (
+        canonical_graph,
+        compare_release_layers,
+        graph_digest,
+    )
+except ModuleNotFoundError:  # pragma: no cover - direct ``python scripts/...`` use
+    from workflow_release_integrity import (  # type: ignore[no-redef]
+        canonical_graph,
+        compare_release_layers,
+        graph_digest,
+    )
 
 
 APP_ID = "b9a766a0-0ad0-415b-8d42-60459c92bec7"
@@ -148,6 +163,500 @@ def main(comparison_json: str = "", assessment_json: str = "") -> dict:
     ])
     return {"markdown_summary": "\\n".join(lines)}
 '''
+
+
+class ReleaseService(Protocol):
+    """Side-effect boundary used by the release orchestration functions."""
+
+    def read_draft(self, *, app_model: object, session: object) -> object: ...
+
+    def read_published(self, *, app_model: object, session: object) -> object: ...
+
+    def create_backup(
+        self, *, app_model: object, session: object, mark: ReleaseMark
+    ) -> object: ...
+
+    def save_draft(
+        self,
+        *,
+        app_model: object,
+        session: object,
+        graph: dict[str, object],
+    ) -> object: ...
+
+    def publish(
+        self, *, app_model: object, session: object, mark: ReleaseMark
+    ) -> object: ...
+
+    def rollback(
+        self,
+        *,
+        app_model: object,
+        session: object,
+        workflow_id: str,
+        mark: ReleaseMark,
+    ) -> object: ...
+
+
+@dataclass(frozen=True)
+class ReleaseMark:
+    """Human-readable Dify version labels for a release and its backup."""
+
+    name: str
+    comment: str = ""
+    backup_name: str = ""
+    backup_comment: str = ""
+
+
+@dataclass(frozen=True)
+class ExpectedReleaseIdentity:
+    """Optimistic concurrency guard required before any release mutation."""
+
+    app_id: str
+    draft_digest: str
+    draft_workflow_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReleaseState:
+    """Canonical read-only snapshot of one Dify application's release state."""
+
+    app_id: str
+    draft_workflow_id: str
+    published_workflow_id: str
+    draft_graph: dict[str, object]
+    published_graph: dict[str, object]
+    draft_digest: str
+    published_digest: str
+
+
+def inspect_release_state(
+    service: ReleaseService,
+    app_model: object,
+    session: object,
+    expected_app_id: str,
+) -> ReleaseState:
+    """Read and canonicalize draft/published state without any write calls."""
+    app_id = str(getattr(app_model, "id", ""))
+    if app_id != expected_app_id:
+        raise ValueError(
+            f"Dify application identity mismatch: expected {expected_app_id}, got {app_id}"
+        )
+
+    draft = service.read_draft(app_model=app_model, session=session)
+    if draft is None:
+        raise ValueError("draft workflow was not found")
+    published = service.read_published(app_model=app_model, session=session)
+    if published is None:
+        raise ValueError("published workflow was not found")
+
+    draft_graph = canonical_graph(getattr(draft, "graph_dict"))
+    published_graph = canonical_graph(getattr(published, "graph_dict"))
+    return ReleaseState(
+        app_id=app_id,
+        draft_workflow_id=str(getattr(draft, "id")),
+        published_workflow_id=str(getattr(published, "id")),
+        draft_graph=draft_graph,
+        published_graph=published_graph,
+        draft_digest=graph_digest(draft_graph),
+        published_digest=graph_digest(published_graph),
+    )
+
+
+def publish_verified_graph(
+    service: ReleaseService,
+    app_model: object,
+    session: object,
+    candidate_graph: dict[str, object],
+    expected_identity: ExpectedReleaseIdentity | ReleaseState | Mapping[str, object],
+    mark: ReleaseMark | Mapping[str, object] | str,
+) -> dict[str, object]:
+    """Back up, publish, verify, and explicitly roll back a candidate graph."""
+    identity = _normalize_expected_identity(expected_identity)
+    release_mark = _normalize_release_mark(mark)
+    candidate = copy.deepcopy(candidate_graph)
+    candidate_digest = graph_digest(candidate)
+
+    state = inspect_release_state(
+        service,
+        app_model,
+        session,
+        expected_app_id=identity.app_id,
+    )
+    if state.draft_digest != identity.draft_digest:
+        raise ValueError(
+            "Dify draft digest mismatch: "
+            f"expected {identity.draft_digest}, got {state.draft_digest}"
+        )
+    if (
+        identity.draft_workflow_id is not None
+        and state.draft_workflow_id != identity.draft_workflow_id
+    ):
+        raise ValueError(
+            "Dify draft workflow identity mismatch: "
+            f"expected {identity.draft_workflow_id}, got {state.draft_workflow_id}"
+        )
+
+    preexisting_drift = compare_release_layers(
+        expected_source_digest=state.draft_digest,
+        actual_source_digest=state.draft_digest,
+        dsl_graph=state.draft_graph,
+        draft_graph=state.draft_graph,
+        published_graph=state.published_graph,
+    )
+
+    backup = service.create_backup(
+        app_model=app_model,
+        session=session,
+        mark=ReleaseMark(
+            name=release_mark.backup_name or f"Backup before {release_mark.name}",
+            comment=release_mark.backup_comment,
+        ),
+    )
+    backup_id = _workflow_id(backup, "backup")
+    backup_graph = getattr(backup, "graph_dict", None)
+    if backup_graph is not None and graph_digest(backup_graph) != state.draft_digest:
+        raise RuntimeError("Dify backup digest mismatch; draft was not saved")
+
+    published_id: str | None = None
+    active_id: str | None = None
+    active_digest: str | None = None
+    operation = "save_draft"
+    try:
+        service.save_draft(
+            app_model=app_model,
+            session=session,
+            graph=candidate,
+        )
+        operation = "publish"
+        published = service.publish(
+            app_model=app_model,
+            session=session,
+            mark=release_mark,
+        )
+        published_id = _workflow_id(published, "published")
+        operation = "read_published"
+        active = service.read_published(app_model=app_model, session=session)
+        operation = "verify_published"
+        if active is not None:
+            active_id = _workflow_id(active, "published")
+            active_digest = graph_digest(getattr(active, "graph_dict"))
+    except Exception as exc:
+        return _rollback_verified(
+            service=service,
+            app_model=app_model,
+            session=session,
+            state=state,
+            release_mark=release_mark,
+            backup_id=backup_id,
+            candidate_digest=candidate_digest,
+            requested_published_id=published_id,
+            failed_published_id=active_id,
+            failed_published_digest=active_digest,
+            preexisting_drift=preexisting_drift,
+            failure_code="release_operation_failed",
+            failure_operation=operation,
+            failure_type=type(exc).__name__,
+        )
+
+    if active_digest == candidate_digest and active_id == published_id:
+        return {
+            "status": "published",
+            "app_id": state.app_id,
+            "draft_workflow_id": state.draft_workflow_id,
+            "previous_published_workflow_id": state.published_workflow_id,
+            "backup_workflow_id": backup_id,
+            "published_workflow_id": published_id,
+            "rollback_workflow_id": None,
+            "candidate_digest": candidate_digest,
+            "published_digest": active_digest,
+            "preexisting_drift": preexisting_drift,
+        }
+
+    return _rollback_verified(
+        service=service,
+        app_model=app_model,
+        session=session,
+        state=state,
+        release_mark=release_mark,
+        backup_id=backup_id,
+        candidate_digest=candidate_digest,
+        requested_published_id=published_id,
+        failed_published_id=active_id,
+        failed_published_digest=active_digest,
+        preexisting_drift=preexisting_drift,
+        failure_code="post_publish_verification_failed",
+        failure_operation="verify_published",
+    )
+
+
+def _rollback_verified(
+    *,
+    service: ReleaseService,
+    app_model: object,
+    session: object,
+    state: ReleaseState,
+    release_mark: ReleaseMark,
+    backup_id: str,
+    candidate_digest: str,
+    requested_published_id: str | None,
+    failed_published_id: str | None,
+    failed_published_digest: str | None,
+    preexisting_drift: list[dict[str, str]],
+    failure_code: str,
+    failure_operation: str,
+    failure_type: str | None = None,
+) -> dict[str, object]:
+    rollback = service.rollback(
+        app_model=app_model,
+        session=session,
+        workflow_id=backup_id,
+        mark=ReleaseMark(
+            name=f"Rollback after failed {release_mark.name}",
+            comment=f"Restored explicit backup workflow {backup_id}.",
+        ),
+    )
+    rollback_id = _workflow_id(rollback, "rollback")
+    restored = service.read_published(app_model=app_model, session=session)
+    if restored is None:
+        raise RuntimeError(
+            f"Dify rollback verification failed for explicit backup {backup_id}: "
+            "published workflow was not found"
+        )
+    restored_id = _workflow_id(restored, "rollback")
+    restored_digest = graph_digest(getattr(restored, "graph_dict"))
+    if restored_id != rollback_id or restored_digest != state.draft_digest:
+        raise RuntimeError(
+            f"Dify rollback verification failed for explicit backup {backup_id}: "
+            f"expected digest {state.draft_digest}, got {restored_digest}"
+        )
+
+    return {
+        "status": "rolled_back",
+        "failure_code": failure_code,
+        "failure_operation": failure_operation,
+        "failure_type": failure_type,
+        "app_id": state.app_id,
+        "draft_workflow_id": state.draft_workflow_id,
+        "previous_published_workflow_id": state.published_workflow_id,
+        "backup_workflow_id": backup_id,
+        "failed_published_workflow_id": failed_published_id,
+        "requested_published_workflow_id": requested_published_id,
+        "rollback_workflow_id": rollback_id,
+        "candidate_digest": candidate_digest,
+        "failed_published_digest": failed_published_digest,
+        "restored_digest": restored_digest,
+        "preexisting_drift": preexisting_drift,
+    }
+
+
+def _normalize_expected_identity(
+    value: ExpectedReleaseIdentity | ReleaseState | Mapping[str, object],
+) -> ExpectedReleaseIdentity:
+    if isinstance(value, Mapping):
+        app_id = value.get("app_id")
+        draft_digest = value.get("draft_digest")
+        draft_workflow_id = value.get("draft_workflow_id")
+    else:
+        app_id = getattr(value, "app_id", None)
+        draft_digest = getattr(value, "draft_digest", None)
+        draft_workflow_id = getattr(value, "draft_workflow_id", None)
+    if not isinstance(app_id, str) or not app_id:
+        raise ValueError("expected release identity requires app_id")
+    if not isinstance(draft_digest, str) or not draft_digest:
+        raise ValueError("expected release identity requires draft_digest")
+    if draft_workflow_id is not None and not isinstance(draft_workflow_id, str):
+        raise ValueError("expected draft_workflow_id must be a string")
+    return ExpectedReleaseIdentity(app_id, draft_digest, draft_workflow_id)
+
+
+def _normalize_release_mark(
+    value: ReleaseMark | Mapping[str, object] | str,
+) -> ReleaseMark:
+    if isinstance(value, ReleaseMark):
+        mark = value
+    elif isinstance(value, str):
+        mark = ReleaseMark(name=value)
+    elif isinstance(value, Mapping):
+        fields = {
+            key: value.get(key, "")
+            for key in ("name", "comment", "backup_name", "backup_comment")
+        }
+        if not all(isinstance(item, str) for item in fields.values()):
+            raise ValueError("release mark values must be strings")
+        mark = ReleaseMark(**fields)  # type: ignore[arg-type]
+    else:
+        raise ValueError("release mark must be a string, mapping, or ReleaseMark")
+    if not mark.name.strip():
+        raise ValueError("release mark name must not be empty")
+    return mark
+
+
+def _workflow_id(workflow: object, label: str) -> str:
+    workflow_id = getattr(workflow, "id", None)
+    if not isinstance(workflow_id, str) or not workflow_id:
+        raise RuntimeError(f"Dify {label} workflow did not return an ID")
+    return workflow_id
+
+
+class DifyReleaseService:
+    """Adapt Dify's WorkflowService to the small release protocol above."""
+
+    def __init__(self, workflow_service: object, account: object, *, now_factory: Any) -> None:
+        self._service = workflow_service
+        self._account = account
+        self._now_factory = now_factory
+        self._drafts: dict[str, object] = {}
+
+    def read_draft(self, *, app_model: object, session: object) -> object:
+        draft = self._service.get_draft_workflow(  # type: ignore[attr-defined]
+            app_model=app_model,
+            session=session,
+        )
+        if draft is not None:
+            self._drafts[str(getattr(app_model, "id"))] = draft
+        return draft
+
+    def read_published(self, *, app_model: object, session: object) -> object:
+        return self._service.get_published_workflow(  # type: ignore[attr-defined]
+            app_model=app_model,
+            session=session,
+        )
+
+    def create_backup(
+        self, *, app_model: object, session: object, mark: ReleaseMark
+    ) -> object:
+        backup = self._publish_version(app_model=app_model, session=session, mark=mark)
+        session.flush()  # type: ignore[attr-defined]
+        return backup
+
+    def save_draft(
+        self,
+        *,
+        app_model: object,
+        session: object,
+        graph: dict[str, object],
+    ) -> object:
+        current = self._cached_draft(app_model)
+        draft = self._sync_draft(
+            app_model=app_model,
+            session=session,
+            graph=graph,
+            current=current,
+            metadata_source=current,
+        )
+        self._drafts[str(getattr(app_model, "id"))] = draft
+        session.flush()  # type: ignore[attr-defined]
+        return draft
+
+    def publish(
+        self, *, app_model: object, session: object, mark: ReleaseMark
+    ) -> object:
+        published = self._publish_version(
+            app_model=app_model,
+            session=session,
+            mark=mark,
+        )
+        session.flush()  # type: ignore[attr-defined]
+        self._activate(app_model, published)
+        return published
+
+    def rollback(
+        self,
+        *,
+        app_model: object,
+        session: object,
+        workflow_id: str,
+        mark: ReleaseMark,
+    ) -> object:
+        restore = getattr(self._service, "restore_published_workflow_to_draft", None)
+        if callable(restore):
+            self._activate_id(app_model, workflow_id)
+            draft = restore(
+                app_model=app_model,
+                workflow_id=workflow_id,
+                account=self._account,
+                session=session,
+            )
+        else:
+            source = self._service.get_published_workflow_by_id(  # type: ignore[attr-defined]
+                app_model=app_model,
+                workflow_id=workflow_id,
+                session=session,
+            )
+            if source is None or _workflow_id(source, "backup") != workflow_id:
+                raise RuntimeError(
+                    f"explicit Dify backup workflow was not found: {workflow_id}"
+                )
+
+            current = self._cached_draft(app_model)
+            draft = self._sync_draft(
+                app_model=app_model,
+                session=session,
+                graph=copy.deepcopy(getattr(source, "graph_dict")),
+                current=current,
+                metadata_source=source,
+            )
+        self._drafts[str(getattr(app_model, "id"))] = draft
+        session.flush()  # type: ignore[attr-defined]
+        restored = self._publish_version(
+            app_model=app_model,
+            session=session,
+            mark=mark,
+        )
+        session.flush()  # type: ignore[attr-defined]
+        self._activate(app_model, restored)
+        return restored
+
+    def _cached_draft(self, app_model: object) -> object:
+        app_id = str(getattr(app_model, "id"))
+        draft = self._drafts.get(app_id)
+        if draft is None:
+            raise RuntimeError("Dify draft must be read before a release write")
+        return draft
+
+    def _sync_draft(
+        self,
+        *,
+        app_model: object,
+        session: object,
+        graph: dict[str, object],
+        current: object,
+        metadata_source: object,
+    ) -> object:
+        return self._service.sync_draft_workflow(  # type: ignore[attr-defined]
+            app_model=app_model,
+            graph=copy.deepcopy(graph),
+            features=getattr(metadata_source, "normalized_features_dict"),
+            unique_hash=getattr(current, "unique_hash", None),
+            account=self._account,
+            environment_variables=getattr(metadata_source, "environment_variables"),
+            conversation_variables=getattr(metadata_source, "conversation_variables"),
+            session=session,
+            commit=False,
+        )
+
+    def _publish_version(
+        self, *, app_model: object, session: object, mark: ReleaseMark
+    ) -> object:
+        result = self._service.publish_workflow(  # type: ignore[attr-defined]
+            session=session,
+            app_model=app_model,
+            account=self._account,
+            marked_name=mark.name,
+            marked_comment=mark.comment,
+        )
+        if isinstance(result, tuple):
+            return result[0]
+        return result
+
+    def _activate(self, app_model: object, workflow: object) -> None:
+        self._activate_id(app_model, _workflow_id(workflow, "published"))
+
+    def _activate_id(self, app_model: object, workflow_id: str) -> None:
+        setattr(app_model, "workflow_id", workflow_id)
+        setattr(app_model, "updated_by", getattr(self._account, "id"))
+        setattr(app_model, "updated_at", self._now_factory())
 
 
 def _edge(source: str, target: str, source_type: str, target_type: str, source_handle: str) -> dict[str, Any]:
@@ -331,7 +840,7 @@ def main() -> None:
     with flask_app.app_context():
         session_maker = sessionmaker(bind=db.engine, expire_on_commit=False)
         service = WorkflowService(session_maker=session_maker)
-        with session_maker.begin() as session:
+        with session_maker() as session:
             app_model = session.get(App, APP_ID)
             if app_model is None:
                 raise ValueError(f"app not found: {APP_ID}")
@@ -339,23 +848,33 @@ def main() -> None:
             account = session.get(Account, account_id)
             if account is None:
                 raise ValueError("app owner account was not found")
-            draft = service.get_draft_workflow(app_model=app_model, session=session)
+            release_service = DifyReleaseService(
+                service,
+                account,
+                now_factory=naive_utc_now,
+            )
+            draft = release_service.read_draft(app_model=app_model, session=session)
             if draft is None:
                 raise ValueError("draft workflow was not found")
 
             transformed, changed = transform_graph(draft.graph_dict)
             if args.verify:
-                validate_graph_contract(draft.graph_dict)
-                active = service.get_published_workflow(app_model=app_model, session=session)
-                if active is None:
-                    raise ValueError("published workflow was not found")
-                validate_graph_contract(active.graph_dict)
+                state = inspect_release_state(
+                    release_service,
+                    app_model,
+                    session,
+                    expected_app_id=APP_ID,
+                )
+                validate_graph_contract(state.draft_graph)
+                validate_graph_contract(state.published_graph)
                 print(json.dumps({
                     "status": "verified",
-                    "draft_workflow_id": draft.id,
-                    "published_workflow_id": active.id,
-                    "node_count": len(draft.graph_dict["nodes"]),
-                    "edge_count": len(draft.graph_dict["edges"]),
+                    "draft_workflow_id": state.draft_workflow_id,
+                    "published_workflow_id": state.published_workflow_id,
+                    "draft_digest": state.draft_digest,
+                    "published_digest": state.published_digest,
+                    "node_count": len(state.draft_graph["nodes"]),
+                    "edge_count": len(state.draft_graph["edges"]),
                 }, separators=(",", ":")))
                 return
 
@@ -363,44 +882,31 @@ def main() -> None:
                 print(json.dumps({"status": "already_current", "draft_workflow_id": draft.id}, separators=(",", ":")))
                 return
 
-            backup = service.publish_workflow(
-                session=session,
-                app_model=app_model,
-                account=account,
-                marked_name="Backup before V3.1 approximate similarity",
-                marked_comment="Restorable draft snapshot created by Codex before deterministic scorer wiring.",
+            result = publish_verified_graph(
+                release_service,
+                app_model,
+                session,
+                transformed,
+                ExpectedReleaseIdentity(
+                    app_id=APP_ID,
+                    draft_digest=graph_digest(draft.graph_dict),
+                    draft_workflow_id=str(draft.id),
+                ),
+                ReleaseMark(
+                    name="V3.1 deterministic approximate similarity",
+                    comment="Adds strict/approximate separation and deterministic metric grading.",
+                    backup_name="Backup before V3.1 approximate similarity",
+                    backup_comment="Restorable draft snapshot created by Codex before deterministic scorer wiring.",
+                ),
             )
-            session.flush()
-            service.sync_draft_workflow(
-                app_model=app_model,
-                graph=transformed,
-                features=draft.normalized_features_dict,
-                unique_hash=draft.unique_hash,
-                account=account,
-                environment_variables=draft.environment_variables,
-                conversation_variables=draft.conversation_variables,
-                session=session,
-                commit=False,
-            )
-            published = service.publish_workflow(
-                session=session,
-                app_model=app_model,
-                account=account,
-                marked_name="V3.1 deterministic approximate similarity",
-                marked_comment="Adds strict/approximate separation and deterministic metric grading.",
-            )
-            session.flush()
-            app_model.workflow_id = published.id
-            app_model.updated_by = account.id
-            app_model.updated_at = naive_utc_now()
-            print(json.dumps({
-                "status": "updated",
-                "backup_workflow_id": backup.id,
-                "published_workflow_id": published.id,
-                "draft_workflow_id": draft.id,
+            output = {
+                **result,
+                "status": "updated" if result["status"] == "published" else result["status"],
                 "node_count": len(transformed["nodes"]),
                 "edge_count": len(transformed["edges"]),
-            }, separators=(",", ":")))
+            }
+            session.commit()
+            print(json.dumps(output, separators=(",", ":")))
 
 
 if __name__ == "__main__":
