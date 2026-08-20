@@ -12,16 +12,19 @@ Build a candidate only from a clean export of the exact commit being reviewed.
 This avoids treating unrelated files in an operator's checkout as part of the
 release. The only local paths allowed when checking a checkout are
 `.live-artifacts/`, `.pytest-tmp*/`, and `.pytest_cache/`; every other staged,
-modified, or untracked path blocks a candidate.
+modified, or untracked path blocks use of that checkout as the candidate.
 
-Run this check before creating the export:
+Run this check when the current checkout itself is intended to be the
+candidate. If it reports an unexpected path, preserve that checkout and use
+the exact-commit export below; the export deliberately excludes all
+uncommitted files.
 
 ```powershell
 $allowedLocal = '^[ MADRCU?!]{2} (?:\.live-artifacts/|\.pytest-tmp[^/]*\/|\.pytest_cache/)'
 $unexpected = git status --porcelain=v1 | Where-Object { $_ -notmatch $allowedLocal }
 if ($unexpected) {
   $unexpected
-  throw 'candidate checkout has non-excluded changes'
+  Write-Warning 'checkout is not clean; candidate will be built from the exact commit archive'
 }
 ```
 
@@ -34,10 +37,12 @@ not contact Dify.
 ```powershell
 $mainCheckout = (Get-Location).Path
 $commit = git rev-parse HEAD
+$prefix = (git rev-parse --show-prefix).TrimEnd('/')
+$archiveTree = if ($prefix) { "$commit`:$prefix" } else { $commit }
 $archive = Join-Path ([System.IO.Path]::GetTempPath()) ("release-baseline-$($commit.Substring(0, 12))-$([guid]::NewGuid().ToString('N'))")
 New-Item -ItemType Directory -Path $archive | Out-Null
 $archiveZip = Join-Path $archive 'candidate.zip'
-git archive --format=zip --output $archiveZip $commit
+git archive --format=zip --output $archiveZip $archiveTree
 if ($LASTEXITCODE -ne 0) { throw 'git archive export failed' }
 Expand-Archive -LiteralPath $archiveZip -DestinationPath $archive
 
@@ -73,6 +78,8 @@ Pop-Location
 
 New-Item -ItemType Directory -Force (Join-Path $mainCheckout '.live-artifacts') | Out-Null
 Copy-Item (Join-Path $archive '.live-artifacts/release-baseline-candidate.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json') -Force
+Copy-Item (Join-Path $archive '.live-artifacts/dsl-hashes-first.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-first.json') -Force
+Copy-Item (Join-Path $archive '.live-artifacts/dsl-hashes-second.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-second.json') -Force
 Get-Content (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json')
 ```
 
