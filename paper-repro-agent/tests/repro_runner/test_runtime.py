@@ -1,11 +1,14 @@
 import json
 import re
 
+import pytest
+
 from repro_runner.api import healthz
 from repro_runner.config import Settings
 from repro_runner.runtime import runtime_provenance
 from repro_runner.schemas import (
     DatasetProfile,
+    ExperimentManifest,
     ExperimentMetrics,
     ExperimentSuiteResult,
     ModelRunResult,
@@ -114,3 +117,29 @@ def test_suite_result_and_config_persist_runtime_provenance():
     assert payload["config"]["workflow_version"] == "multimodel-0.8.0"
     assert stored_config["workflow_version"] == "multimodel-0.8.0"
     json.dumps(payload, ensure_ascii=False, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "workflow_version",
+    [r"C:\\Users\\private\\workflow.yml", "/home/private/workflow.yml"],
+)
+def test_manifest_rejects_absolute_workflow_version_before_persistence(workflow_version):
+    with pytest.raises(ValueError, match="workflow_version"):
+        ExperimentManifest.model_validate(
+            {
+                "manifest_id": "sha256:" + "c" * 64,
+                "dataset_id": DATASET_ID,
+                "target_column": "Y_cls",
+                "feature_columns": ["feature"],
+                "missing_policy": "reject",
+                "sampling_strategy": "original",
+                "comparison_mode": "paper_comparable",
+                "test_size": 0.2,
+                "random_state": 42,
+                "cv_folds": 3,
+                "optimization_metric": "roc_auc",
+                "threshold": 0.5,
+                "models": ["random_forest"],
+                "workflow_version": workflow_version,
+            }
+        )

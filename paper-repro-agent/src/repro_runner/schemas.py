@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from repro_runner.runtime import RuntimeProvenance
+from repro_runner.runtime import RuntimeProvenance, is_safe_metadata_value
 
 
 MissingPolicy = Literal["reject", "drop_rows", "impute"]
@@ -218,6 +218,13 @@ class ModelSuiteConfig(BaseModel):
             raise ValueError("threshold must be finite")
         return value
 
+    @field_validator("workflow_version")
+    @classmethod
+    def workflow_version_must_be_safe_metadata(cls, value: str) -> str:
+        if not is_safe_metadata_value(value):
+            raise ValueError("workflow_version must use safe metadata characters")
+        return value
+
     @model_validator(mode="after")
     def reject_duplicate_models(self) -> "ModelSuiteConfig":
         if len(self.models) != len(set(self.models)):
@@ -249,6 +256,13 @@ class ExperimentManifest(BaseModel):
     def manifest_threshold_must_be_finite(cls, value: float) -> float:
         if not math.isfinite(value):
             raise ValueError("threshold must be finite")
+        return value
+
+    @field_validator("workflow_version")
+    @classmethod
+    def manifest_workflow_version_must_be_safe_metadata(cls, value: str) -> str:
+        if not is_safe_metadata_value(value):
+            raise ValueError("workflow_version must use safe metadata characters")
         return value
 
     @model_validator(mode="after")

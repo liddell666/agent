@@ -60,4 +60,9 @@ def _metadata_value(value: str | None) -> str:
     if value is None:
         return UNKNOWN
     candidate = value.strip()
-    return candidate if _SAFE_METADATA.fullmatch(candidate) else UNKNOWN
+    return candidate if is_safe_metadata_value(candidate) else UNKNOWN
+
+
+def is_safe_metadata_value(value: str) -> bool:
+    """Return whether a public metadata value cannot expose path-like secrets."""
+    return _SAFE_METADATA.fullmatch(value) is not None
