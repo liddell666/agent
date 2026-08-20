@@ -6,6 +6,80 @@ Generate the tracked workflow DSL before comparing it:
 python scripts/build_multimodel_dsl.py --profile ollama --output-dir dify
 ```
 
+## Build an offline candidate manifest
+
+Build a candidate only from a clean export of the exact commit being reviewed.
+This avoids treating unrelated files in an operator's checkout as part of the
+release. The only local paths allowed when checking a checkout are
+`.live-artifacts/`, `.pytest-tmp*/`, and `.pytest_cache/`; every other staged,
+modified, or untracked path blocks a candidate.
+
+Run this check before creating the export:
+
+```powershell
+$allowedLocal = '^[ MADRCU?!]{2} (?:\.live-artifacts/|\.pytest-tmp[^/]*\/|\.pytest_cache/)'
+$unexpected = git status --porcelain=v1 | Where-Object { $_ -notmatch $allowedLocal }
+if ($unexpected) {
+  $unexpected
+  throw 'candidate checkout has non-excluded changes'
+}
+```
+
+For a reproducible candidate, export the commit instead of creating a linked
+worktree. The commands below regenerate both profiles twice, compare the two
+hash captures, require the repository-only drift check to exit zero, and then
+write the manifest to the caller's local `.live-artifacts/` directory. They do
+not contact Dify.
+
+```powershell
+$mainCheckout = (Get-Location).Path
+$commit = git rev-parse HEAD
+$archive = Join-Path ([System.IO.Path]::GetTempPath()) ("release-baseline-$($commit.Substring(0, 12))-$([guid]::NewGuid().ToString('N'))")
+New-Item -ItemType Directory -Path $archive | Out-Null
+$archiveZip = Join-Path $archive 'candidate.zip'
+git archive --format=zip --output $archiveZip $commit
+if ($LASTEXITCODE -ne 0) { throw 'git archive export failed' }
+Expand-Archive -LiteralPath $archiveZip -DestinationPath $archive
+
+Push-Location $archive
+function Save-WorkflowHashes([string] $path) {
+  $hashes = Get-ChildItem -Path dify -Filter '*.yml' -File |
+    Sort-Object Name |
+    ForEach-Object { [ordered]@{ path = "dify/$($_.Name)"; sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() } }
+  $hashes | ConvertTo-Json | Set-Content -Path $path -Encoding utf8
+}
+function Invoke-DslGeneration([string] $profile) {
+  python scripts/build_multimodel_dsl.py --profile $profile --output-dir dify
+  if ($LASTEXITCODE -ne 0) { throw "DSL generation failed for profile $profile" }
+}
+New-Item -ItemType Directory -Force .live-artifacts | Out-Null
+Invoke-DslGeneration deepseek
+Invoke-DslGeneration ollama
+Save-WorkflowHashes .live-artifacts/dsl-hashes-first.json
+Invoke-DslGeneration deepseek
+Invoke-DslGeneration ollama
+Save-WorkflowHashes .live-artifacts/dsl-hashes-second.json
+if ((Get-Content .live-artifacts/dsl-hashes-first.json -Raw) -ne (Get-Content .live-artifacts/dsl-hashes-second.json -Raw)) { throw 'DSL generation is not byte-stable' }
+
+python scripts/check_workflow_release.py `
+  --dsl dify/paper-comparison-merged-workflow-ollama.yml `
+  --source scripts/build_multimodel_dsl.py src/repro_runner/runtime.py --json
+if ($LASTEXITCODE -ne 0) { throw 'repository-only release check failed' }
+
+$env:PYTHONDONTWRITEBYTECODE = '1'
+python -c "from pathlib import Path; import hashlib, json, sys, yaml; sys.path.insert(0, 'scripts'); from workflow_release_integrity import build_release_manifest, graph_digest, source_digest; paths = [Path('scripts/build_multimodel_dsl.py').resolve(), Path('src/repro_runner/runtime.py').resolve()]; dsl = Path('dify/paper-comparison-merged-workflow-ollama.yml'); document = yaml.safe_load(dsl.read_text(encoding='utf-8')); manifest = build_release_manifest(git_commit='$commit', worktree_clean=True, source_sha256=source_digest(paths, Path('.').resolve()), dsl_sha256='sha256:' + hashlib.sha256(dsl.read_bytes()).hexdigest(), graph_sha256=graph_digest(document['workflow']['graph']), workflow_kind=str(document['kind']), workflow_version=str(document['version'])); Path('.live-artifacts/release-baseline-candidate.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n', encoding='utf-8')"
+if ($LASTEXITCODE -ne 0) { throw 'candidate manifest generation failed' }
+Pop-Location
+
+New-Item -ItemType Directory -Force (Join-Path $mainCheckout '.live-artifacts') | Out-Null
+Copy-Item (Join-Path $archive '.live-artifacts/release-baseline-candidate.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json') -Force
+Get-Content (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json')
+```
+
+Keep the generated manifest local and unstaged. It contains only digests and
+workflow identity metadata; do not add snapshots, credentials, raw PDFs, CSV
+rows, or databases to it.
+
 The repository-only checker reads the DSL, source files, and optional offline
 JSON snapshots. It does not open a network connection or contact an
 application service.
