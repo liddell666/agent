@@ -364,6 +364,7 @@ async def run_model_suite_route(
     random_state: Annotated[int, Form(ge=0)] = 42,
     drop_duplicates: Annotated[bool, Form()] = False,
     cv_folds: Annotated[int, Form(ge=3, le=10)] = 5,
+    n_seeds: Annotated[int, Form(ge=1, le=10)] = 1,
     optimization_metric: Annotated[
         Literal["roc_auc", "f1", "recall", "balanced_accuracy"], Form()
     ] = "roc_auc",
@@ -384,6 +385,7 @@ async def run_model_suite_route(
         random_state=random_state,
         drop_duplicates=drop_duplicates,
         cv_folds=cv_folds,
+        n_seeds=n_seeds,
         optimization_metric=optimization_metric,
         threshold=threshold,
         n_iter=n_iter,
@@ -962,6 +964,7 @@ def _parse_model_suite_config(
     random_state: int,
     drop_duplicates: bool,
     cv_folds: int,
+    n_seeds: int,
     optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"],
     threshold: float,
     n_iter: int,
@@ -981,6 +984,7 @@ def _parse_model_suite_config(
             random_state=random_state,
             drop_duplicates=drop_duplicates,
             cv_folds=cv_folds,
+            n_seeds=n_seeds,
             optimization_metric=optimization_metric,
             threshold=threshold,
             n_iter=n_iter,

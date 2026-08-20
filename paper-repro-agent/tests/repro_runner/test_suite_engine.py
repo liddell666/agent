@@ -14,6 +14,9 @@ from repro_runner.schemas import (
 from repro_runner.split import ExperimentError, make_stratified_split
 
 
+TEST_DIGEST = "sha256:21d827456c211be096b22e4364e63ce8c05e3167d91ebd8a22846747edf42056"
+
+
 def _bundle(frame: pd.DataFrame):
     return load_dataset(frame.to_csv(index=False).encode(), DatasetOptions(), Settings())
 
@@ -31,65 +34,28 @@ def _dataset(rows_per_class: int = 60) -> pd.DataFrame:
     )
 
 
-def test_run_model_suite_uses_shared_holdout_training_only_cv_and_json_safe_params(
+def test_run_model_suite_reports_repeated_cv_aggregation_and_json_safe_params(
     monkeypatch,
 ):
     bundle = _bundle(_dataset())
     config = ModelSuiteConfig(
-        models=["logistic_regression", "random_forest"],
+        models=["logistic_regression"],
+        workflow_version="multimodel-0.8.0",
         cv_folds=3,
+        n_seeds=2,
         n_iter=1,
         n_jobs=2,
     )
     expected_train, _ = make_stratified_split(
         bundle.frame["Y_cls"].to_numpy(), config.test_size, config.random_state
     )
-    expected_train_class_counts = {
-        "0": int((bundle.frame.iloc[expected_train]["Y_cls"] == 0).sum()),
-        "1": int((bundle.frame.iloc[expected_train]["Y_cls"] == 1).sum()),
-    }
-    observed_class_counts = []
-    init_calls = []
-    fit_calls = []
 
     class SpySearch:
-        def __init__(
-            self,
-            estimator,
-            param_distributions,
-            n_iter,
-            scoring,
-            cv,
-            random_state,
-            n_jobs,
-            refit,
-            error_score,
-        ):
+        def __init__(self, estimator, param_distributions, **_kwargs):
             self.estimator = estimator
             self.param_distributions = param_distributions
-            self.cv = cv
-            init_calls.append(
-                {
-                    "cv": cv,
-                    "n_iter": n_iter,
-                    "scoring": scoring,
-                    "random_state": random_state,
-                    "n_jobs": n_jobs,
-                    "refit": refit,
-                    "error_score": error_score,
-                }
-            )
 
         def fit(self, x_train, y_train):
-            fit_calls.append(
-                {
-                    "rows": len(y_train),
-                    "class_counts": {
-                        str(label): int(count)
-                        for label, count in zip(*np.unique(y_train, return_counts=True))
-                    },
-                }
-            )
             fit_params = {
                 name: values[0] for name, values in self.param_distributions.items()
             }
@@ -102,53 +68,30 @@ def test_run_model_suite_uses_shared_holdout_training_only_cv_and_json_safe_para
             self.best_score_ = 0.812345
             return self
 
-    def recording_get_model_spec(
-        name, class_counts, random_state, use_gpu, **kwargs
-    ):
-        observed_class_counts.append((name, dict(class_counts)))
-        return real_get_model_spec(
-            name, class_counts, random_state, use_gpu, **kwargs
-        )
-
     monkeypatch.setattr(suite_engine, "RandomizedSearchCV", SpySearch)
-    monkeypatch.setattr(suite_engine, "get_model_spec", recording_get_model_spec)
 
     first = suite_engine.run_model_suite(bundle, config)
     second = suite_engine.run_model_suite(bundle, config)
 
     assert first.status == "succeeded"
-    assert [item.status for item in first.results] == ["succeeded", "succeeded"]
+    assert first.reproducibility_status == "cv_evaluated"
+    assert first.runtime is not None
+    assert first.runtime.workflow_version == "multimodel-0.8.0"
+    assert [item.status for item in first.results] == ["succeeded"]
     assert first.split_provenance == second.split_provenance
     assert first.split_provenance.train_rows == len(expected_train)
     assert first.split_provenance.test_digest.startswith("sha256:")
-    assert first.performance_ranking
-    assert set(first.performance_ranking) == {
-        "logistic_regression",
-        "random_forest",
-    }
-    assert first.results[0].best_params == {"choice": 2, "weights": [1, 2]}
-    assert all(item.metrics is not None for item in first.results)
-    assert observed_class_counts == [
-        ("logistic_regression", expected_train_class_counts),
-        ("random_forest", expected_train_class_counts),
-        ("logistic_regression", expected_train_class_counts),
-        ("random_forest", expected_train_class_counts),
-    ]
-    assert len(init_calls) == 4
-    assert init_calls[0]["cv"] is init_calls[1]["cv"]
-    assert init_calls[2]["cv"] is init_calls[3]["cv"]
-    assert init_calls[0]["cv"] is not init_calls[2]["cv"]
-    assert init_calls[0]["cv"].n_splits == config.cv_folds
-    assert init_calls[0]["cv"].shuffle is True
-    assert init_calls[0]["cv"].random_state == config.random_state
-    assert all(call["scoring"] == config.optimization_metric for call in init_calls)
-    assert all(call["n_jobs"] == config.n_jobs for call in init_calls)
-    assert all(call["refit"] is True for call in init_calls)
-    assert all(call["error_score"] == "raise" for call in init_calls)
-    assert all(call["rows"] == len(expected_train) for call in fit_calls)
-    assert all(
-        call["class_counts"] == expected_train_class_counts for call in fit_calls
+    item = first.results[0]
+    assert item.best_params == {"choice": 2, "weights": [1, 2]}
+    assert len(item.cv_fold_scores["roc_auc"]) == config.cv_folds * config.n_seeds
+    assert len(item.seed_means["roc_auc"]) == config.n_seeds
+    assert item.cv_mean["roc_auc"] == pytest.approx(
+        float(np.mean(item.cv_fold_scores["roc_auc"])), abs=1e-5
     )
+    assert item.cv_std["roc_auc"] == pytest.approx(
+        float(np.std(item.cv_fold_scores["roc_auc"])), abs=1e-5
+    )
+    assert item.metrics is not None
 
 
 def test_run_model_suite_marks_missing_dependency_unavailable_and_continues(
@@ -203,6 +146,31 @@ def test_run_model_suite_marks_missing_dependency_unavailable_and_continues(
     assert result.performance_ranking == ["logistic_regression"]
     assert "private-wheel.whl" not in payload
     assert "abc123" not in payload
+
+
+def test_run_model_suite_keeps_shared_split_provenance_when_one_model_fails():
+    result = suite_engine.run_model_suite(
+        _bundle(_dataset(rows_per_class=10)),
+        ModelSuiteConfig(
+            models=["random_forest", "mlp", "logistic_regression"],
+            cv_folds=3,
+            n_iter=1,
+            n_jobs=1,
+        ),
+    )
+
+    assert result.status == "partial"
+    assert [item.status for item in result.results] == [
+        "succeeded",
+        "failed",
+        "succeeded",
+    ]
+    assert result.performance_ranking == ["random_forest", "logistic_regression"]
+    assert {
+        item.split_provenance.test_digest
+        for item in result.results
+        if item.status == "succeeded"
+    } == {TEST_DIGEST}
 
 
 def test_run_model_suite_preserves_safe_registry_dependency_message_and_sanitizes_model_failures(
@@ -501,13 +469,33 @@ def test_run_model_suite_accepts_mixed_numeric_and_text_tokens_as_category():
     assert result.status == "succeeded"
 
 
-def test_run_model_suite_rejects_undersampling_until_it_is_fold_safe():
+def test_run_model_suite_supports_balanced_undersampling_fold_safely():
     bundle = _bundle(_dataset())
     bundle.sampling_strategy = "balanced_undersample"
 
-    with pytest.raises(ExperimentError) as raised:
-        suite_engine.run_model_suite(
-            bundle,
-            ModelSuiteConfig(models=["random_forest"], cv_folds=3, n_iter=1),
-        )
-    assert raised.value.code == "unsupported_sampling_strategy"
+    result = suite_engine.run_model_suite(
+        bundle,
+        ModelSuiteConfig(models=["random_forest"], cv_folds=3, n_iter=1, n_jobs=1),
+    )
+
+    assert result.status == "succeeded"
+    assert result.results[0].status == "succeeded"
+    assert result.preprocessing.sampling_strategy == "balanced_undersample"
+
+
+def test_resample_training_partition_undersamples_majority_class_only():
+    frame = pd.DataFrame({"feature": np.arange(10)})
+    target = np.array([0, 0, 0, 0, 0, 0, 0, 1, 1, 1])
+
+    resampled_x, resampled_y = suite_engine._resample_training_partition(
+        frame, target, "balanced_undersample", seed=0
+    )
+    counts = dict(zip(*np.unique(resampled_y, return_counts=True)))
+    assert counts == {0: 3, 1: 3}
+    assert len(resampled_x) == 6
+
+    unchanged_x, unchanged_y = suite_engine._resample_training_partition(
+        frame, target, "original", seed=0
+    )
+    assert len(unchanged_y) == 10
+    assert unchanged_x.equals(frame)

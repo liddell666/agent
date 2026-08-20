@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-import math
 
+from repro_runner.dossier import normalize_metric_name, parse_reported_value
 from repro_runner.schemas import (
     ComparisonItem,
     ComparisonResponse,
@@ -19,7 +19,14 @@ from repro_runner.schemas import (
 # V2 calculates every public metric from the held-out test fold.
 _INDEPENDENT_DATASET = "test"
 _INDEPENDENT_SPLIT = "test"
-_METRIC_ALIASES = {"auc": "roc_auc", "roc_auc": "roc_auc"}
+_SUPPORTED_METRICS = {
+    "roc_auc",
+    "accuracy",
+    "balanced_accuracy",
+    "precision",
+    "recall",
+    "f1",
+}
 
 
 def compare_metrics(
@@ -84,7 +91,26 @@ def compare_suite_metrics(
     for metric in reported_metrics:
         metric_key = _normalize_metric_name(metric.name)
         paper_value = _parse_number(metric.reported_value)
-        for model_result in successful_models:
+        selected_models = successful_models
+        if metric.model is not None:
+            selected_models = [
+                item for item in successful_models if item.model == metric.model
+            ]
+            if not selected_models:
+                items.append(
+                    SuiteComparisonItem(
+                        model=metric.model,
+                        name=metric.name,
+                        paper_value=paper_value,
+                        independent_value=None,
+                        absolute_difference=None,
+                        relative_difference=None,
+                        comparable=False,
+                        reason="requested model is not available in the suite result",
+                    )
+                )
+                continue
+        for model_result in selected_models:
             independent_value = metric_values[model_result.model].get(metric_key)
             reason = _comparison_reason(
                 metric,
@@ -93,6 +119,7 @@ def compare_suite_metrics(
                 independent_value,
                 result.dataset.dataset_id,
                 result.split_provenance,
+                independent_threshold=result.config.threshold,
             )
             comparable = reason is None
             absolute_difference, relative_difference = _difference_fields(
@@ -128,18 +155,11 @@ def _metric_values_from_metrics(metrics) -> dict[str, float]:
 
 
 def _normalize_metric_name(name: str) -> str:
-    normalized = "_".join(name.strip().casefold().replace("-", " ").split())
-    return _METRIC_ALIASES.get(normalized, normalized)
+    return normalize_metric_name(name)
 
 
 def _parse_number(value: float | str | None) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return _round_public(parsed) if math.isfinite(parsed) else None
+    return parse_reported_value(value)
 
 
 def _comparison_reason(
@@ -149,8 +169,9 @@ def _comparison_reason(
     independent_value: float | None,
     dataset_id: str,
     split_provenance,
+    independent_threshold: float | None = None,
 ) -> str | None:
-    if metric_key not in _METRIC_ALIASES.values() and independent_value is None:
+    if metric_key not in _SUPPORTED_METRICS and independent_value is None:
         return "metric name is not supported"
     if paper_value is None:
         return "reported value is not numeric"
@@ -186,6 +207,12 @@ def _comparison_reason(
         return "paper metric is missing test_rows provenance"
     if metric.test_rows != split_provenance.test_rows:
         return "paper metric test_rows differs from the independent test split"
+    if (
+        metric.threshold is not None
+        and independent_threshold is not None
+        and metric.threshold != independent_threshold
+    ):
+        return "paper metric threshold differs from the independent run"
     return None
 
 

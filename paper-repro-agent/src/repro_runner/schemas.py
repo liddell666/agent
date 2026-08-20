@@ -204,6 +204,7 @@ class ModelSuiteConfig(BaseModel):
     random_state: int = Field(default=42, ge=0)
     drop_duplicates: bool = False
     cv_folds: int = Field(default=5, ge=3, le=10)
+    n_seeds: int = Field(default=1, ge=1, le=10)
     optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"] = "roc_auc"
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     n_iter: int = Field(default=8, ge=1, le=32)
@@ -245,6 +246,7 @@ class ExperimentManifest(BaseModel):
     test_size: float = Field(ge=0.1, le=0.5)
     random_state: int = Field(ge=0)
     cv_folds: int = Field(ge=3, le=10)
+    n_seeds: int = Field(default=1, ge=1, le=10)
     optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"]
     threshold: float = Field(ge=0.0, le=1.0)
     models: list[ModelName] = Field(min_length=1)
@@ -294,6 +296,11 @@ class ModelRunResult(BaseModel):
     feature_importance: list[FeatureImportance] = Field(default_factory=list)
     fit_seconds: float | None = None
     error: ValidationErrorItem | None = None
+    split_provenance: SplitProvenance | None = None
+    cv_mean: dict[str, float] = Field(default_factory=dict)
+    cv_std: dict[str, float] = Field(default_factory=dict)
+    cv_fold_scores: dict[str, list[float]] = Field(default_factory=dict)
+    seed_means: dict[str, list[float]] = Field(default_factory=dict)
 
 
 class ExperimentSuiteResult(BaseModel):
@@ -306,7 +313,7 @@ class ExperimentSuiteResult(BaseModel):
     split_provenance: SplitProvenance
     results: list[ModelRunResult] = Field(default_factory=list)
     performance_ranking: list[ModelName] = Field(default_factory=list)
-    reproducibility_status: Literal["cv_tuned"] = "cv_tuned"
+    reproducibility_status: Literal["cv_tuned", "cv_evaluated"] = "cv_evaluated"
     preprocessing: PreprocessingSummary | None = None
     runtime: RuntimeProvenance | None = None
 
@@ -365,6 +372,8 @@ class ReportedMetricInput(BaseModel):
 
     name: str
     reported_value: float | str | None = None
+    model: ModelName | None = None
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     dataset: str | None = None
     split: str | None = None
     dataset_id: str | None = None
@@ -431,6 +440,8 @@ class DossierMetric(BaseModel):
     normalized_name: str
     supported: bool
     reported_value: float | None = None
+    model: ModelName | None = None
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     dataset: str | None = None
     split: str | None = None
     dataset_id: str | None = None

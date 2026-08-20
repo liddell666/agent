@@ -260,6 +260,7 @@ def _suite_config_payload(result: ExperimentSuiteResult) -> dict[str, object]:
         "random_state": config.random_state,
         "drop_duplicates": config.drop_duplicates,
         "cv_folds": config.cv_folds,
+        "n_seeds": config.n_seeds,
         "optimization_metric": config.optimization_metric,
         "threshold": config.threshold,
         "n_iter": config.n_iter,
@@ -317,6 +318,16 @@ def _model_run_payload(item) -> dict[str, object]:
     error = None
     if item.error is not None:
         error = {"code": item.error.code, "message": item.error.message}
+    split_provenance = None
+    if item.split_provenance is not None:
+        split = item.split_provenance
+        split_provenance = {
+            "test_size": split.test_size,
+            "random_state": split.random_state,
+            "train_rows": split.train_rows,
+            "test_rows": split.test_rows,
+            "test_digest": split.test_digest,
+        }
     return {
         "model": item.model,
         "status": item.status,
@@ -329,4 +340,9 @@ def _model_run_payload(item) -> dict[str, object]:
         ],
         "fit_seconds": item.fit_seconds,
         "error": error,
+        "split_provenance": split_provenance,
+        "cv_mean": item.cv_mean,
+        "cv_std": item.cv_std,
+        "cv_fold_scores": item.cv_fold_scores,
+        "seed_means": item.seed_means,
     }

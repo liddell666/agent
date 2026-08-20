@@ -41,6 +41,7 @@ def create_manifest(
     payload = {
         "comparison_mode": options.comparison_mode,
         "cv_folds": suite_config.cv_folds,
+        "n_seeds": suite_config.n_seeds,
         "dataset_id": diagnostic.dataset.dataset_id,
         "dossier_id": dossier_id,
         "feature_columns": plan.feature_columns,
@@ -52,6 +53,7 @@ def create_manifest(
         "target_column": target_column,
         "test_size": suite_config.test_size,
         "threshold": suite_config.threshold,
+        "workflow_version": suite_config.workflow_version,
     }
     canonical_payload = json.dumps(
         payload,

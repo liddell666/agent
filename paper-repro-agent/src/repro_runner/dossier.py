@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import re
+import unicodedata
 
 from pydantic import ValidationError
 
@@ -32,16 +34,86 @@ SUPPORTED_METRICS = frozenset(
 _METRIC_ALIASES = {
     "auc": "roc_auc",
     "roc_auc": "roc_auc",
+    "accuracy": "accuracy",
+    "总精度": "accuracy",
+    "准确率": "accuracy",
+    "balanced_accuracy": "balanced_accuracy",
+    "平衡准确率": "balanced_accuracy",
+    "precision": "precision",
+    "精确率": "precision",
+    "查准率": "precision",
+    "recall": "recall",
+    "召回率": "recall",
+    "查全率": "recall",
+    "f1": "f1",
+    "f1值": "f1",
+    "f1_score": "f1",
 }
 _PERCENT_SUFFIXES = ("%", "％", "锛卄")
+_MODEL_ALIASES = {
+    "logistic regression": "logistic_regression",
+    "logistic_regression": "logistic_regression",
+    "逻辑回归": "logistic_regression",
+    "lr": "logistic_regression",
+    "random forest": "random_forest",
+    "random_forest": "random_forest",
+    "随机森林": "random_forest",
+    "rf": "random_forest",
+    "xgboost": "xgboost",
+    "xg boost": "xgboost",
+    "lightgbm": "lightgbm",
+    "light gbm": "lightgbm",
+    "svm": "svm",
+    "support vector machine": "svm",
+    "支持向量机": "svm",
+    "knn": "knn",
+    "k nearest neighbors": "knn",
+    "k近邻": "knn",
+    "mlp": "mlp",
+    "neural network": "mlp",
+    "neural_network": "mlp",
+    "神经网络": "mlp",
+}
+_THRESHOLD_RE = re.compile(
+    r"(?:threshold|cut\s*[-_ ]?off|cutoff|阈值)\s*[:=]?\s*"
+    r"(0(?:\.\d+)?|1(?:\.0+)?)",
+    re.IGNORECASE,
+)
 
 
 def normalize_metric_name(name: str) -> str:
     """Return a stable metric key from a paper's display name."""
+    display_name = unicodedata.normalize("NFKC", name.strip())
+    if "(" in display_name:
+        display_name = display_name.split("(", 1)[0].strip()
     normalized = "_".join(
-        name.strip().casefold().replace("-", " ").replace("_", " ").split()
+        display_name.casefold().replace("-", " ").replace("_", " ").split()
     )
     return _METRIC_ALIASES.get(normalized, normalized)
+
+
+def extract_metric_qualifiers(name: str) -> tuple[str | None, float | None]:
+    """Extract an explicit model and classification threshold from a display label."""
+    display_name = unicodedata.normalize("NFKC", name.strip())
+    if "(" not in display_name:
+        return None, None
+    qualifier = display_name.split("(", 1)[1].rsplit(")", 1)[0]
+    qualifier_casefold = qualifier.casefold()
+
+    model = None
+    for alias in sorted(_MODEL_ALIASES, key=len, reverse=True):
+        normalized_alias = alias.casefold().replace("_", " ")
+        if normalized_alias in qualifier_casefold.replace("_", " "):
+            model = _MODEL_ALIASES[alias]
+            break
+
+    threshold = None
+    match = _THRESHOLD_RE.search(qualifier)
+    if match is not None:
+        parsed = float(match.group(1))
+        if math.isfinite(parsed) and 0.0 <= parsed <= 1.0:
+            threshold = round(parsed, 6)
+    return model, threshold
 
 
 def parse_reported_value(value: object) -> float | None:
@@ -76,6 +148,8 @@ def parse_reported_value(value: object) -> float | None:
 
 _OVERRIDE_FIELDS = (
     "reported_value",
+    "model",
+    "threshold",
     "dataset",
     "split",
     "dataset_id",
@@ -95,38 +169,56 @@ def _invalid(code: str, message: str) -> DossierParseResponse:
 
 
 def _metrics_from_dossier(dossier: PaperDossier) -> list[DossierMetric]:
-    return [
-        DossierMetric(
-            name=metric.name,
-            normalized_name=normalize_metric_name(metric.name),
-            supported=normalize_metric_name(metric.name) in SUPPORTED_METRICS,
-            reported_value=parse_reported_value(metric.reported_value),
-            dataset=metric.dataset,
-            split=metric.split,
-            source="paper_dossier",
-            evidence=[
-                DossierEvidence.model_validate(item.model_dump())
-                for item in metric.evidence
-            ],
+    parsed_metrics = []
+    for metric in dossier.metrics:
+        normalized_name = normalize_metric_name(metric.name)
+        model, threshold = extract_metric_qualifiers(metric.name)
+        parsed_metrics.append(
+            DossierMetric(
+                name=metric.name,
+                normalized_name=normalized_name,
+                supported=normalized_name in SUPPORTED_METRICS,
+                reported_value=parse_reported_value(metric.reported_value),
+                model=model,
+                threshold=threshold,
+                dataset=metric.dataset,
+                split=metric.split,
+                source="paper_dossier",
+                evidence=[
+                    DossierEvidence.model_validate(item.model_dump())
+                    for item in metric.evidence
+                ],
+            )
         )
-        for metric in dossier.metrics
-    ]
+    return parsed_metrics
 
 
 def _apply_overrides_and_mark_ambiguity(
     metrics: list[DossierMetric], overrides: list[ReportedMetricInput]
 ) -> list[str]:
-    grouped: dict[str, list[DossierMetric]] = {}
+    grouped: dict[tuple[str, str | None, float | None], list[DossierMetric]] = {}
     for metric in metrics:
-        grouped.setdefault(metric.normalized_name, []).append(metric)
+        key = (metric.normalized_name, metric.model, metric.threshold)
+        grouped.setdefault(key, []).append(metric)
     for group in grouped.values():
         if len(group) > 1:
             for metric in group:
                 metric.ambiguous = True
 
     for override in overrides:
-        candidates = list(grouped.get(normalize_metric_name(override.name), []))
+        candidates = [
+            metric
+            for (normalized_name, _model, _threshold), group in grouped.items()
+            if normalized_name == normalize_metric_name(override.name)
+            for metric in group
+        ]
         if len(candidates) > 1:
+            if "model" in override.model_fields_set:
+                candidates = [item for item in candidates if item.model == override.model]
+            if "threshold" in override.model_fields_set:
+                candidates = [
+                    item for item in candidates if item.threshold == override.threshold
+                ]
             if "dataset" in override.model_fields_set:
                 candidates = [
                     item for item in candidates if item.dataset == override.dataset

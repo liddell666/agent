@@ -38,12 +38,18 @@ def _evidence() -> list[dict[str, object]]:
         ("ROC AUC", "roc_auc"),
         ("roc-auc", "roc_auc"),
         ("roc_auc", "roc_auc"),
+        ("AUC（随机森林最优模型）", "roc_auc"),
+        ("AUC (test set)", "roc_auc"),
         ("  Accuracy  ", "accuracy"),
         ("Balanced Accuracy", "balanced_accuracy"),
         ("balanced-accuracy", "balanced_accuracy"),
         ("PRECISION", "precision"),
         (" recall ", "recall"),
         ("F1", "f1"),
+        ("总精度（阈值0.5，随机森林）", "accuracy"),
+        ("精确率（随机森林）", "precision"),
+        ("召回率", "recall"),
+        ("F1值", "f1"),
     ],
 )
 def test_normalize_metric_name(name, expected):
@@ -132,6 +138,76 @@ def test_parse_dossier_marks_supported_metrics_and_preserves_unsupported_metrics
     assert [metric.supported for metric in response.metrics] == [True, False]
     assert response.metrics[1].reported_value == 0.72
     assert response.metrics[1].evidence[0].source_text
+
+
+def test_parse_dossier_supports_qualified_auc_display_names() -> None:
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC（随机森林最优模型）",
+                    "reported_value": 0.91,
+                    "evidence": _evidence(),
+                }
+            ]
+        ),
+    )
+
+    metric = response.metrics[0]
+    assert metric.normalized_name == "roc_auc"
+    assert metric.supported is True
+
+
+def test_parse_dossier_extracts_model_and_threshold_without_cross_row_ambiguity() -> None:
+    response = parse_dossier(
+        "paper.json",
+        _dossier(
+            [
+                {
+                    "name": "AUC（随机森林最优模型）",
+                    "reported_value": 0.91,
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "AUC（神经网络最优模型）",
+                    "reported_value": 0.88,
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "总精度（阈值0.5，随机森林）",
+                    "reported_value": 0.951,
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "总精度（阈值0.25，随机森林）",
+                    "reported_value": 0.968,
+                    "evidence": _evidence(),
+                },
+                {
+                    "name": "AUC（全模型范围）",
+                    "reported_value": "0.81～0.91",
+                    "evidence": _evidence(),
+                },
+            ]
+        ),
+    )
+
+    assert response.valid is True
+    assert [metric.model for metric in response.metrics[:4]] == [
+        "random_forest",
+        "mlp",
+        "random_forest",
+        "random_forest",
+    ]
+    assert [metric.threshold for metric in response.metrics[2:4]] == [0.5, 0.25]
+    assert [metric.ambiguous for metric in response.metrics[:4]] == [
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert response.metrics[-1].reported_value is None
 
 
 def test_override_replaces_unique_metric_and_preserves_unprovided_fields():

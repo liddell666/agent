@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
@@ -12,6 +14,31 @@ from sklearn.metrics import (
 )
 
 from repro_runner.schemas import ExperimentMetrics, FeatureImportance
+
+
+NUMERIC_METRIC_NAMES: tuple[str, ...] = (
+    "roc_auc",
+    "accuracy",
+    "balanced_accuracy",
+    "precision",
+    "recall",
+    "f1",
+)
+
+
+def mean_std_over_metrics(
+    metrics_list: Sequence[ExperimentMetrics],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Return per-metric mean and population std across a list of fold scores."""
+    means: dict[str, float] = {}
+    stds: dict[str, float] = {}
+    if not metrics_list:
+        return means, stds
+    for name in NUMERIC_METRIC_NAMES:
+        values = [float(getattr(item, name)) for item in metrics_list]
+        means[name] = _round_metric(float(np.mean(values)))
+        stds[name] = _round_metric(float(np.std(values)))
+    return means, stds
 
 
 def evaluate_classifier(

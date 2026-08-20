@@ -3,13 +3,17 @@ from unittest.mock import patch
 
 import pytest
 
-from repro_runner.compare import compare_metrics
+from repro_runner.compare import compare_metrics, compare_suite_metrics
 from repro_runner.config import Settings
 from repro_runner.schemas import (
     DatasetProfile,
     ExperimentConfig,
     ExperimentMetrics,
     ExperimentResult,
+    ExperimentSuiteResult,
+    ModelRunResult,
+    ModelSuiteConfig,
+    SuiteComparisonItem,
     SplitProvenance,
 )
 import repro_runner.storage as storage
@@ -62,6 +66,66 @@ def make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test")
     )
 
 
+def make_suite_result() -> ExperimentSuiteResult:
+    return ExperimentSuiteResult(
+        experiment_id="exp-20260814T010203Z-suite",
+        status="succeeded",
+        config=ModelSuiteConfig(
+            models=["random_forest", "mlp"],
+            workflow_version="multimodel-0.8.0",
+            cv_folds=3,
+            n_iter=1,
+            n_jobs=1,
+            threshold=0.5,
+        ),
+        dataset=DatasetProfile(
+            rows=10,
+            effective_rows=10,
+            features=2,
+            target="Y_cls",
+            missing_values=0,
+            duplicate_rows=0,
+            dataset_id=DATASET_ID,
+        ),
+        split_provenance=SplitProvenance(
+            test_size=0.2,
+            random_state=42,
+            train_rows=8,
+            test_rows=2,
+            test_digest="sha256:" + "c" * 64,
+        ),
+        results=[
+            ModelRunResult(
+                model="random_forest",
+                status="succeeded",
+                metrics=ExperimentMetrics(
+                    roc_auc=0.90,
+                    accuracy=0.80,
+                    balanced_accuracy=0.75,
+                    precision=0.70,
+                    recall=0.60,
+                    f1=0.64,
+                    confusion_matrix=[[4, 1], [1, 4]],
+                ),
+            ),
+            ModelRunResult(
+                model="mlp",
+                status="succeeded",
+                metrics=ExperimentMetrics(
+                    roc_auc=0.85,
+                    accuracy=0.78,
+                    balanced_accuracy=0.73,
+                    precision=0.68,
+                    recall=0.58,
+                    f1=0.62,
+                    confusion_matrix=[[4, 1], [1, 4]],
+                ),
+            ),
+        ],
+        performance_ranking=["random_forest", "mlp"],
+    )
+
+
 def test_comparison_reports_absolute_and_relative_difference():
     result = make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test")
 
@@ -87,6 +151,68 @@ def test_comparison_reports_absolute_and_relative_difference():
     assert item.relative_difference == pytest.approx(-0.010989)
     assert item.paper_value == 0.91
     assert item.independent_value == 0.9
+
+
+def test_suite_comparison_selects_explicit_model_qualifier():
+    result = make_suite_result()
+
+    response = compare_suite_metrics(
+        result,
+        [
+            {
+                "name": "AUC",
+                "model": "random_forest",
+                "reported_value": 0.91,
+                "dataset": "test",
+                "split": "test",
+                "dataset_id": DATASET_ID,
+                "test_size": 0.2,
+                "random_state": 42,
+                "train_rows": 8,
+                "test_rows": 2,
+                "test_digest": "sha256:" + "c" * 64,
+            }
+        ],
+    )
+
+    assert len(response.items) == 1
+    item = response.items[0]
+    assert isinstance(item, SuiteComparisonItem)
+    assert item.model == "random_forest"
+    assert item.independent_value == 0.9
+    assert item.absolute_difference == 0.01
+    assert item.comparable is True
+
+
+def test_suite_comparison_reports_threshold_mismatch_without_losing_difference():
+    result = make_suite_result()
+
+    response = compare_suite_metrics(
+        result,
+        [
+            {
+                "name": "accuracy",
+                "model": "random_forest",
+                "threshold": 0.25,
+                "reported_value": 0.95,
+                "dataset": "test",
+                "split": "test",
+                "dataset_id": DATASET_ID,
+                "test_size": 0.2,
+                "random_state": 42,
+                "train_rows": 8,
+                "test_rows": 2,
+                "test_digest": "sha256:" + "c" * 64,
+            }
+        ],
+    )
+
+    assert len(response.items) == 1
+    item = response.items[0]
+    assert item.independent_value == 0.8
+    assert item.absolute_difference == 0.15
+    assert item.comparable is False
+    assert item.reason == "paper metric threshold differs from the independent run"
 
 
 def test_comparison_requires_matching_dataset_and_split_qualifiers():

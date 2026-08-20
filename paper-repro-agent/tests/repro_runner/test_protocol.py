@@ -122,12 +122,15 @@ def test_create_manifest_preserves_protocol_choices():
             comparison_mode="paper_comparable",
             target_column_confirmed=True,
         ),
-        ModelSuiteConfig(models=["random_forest"]),
+        ModelSuiteConfig(
+            models=["random_forest"], workflow_version="multimodel-0.8.0"
+        ),
     )
 
     assert manifest.missing_policy == "impute"
     assert manifest.sampling_strategy == "balanced_undersample"
     assert manifest.comparison_mode == "paper_comparable"
+    assert manifest.workflow_version == "multimodel-0.8.0"
 
 
 def test_create_manifest_requires_confirmed_target_column():
