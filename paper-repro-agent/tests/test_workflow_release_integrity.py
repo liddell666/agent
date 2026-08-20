@@ -517,6 +517,28 @@ def test_release_checker_rejects_snapshot_mismatch_with_manifest_application_ide
     assert result.stderr == ""
 
 
+def test_release_checker_rejects_conflicting_nested_and_legacy_application_ids(
+    tmp_path: Path,
+):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    _write_dsl(
+        dsl,
+        graph_fixture(),
+        release={
+            "app_id": "94e00245-a1f8-48e3-aba6-41549ab75c6e",
+            "dify": {"app_id": "b9a766a0-0ad0-415b-8d42-60459c92bec7"},
+        },
+    )
+    source.write_bytes(b"SOURCE = 'baseline'\n")
+
+    result = _run_release_checker("--dsl", dsl, "--source", source, "--json")
+
+    assert result.returncode == 2
+    assert result.stdout == '{"error":"invalid_input"}\n'
+    assert result.stderr == ""
+
+
 def test_release_checker_reports_declared_source_baseline_drift(tmp_path: Path):
     dsl = tmp_path / "workflow.yml"
     source = tmp_path / "source.py"
