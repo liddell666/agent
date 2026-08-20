@@ -56,7 +56,7 @@ def test_default_builder_remains_deepseek_compatible() -> None:
     assert default["name"] == "deepseek-v4-flash"
 
 
-def test_ollama_profile_changes_only_provider_metadata() -> None:
+def test_ollama_profile_preserves_prompt_and_pins_provider_metadata() -> None:
     document = build_prepare_dsl("ollama")
     model = _node(document, "extract_paper_dossier")["data"]["model"]
     assert model["provider"] == "langgenius/ollama/ollama"
@@ -77,6 +77,39 @@ def test_ollama_profile_disables_thinking_for_structured_output() -> None:
 
     assert ollama_model["completion_params"]["think"] is False
     assert "think" not in deepseek_model["completion_params"]
+
+
+def test_ollama_profile_uses_grammar_compatible_shape_schema() -> None:
+    ollama_data = _node(build_prepare_dsl("ollama"), "extract_paper_dossier")["data"]
+    deepseek_data = _node(build_prepare_dsl("deepseek"), "extract_paper_dossier")["data"]
+    ollama_schema = ollama_data["structured_output"]["schema"]
+
+    def schema_keys(value: object) -> set[str]:
+        if isinstance(value, dict):
+            keys = set(value)
+            properties = value.get("properties")
+            nested = [item for key, item in value.items() if key != "properties"]
+            if isinstance(properties, dict):
+                nested.extend(properties.values())
+            return keys | set().union(*(schema_keys(item) for item in nested))
+        if isinstance(value, list):
+            return set().union(*(schema_keys(item) for item in value))
+        return set()
+
+    keys = schema_keys(ollama_schema)
+    for unsupported in ("$defs", "$ref", "additionalProperties", "default", "title"):
+        assert unsupported not in keys
+    assert set(ollama_schema["properties"]) == {
+        "title",
+        "research_problem",
+        "task_type",
+        "datasets",
+        "methods",
+        "metrics",
+        "gaps",
+    }
+    assert ollama_schema["required"] == deepseek_data["structured_output"]["schema"]["required"]
+    assert "$defs" in deepseek_data["structured_output"]["schema"]
 
 
 def test_ollama_bundle_has_no_secret_values() -> None:

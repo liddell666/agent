@@ -392,128 +392,133 @@ workflow:
         selected: false
         structured_output:
           schema:
-            $defs:
-              Evidence:
-                additionalProperties: false
-                properties:
-                  confidence:
-                    default: 1
-                    maximum: 1
-                    minimum: 0
-                    title: Confidence
-                    type: number
-                  page:
-                    minimum: 1
-                    title: Page
-                    type: integer
-                  source:
-                    enum:
-                    - paper
-                    - supplement
-                    - repository
-                    - user
-                    - inferred
-                    title: Source
-                    type: string
-                  source_text:
-                    maxLength: 2000
-                    minLength: 1
-                    title: Source Text
-                    type: string
-                required:
-                - page
-                - source_text
-                - source
-                title: Evidence
-                type: object
-              EvidenceBackedFact:
-                additionalProperties: false
-                properties:
-                  description:
-                    minLength: 1
-                    title: Description
-                    type: string
-                  evidence:
-                    items:
-                      $ref: '#/$defs/Evidence'
-                    minItems: 1
-                    title: Evidence
-                    type: array
-                  name:
-                    minLength: 1
-                    title: Name
-                    type: string
-                required:
-                - name
-                - description
-                - evidence
-                title: EvidenceBackedFact
-                type: object
-              ReportedMetric:
-                additionalProperties: false
-                properties:
-                  dataset:
-                    anyOf:
-                    - type: string
-                    - type: 'null'
-                    default: null
-                    title: Dataset
-                  evidence:
-                    items:
-                      $ref: '#/$defs/Evidence'
-                    title: Evidence
-                    type: array
-                  name:
-                    minLength: 1
-                    title: Name
-                    type: string
-                  reported_value:
-                    anyOf:
-                    - type: number
-                    - type: string
-                    - type: 'null'
-                    default: null
-                    title: Reported Value
-                  split:
-                    anyOf:
-                    - type: string
-                    - type: 'null'
-                    default: null
-                    title: Split
-                required:
-                - name
-                title: ReportedMetric
-                type: object
-            additionalProperties: false
             properties:
               datasets:
                 items:
-                  $ref: '#/$defs/EvidenceBackedFact'
-                title: Datasets
+                  properties:
+                    description:
+                      type: string
+                    evidence:
+                      items:
+                        properties:
+                          confidence:
+                            type: number
+                          page:
+                            type: integer
+                          source:
+                            enum:
+                            - paper
+                            - supplement
+                            - repository
+                            - user
+                            - inferred
+                            type: string
+                          source_text:
+                            type: string
+                        required:
+                        - page
+                        - source_text
+                        - source
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                  required:
+                  - name
+                  - description
+                  - evidence
+                  type: object
                 type: array
               gaps:
                 items:
                   type: string
-                title: Gaps
                 type: array
               methods:
                 items:
-                  $ref: '#/$defs/EvidenceBackedFact'
-                title: Methods
+                  properties:
+                    description:
+                      type: string
+                    evidence:
+                      items:
+                        properties:
+                          confidence:
+                            type: number
+                          page:
+                            type: integer
+                          source:
+                            enum:
+                            - paper
+                            - supplement
+                            - repository
+                            - user
+                            - inferred
+                            type: string
+                          source_text:
+                            type: string
+                        required:
+                        - page
+                        - source_text
+                        - source
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                  required:
+                  - name
+                  - description
+                  - evidence
+                  type: object
                 type: array
               metrics:
                 items:
-                  $ref: '#/$defs/ReportedMetric'
-                title: Metrics
+                  properties:
+                    dataset:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                    evidence:
+                      items:
+                        properties:
+                          confidence:
+                            type: number
+                          page:
+                            type: integer
+                          source:
+                            enum:
+                            - paper
+                            - supplement
+                            - repository
+                            - user
+                            - inferred
+                            type: string
+                          source_text:
+                            type: string
+                        required:
+                        - page
+                        - source_text
+                        - source
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    reported_value:
+                      anyOf:
+                      - type: number
+                      - type: string
+                      - type: 'null'
+                    split:
+                      anyOf:
+                      - type: string
+                      - type: 'null'
+                  required:
+                  - name
+                  type: object
                 type: array
               research_problem:
-                title: Research Problem
                 type: string
               task_type:
-                title: Task Type
                 type: string
               title:
-                title: Title
                 type: string
             required:
             - title
@@ -523,7 +528,6 @@ workflow:
             - methods
             - metrics
             - gaps
-            title: PaperDossier
             type: object
         structured_output_enabled: true
         title: extract_paper_dossier
