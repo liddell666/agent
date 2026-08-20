@@ -1349,7 +1349,17 @@ def _ollama_compatible_schema(schema: dict) -> dict:
                 if key not in allowed:
                     continue
                 if key == "properties" and isinstance(item, dict):
-                    converted[key] = {name: convert(property_schema) for name, property_schema in item.items()}
+                    converted_properties = {}
+                    for name, property_schema in item.items():
+                        converted_schema = convert(property_schema)
+                        if (
+                            name == "evidence"
+                            and isinstance(converted_schema, dict)
+                            and converted_schema.get("type") == "array"
+                        ):
+                            converted_schema["minItems"] = 1
+                        converted_properties[name] = converted_schema
+                    converted[key] = converted_properties
                 else:
                     converted[key] = convert(item)
             return converted

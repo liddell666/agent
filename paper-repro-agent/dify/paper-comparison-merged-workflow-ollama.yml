@@ -2432,6 +2432,7 @@ workflow:
                         - source
                         type: object
                       type: array
+                      minItems: 1
                     name:
                       type: string
                   required:
@@ -2472,6 +2473,7 @@ workflow:
                         - source
                         type: object
                       type: array
+                      minItems: 1
                     name:
                       type: string
                   required:
@@ -2510,6 +2512,7 @@ workflow:
                         - source
                         type: object
                       type: array
+                      minItems: 1
                     name:
                       type: string
                     reported_value:

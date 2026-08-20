@@ -111,6 +111,20 @@ def test_ollama_profile_uses_grammar_compatible_shape_schema() -> None:
     assert ollama_schema["required"] == deepseek_data["structured_output"]["schema"]["required"]
     assert "$defs" in deepseek_data["structured_output"]["schema"]
 
+    def named_property_schemas(value: object, name: str) -> list[dict]:
+        if not isinstance(value, dict):
+            return []
+        properties = value.get("properties")
+        found = [properties[name]] if isinstance(properties, dict) and isinstance(properties.get(name), dict) else []
+        nested = [item for key, item in value.items() if key != "properties"]
+        if isinstance(properties, dict):
+            nested.extend(properties.values())
+        return found + [schema for item in nested for schema in named_property_schemas(item, name)]
+
+    evidence_schemas = named_property_schemas(ollama_schema, "evidence")
+    assert evidence_schemas
+    assert all(schema.get("minItems") == 1 for schema in evidence_schemas)
+
 
 def test_ollama_bundle_has_no_secret_values() -> None:
     for document in (build_prepare_dsl("ollama"), build_merged_dsl("ollama")):
