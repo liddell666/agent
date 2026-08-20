@@ -79,51 +79,16 @@ def test_ollama_profile_disables_thinking_for_structured_output() -> None:
     assert "think" not in deepseek_model["completion_params"]
 
 
-def test_ollama_profile_uses_grammar_compatible_shape_schema() -> None:
+def test_ollama_profile_uses_unconstrained_json_with_downstream_validation() -> None:
     ollama_data = _node(build_prepare_dsl("ollama"), "extract_paper_dossier")["data"]
     deepseek_data = _node(build_prepare_dsl("deepseek"), "extract_paper_dossier")["data"]
-    ollama_schema = ollama_data["structured_output"]["schema"]
 
-    def schema_keys(value: object) -> set[str]:
-        if isinstance(value, dict):
-            keys = set(value)
-            properties = value.get("properties")
-            nested = [item for key, item in value.items() if key != "properties"]
-            if isinstance(properties, dict):
-                nested.extend(properties.values())
-            return keys | set().union(*(schema_keys(item) for item in nested))
-        if isinstance(value, list):
-            return set().union(*(schema_keys(item) for item in value))
-        return set()
-
-    keys = schema_keys(ollama_schema)
-    for unsupported in ("$defs", "$ref", "additionalProperties", "default", "title"):
-        assert unsupported not in keys
-    assert set(ollama_schema["properties"]) == {
-        "title",
-        "research_problem",
-        "task_type",
-        "datasets",
-        "methods",
-        "metrics",
-        "gaps",
-    }
-    assert ollama_schema["required"] == deepseek_data["structured_output"]["schema"]["required"]
+    assert "structured_output" not in ollama_data
     assert "$defs" in deepseek_data["structured_output"]["schema"]
-
-    def named_property_schemas(value: object, name: str) -> list[dict]:
-        if not isinstance(value, dict):
-            return []
-        properties = value.get("properties")
-        found = [properties[name]] if isinstance(properties, dict) and isinstance(properties.get(name), dict) else []
-        nested = [item for key, item in value.items() if key != "properties"]
-        if isinstance(properties, dict):
-            nested.extend(properties.values())
-        return found + [schema for item in nested for schema in named_property_schemas(item, name)]
-
-    evidence_schemas = named_property_schemas(ollama_schema, "evidence")
-    assert evidence_schemas
-    assert all(schema.get("minItems") == 1 for schema in evidence_schemas)
+    prompt = ollama_data["prompt_template"]
+    assert "Every metric with a non-null" in prompt[0]["text"]
+    validator = _node(build_prepare_dsl("ollama"), "validate_paper_dossier")["data"]
+    assert validator["variables"][0]["value_selector"][-1] == "text"
 
 
 def test_ollama_bundle_has_no_secret_values() -> None:

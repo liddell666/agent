@@ -1326,51 +1326,8 @@ def _apply_llm_node_profile(node: dict, profile: LLMProfile) -> None:
     model["name"] = profile.model
     if profile.name == "ollama":
         model.setdefault("completion_params", {})["think"] = False
-        structured_output = node["data"].get("structured_output")
-        if isinstance(structured_output, dict) and isinstance(structured_output.get("schema"), dict):
-            structured_output["schema"] = _ollama_compatible_schema(structured_output["schema"])
+        node["data"].pop("structured_output", None)
     node["data"]["model"] = model
-
-
-def _ollama_compatible_schema(schema: dict) -> dict:
-    """Keep the JSON shape Ollama can compile; strict validation runs downstream."""
-    definitions = schema.get("$defs", {})
-    allowed = {"type", "properties", "required", "items", "enum", "anyOf"}
-
-    def convert(value: object) -> object:
-        if isinstance(value, dict):
-            reference = value.get("$ref")
-            if isinstance(reference, str) and reference.startswith("#/$defs/"):
-                target = definitions.get(reference.rsplit("/", 1)[-1])
-                if isinstance(target, dict):
-                    return convert(target)
-            converted: dict = {}
-            for key, item in value.items():
-                if key not in allowed:
-                    continue
-                if key == "properties" and isinstance(item, dict):
-                    converted_properties = {}
-                    for name, property_schema in item.items():
-                        converted_schema = convert(property_schema)
-                        if (
-                            name == "evidence"
-                            and isinstance(converted_schema, dict)
-                            and converted_schema.get("type") == "array"
-                        ):
-                            converted_schema["minItems"] = 1
-                        converted_properties[name] = converted_schema
-                    converted[key] = converted_properties
-                else:
-                    converted[key] = convert(item)
-            return converted
-        if isinstance(value, list):
-            return [convert(item) for item in value]
-        return value
-
-    converted = convert(schema)
-    if not isinstance(converted, dict):
-        raise ValueError("Ollama structured output schema must be an object")
-    return converted
 
 
 def build_prepare_dsl_legacy() -> dict:
