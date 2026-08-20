@@ -1324,6 +1324,8 @@ def _apply_llm_node_profile(node: dict, profile: LLMProfile) -> None:
     model = deepcopy(node["data"].get("model", {}))
     model["provider"] = profile.provider
     model["name"] = profile.model
+    if profile.name == "ollama":
+        model.setdefault("completion_params", {})["think"] = False
     node["data"]["model"] = model
 
 

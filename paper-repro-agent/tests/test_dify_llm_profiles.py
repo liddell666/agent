@@ -71,6 +71,14 @@ def test_ollama_profile_changes_only_provider_metadata() -> None:
     )
 
 
+def test_ollama_profile_disables_thinking_for_structured_output() -> None:
+    ollama_model = _node(build_prepare_dsl("ollama"), "extract_paper_dossier")["data"]["model"]
+    deepseek_model = _node(build_prepare_dsl("deepseek"), "extract_paper_dossier")["data"]["model"]
+
+    assert ollama_model["completion_params"]["think"] is False
+    assert "think" not in deepseek_model["completion_params"]
+
+
 def test_ollama_bundle_has_no_secret_values() -> None:
     for document in (build_prepare_dsl("ollama"), build_merged_dsl("ollama")):
         serialized = yaml.safe_dump(document, allow_unicode=True, sort_keys=False, width=4096)

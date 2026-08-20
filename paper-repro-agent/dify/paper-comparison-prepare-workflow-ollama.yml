@@ -381,6 +381,7 @@ workflow:
         model:
           completion_params:
             temperature: 0.1
+            think: false
           mode: chat
           name: qwen3:8b
           provider: langgenius/ollama/ollama
