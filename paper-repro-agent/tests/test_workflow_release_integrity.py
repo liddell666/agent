@@ -505,3 +505,24 @@ def test_release_checker_does_not_create_bytecode_alongside_its_inputs(
 
     assert result.returncode == 0
     assert not (checker_directory / "__pycache__").exists()
+
+
+@pytest.mark.parametrize("as_json,expected_output", [(False, "invalid_input\n"), (True, '{"error":"invalid_input"}\n')])
+def test_release_checker_rejects_yaml_graphs_that_cannot_be_canonical_json(
+    tmp_path: Path, as_json: bool, expected_output: str
+):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    graph = graph_fixture()
+    graph[1] = "not a JSON object key"
+    _write_dsl(dsl, graph)
+    source.write_bytes(b"SOURCE = 'baseline'\n")
+    arguments: list[Path | str] = ["--dsl", dsl, "--source", source]
+    if as_json:
+        arguments.append("--json")
+
+    result = _run_release_checker(*arguments)
+
+    assert result.returncode == 2
+    assert result.stdout == expected_output
+    assert result.stderr == ""

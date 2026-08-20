@@ -165,7 +165,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         arguments = _arguments(argv)
         drift = _compare(arguments)
-    except (InputError, OSError, UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError, ValueError):
+    except (
+        InputError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        yaml.YAMLError,
+        ValueError,
+    ):
         as_json = "--json" in (argv if argv is not None else sys.argv[1:])
         if as_json:
             sys.stdout.write('{"error":"invalid_input"}\n')
