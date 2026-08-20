@@ -9,6 +9,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 import yaml
 
 from workflow_release_integrity import compare_release_layers, source_digest

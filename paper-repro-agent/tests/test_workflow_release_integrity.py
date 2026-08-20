@@ -4,6 +4,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -351,9 +352,11 @@ def test_compare_release_layers_skips_unavailable_live_layers():
     ) == []
 
 
-def _run_release_checker(*arguments: Path | str) -> subprocess.CompletedProcess[str]:
+def _run_release_checker(
+    *arguments: Path | str, checker: Path = RELEASE_CHECKER
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(RELEASE_CHECKER), *(str(argument) for argument in arguments)],
+        [sys.executable, str(checker), *(str(argument) for argument in arguments)],
         cwd=REPOSITORY_ROOT,
         check=False,
         capture_output=True,
@@ -483,3 +486,22 @@ def test_release_checker_reports_declared_source_baseline_drift(tmp_path: Path):
     assert [item["code"] for item in json.loads(result.stdout)["drift"]] == [
         "source_dsl_drift"
     ]
+
+
+def test_release_checker_does_not_create_bytecode_alongside_its_inputs(
+    tmp_path: Path,
+):
+    checker_directory = tmp_path / "checker"
+    checker_directory.mkdir()
+    checker = checker_directory / RELEASE_CHECKER.name
+    shutil.copy2(RELEASE_CHECKER, checker)
+    shutil.copy2(REPOSITORY_ROOT / "scripts" / "workflow_release_integrity.py", checker_directory)
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    _write_dsl(dsl, graph_fixture())
+    source.write_bytes(b"SOURCE = 'baseline'\n")
+
+    result = _run_release_checker("--dsl", dsl, "--source", source, checker=checker)
+
+    assert result.returncode == 0
+    assert not (checker_directory / "__pycache__").exists()
