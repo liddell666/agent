@@ -4,8 +4,11 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
+import yaml
 
 from scripts.workflow_release_integrity import (
     build_release_manifest,
@@ -14,6 +17,10 @@ from scripts.workflow_release_integrity import (
     graph_digest,
     source_digest,
 )
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+RELEASE_CHECKER = REPOSITORY_ROOT / "scripts" / "check_workflow_release.py"
 
 
 def graph_fixture() -> dict[str, object]:
@@ -342,3 +349,137 @@ def test_compare_release_layers_skips_unavailable_live_layers():
         actual_source_digest="sha256:" + "a" * 64,
         dsl_graph=graph_fixture(),
     ) == []
+
+
+def _run_release_checker(*arguments: Path | str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(RELEASE_CHECKER), *(str(argument) for argument in arguments)],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_dsl(
+    path: Path, graph: dict[str, object], *, release: dict[str, object] | None = None
+) -> None:
+    document: dict[str, object] = {"workflow": {"graph": graph}}
+    if release is not None:
+        document["release"] = release
+    path.write_text(
+        yaml.safe_dump(document, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def test_release_checker_reports_clean_snapshot_as_stable_json(tmp_path: Path):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    draft = tmp_path / "draft.json"
+    published = tmp_path / "published.json"
+    graph = graph_fixture()
+    _write_dsl(dsl, graph)
+    source.write_bytes(b"SOURCE = 'baseline'\n")
+    draft.write_text(json.dumps(graph), encoding="utf-8")
+    published.write_text(json.dumps(graph), encoding="utf-8")
+
+    result = _run_release_checker(
+        "--dsl",
+        dsl,
+        "--source",
+        source,
+        "--draft-snapshot",
+        draft,
+        "--published-snapshot",
+        published,
+        "--json",
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {"drift": []}
+
+
+def test_release_checker_reports_behavioral_snapshot_drift_and_preserves_inputs(
+    tmp_path: Path,
+):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    draft = tmp_path / "draft.json"
+    graph = graph_fixture()
+    changed = changed_graph_fixture()
+    _write_dsl(dsl, graph)
+    source.write_bytes(b"SOURCE = 'baseline'\r\n")
+    draft.write_text(json.dumps(changed, separators=(",", ":")), encoding="utf-8")
+    original_bytes = {path: path.read_bytes() for path in (dsl, source, draft)}
+
+    result = _run_release_checker(
+        "--dsl",
+        dsl,
+        "--source",
+        source,
+        "--draft-snapshot",
+        draft,
+        "--json",
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert json.loads(result.stdout)["drift"][0]["code"] == "dsl_draft_drift"
+    assert {path: path.read_bytes() for path in original_bytes} == original_bytes
+
+
+def test_release_checker_rejects_malformed_graph_with_invalid_input_exit_code(
+    tmp_path: Path,
+):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    _write_dsl(dsl, {"nodes": [], "edges": {}})
+    source.write_bytes(b"SOURCE = 'baseline'\n")
+
+    result = _run_release_checker("--dsl", dsl, "--source", source)
+
+    assert result.returncode == 2
+    assert result.stdout == "invalid_input\n"
+    assert result.stderr == ""
+
+
+def test_release_checker_rejects_snapshot_application_identity_mismatch(
+    tmp_path: Path,
+):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    draft = tmp_path / "draft.json"
+    graph = graph_fixture()
+    _write_dsl(dsl, graph, release={"app_id": "expected-app"})
+    source.write_bytes(b"SOURCE = 'baseline'\n")
+    draft.write_text(
+        json.dumps({"app_id": "other-app", "graph": graph}), encoding="utf-8"
+    )
+
+    result = _run_release_checker(
+        "--dsl", dsl, "--source", source, "--draft-snapshot", draft
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == "invalid_input\n"
+    assert result.stderr == ""
+
+
+def test_release_checker_reports_declared_source_baseline_drift(tmp_path: Path):
+    dsl = tmp_path / "workflow.yml"
+    source = tmp_path / "source.py"
+    source.write_bytes(b"SOURCE = 'changed'\n")
+    _write_dsl(
+        dsl,
+        graph_fixture(),
+        release={"source_digest": "sha256:" + "a" * 64},
+    )
+
+    result = _run_release_checker("--dsl", dsl, "--source", source, "--json")
+
+    assert result.returncode == 1
+    assert [item["code"] for item in json.loads(result.stdout)["drift"]] == [
+        "source_dsl_drift"
+    ]
