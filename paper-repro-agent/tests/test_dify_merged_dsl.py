@@ -208,6 +208,19 @@ def test_merged_run_path_reads_draft_with_header_token_and_no_prepare_inputs():
     assert "extract_paper_dossier" not in serialized_run_nodes
 
 
+def test_merged_draft_read_uses_signed_draft_manifest_identity():
+    nodes = _node_map()
+    confirmation = nodes["normalize_protocol_confirmation"]
+    read_response = nodes["normalize_protocol_draft_read_response"]
+
+    assert "draft_manifest_id" in confirmation["data"]["outputs"]
+    assert {
+        "value_selector": [confirmation["id"], "draft_manifest_id"],
+        "value_type": "string",
+        "variable": "expected_draft_manifest_id",
+    } in read_response["data"]["variables"]
+
+
 def test_merged_experiment_failure_normalizer_uses_context_inputs():
     node = _node_map()["normalize_experiment_http_failure"]
     assert node["data"]["variables"] == [

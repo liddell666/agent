@@ -993,6 +993,53 @@ def test_protocol_draft_response_normalizers_accept_valid_metadata():
     }
 
 
+def test_protocol_draft_read_keeps_signed_draft_identity_when_confirmation_changes_cv_folds():
+    prepared = prepare_protocol_artifacts(
+        '{"title":"Paper","metrics":[]}',
+        json.dumps(
+            {
+                "valid": True,
+                "dataset": {
+                    "dataset_id": "sha256:" + "4" * 64,
+                    "target": "Y_cls",
+                    "column_names": ["x1", "Y_cls"],
+                },
+                "recommended_options": {"feature_columns": ["x1"]},
+            }
+        ),
+        target_column="Y_cls",
+        secret="draft-identity-secret",
+        now=1_000,
+    )
+    original_manifest = json.loads(prepared["protocol_preview_json"])["manifest_draft"]
+    confirmed = normalize_protocol_confirmation(
+        prepared["protocol_token"],
+        True,
+        confirmed_options={"cv_folds": 3},
+        secret="draft-identity-secret",
+        now=1_001,
+    )
+    confirmed_manifest = json.loads(confirmed["manifest_json"])
+    assert confirmed_manifest["manifest_id"] != original_manifest["manifest_id"]
+
+    result = normalize_protocol_draft_read_response(
+        json.dumps(
+            {
+                "draft_id": prepared["draft_id"],
+                "manifest_id": original_manifest["manifest_id"],
+                "dataset_id": original_manifest["dataset_id"],
+                "dossier": {"title": "Paper"},
+            }
+        ),
+        200,
+        prepared["draft_id"],
+        confirmed["manifest_json"],
+        expected_draft_manifest_id=confirmed["draft_manifest_id"],
+    )
+
+    assert result["dossier_ok"] is True
+
+
 def test_protocol_draft_response_normalizers_reject_mismatched_metadata():
     body = json.dumps({
         "draft_id": "draft-cccccccc",

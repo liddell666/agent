@@ -901,6 +901,7 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
         {
             "manifest_json": {"children": None, "type": "string"},
             "draft_id": {"children": None, "type": "string"},
+            "draft_manifest_id": {"children": None, "type": "string"},
             "protocol_errors": {"children": None, "type": "string"},
             "protocol_ok": {"children": None, "type": "boolean"},
         },
@@ -1890,12 +1891,13 @@ def _merged_prepare_output_code() -> str:
 
 
 def _merged_protocol_draft_read_response_code() -> str:
-    return _secret_safe_embedded_experiment_helper_code("""def main(body: str, status_code: int, expected_draft_id: str, manifest_json: str) -> dict:
+    return _secret_safe_embedded_experiment_helper_code("""def main(body: str, status_code: int, expected_draft_id: str, manifest_json: str, expected_draft_manifest_id: str) -> dict:
     return normalize_protocol_draft_read_response(
         body,
         status_code,
         expected_draft_id,
         manifest_json,
+        expected_draft_manifest_id=expected_draft_manifest_id,
     )
 """)
 
@@ -2591,6 +2593,7 @@ def main(
             {"value_selector": [MERGED_GET_DRAFT_ID, "status_code"], "value_type": "number", "variable": "status_code"},
             {"value_selector": [id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "draft_id"], "value_type": "string", "variable": "expected_draft_id"},
             {"value_selector": [id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "manifest_json"], "value_type": "string", "variable": "manifest_json"},
+            {"value_selector": [id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "draft_manifest_id"], "value_type": "string", "variable": "expected_draft_manifest_id"},
         ],
         2740,
         360,

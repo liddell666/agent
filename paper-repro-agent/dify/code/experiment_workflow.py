@@ -617,6 +617,7 @@ def normalize_protocol_confirmation(
         current = time.time()
     manifest = None
     draft_id = None
+    draft_manifest_id = None
     if payload is not None:
         expires_at = _safe_int(payload.get("exp"), 1)
         draft_id = _safe_draft_id(payload.get("draft_id"))
@@ -631,6 +632,7 @@ def normalize_protocol_confirmation(
             errors.append("protocol_token_expired")
         manifest = payload.get("manifest")
         if isinstance(manifest, dict) and isinstance(confirmed_options, dict):
+            draft_manifest_id = _safe_sha(manifest.get("manifest_id"))
             manifest = dict(manifest)
             confirmed_target = _safe_text(confirmed_options.get("target_column"), 128)
             if confirmed_target is not None and confirmed_target != manifest.get("target_column"):
@@ -661,8 +663,10 @@ def normalize_protocol_confirmation(
         errors.extend(_validate_manifest(manifest))
     if errors:
         safe_errors = [_protocol_error(code) for code in dict.fromkeys(errors)]
-        return {"protocol_ok": False, "manifest_json": "{}", "draft_id": "", "protocol_errors": _json(safe_errors)}
-    return {"protocol_ok": True, "manifest_json": _json(manifest), "draft_id": draft_id, "protocol_errors": "[]"}
+        return {"protocol_ok": False, "manifest_json": "{}", "draft_id": "", "draft_manifest_id": "", "protocol_errors": _json(safe_errors)}
+    if draft_manifest_id is None and isinstance(manifest, dict):
+        draft_manifest_id = _safe_sha(manifest.get("manifest_id"))
+    return {"protocol_ok": True, "manifest_json": _json(manifest), "draft_id": draft_id, "draft_manifest_id": draft_manifest_id or "", "protocol_errors": "[]"}
 
 
 def normalize_protocol_draft_write_response(body, status_code, expected_draft_id, expected_manifest_json=None):
@@ -716,7 +720,13 @@ def normalize_protocol_draft_write_response(body, status_code, expected_draft_id
     }
 
 
-def normalize_protocol_draft_read_response(body, status_code, expected_draft_id, manifest_json):
+def normalize_protocol_draft_read_response(
+    body,
+    status_code,
+    expected_draft_id,
+    manifest_json,
+    expected_draft_manifest_id=None,
+):
     errors = []
     if status_code == 404:
         errors.append("protocol_draft_not_found")
@@ -731,7 +741,12 @@ def normalize_protocol_draft_read_response(body, status_code, expected_draft_id,
     if not errors:
         if response.get("draft_id") != expected_draft_id or _safe_draft_id(expected_draft_id) is None:
             errors.append("protocol_draft_token_mismatch")
-        if response.get("manifest_id") != expected.get("manifest_id"):
+        draft_manifest_id = (
+            _safe_sha(expected_draft_manifest_id)
+            if expected_draft_manifest_id is not None
+            else _safe_sha(expected.get("manifest_id"))
+        )
+        if draft_manifest_id is None or response.get("manifest_id") != draft_manifest_id:
             errors.append("protocol_draft_token_mismatch")
         if response.get("dataset_id") != expected.get("dataset_id"):
             errors.append("protocol_draft_token_mismatch")
