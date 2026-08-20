@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import update_v31_similarity_workflow as updater
-from scripts.workflow_release_integrity import canonical_graph, graph_digest
+from scripts.workflow_release_integrity import (
+    build_release_manifest,
+    canonical_graph,
+    graph_digest,
+)
 
 
 APP_ID = updater.APP_ID
@@ -59,6 +63,8 @@ class FakeReleaseService:
         post_publish_graph: dict[str, object] | None = None,
         post_publish_id: str = CANDIDATE_ID,
         fail_once_on: str | None = None,
+        invalid_backup_graph: bool = False,
+        backup_id: object = BACKUP_ID,
     ) -> None:
         current = draft_graph or graph_fixture()
         published = published_graph or current
@@ -67,6 +73,8 @@ class FakeReleaseService:
         self.post_publish_graph = deepcopy(post_publish_graph)
         self.post_publish_id = post_publish_id
         self.fail_once_on = fail_once_on
+        self.invalid_backup_graph = invalid_backup_graph
+        self.backup_id = backup_id
         self.backup_graph: dict[str, object] | None = None
         self.calls: list[str] = []
         self.write_calls: list[str] = []
@@ -87,7 +95,8 @@ class FakeReleaseService:
         self.calls.append("create_backup")
         self.write_calls.append("create_backup")
         self.backup_graph = deepcopy(self.draft.graph_dict)
-        return workflow(BACKUP_ID, self.backup_graph)
+        result_graph = {"nodes": []} if self.invalid_backup_graph else self.backup_graph
+        return SimpleNamespace(id=self.backup_id, graph_dict=deepcopy(result_graph))
 
     def save_draft(
         self,
@@ -180,6 +189,21 @@ def release_mark() -> dict[str, str]:
     }
 
 
+def release_manifest(candidate: dict[str, object]) -> dict[str, object]:
+    return build_release_manifest(
+        git_commit="abc123",
+        worktree_clean=True,
+        source_sha256="sha256:" + "a" * 64,
+        dsl_sha256="sha256:" + "b" * 64,
+        graph_sha256=graph_digest(candidate),
+        workflow_kind="paper-comparison-v31",
+        workflow_version="3.1",
+        app_id=APP_ID,
+        draft_workflow_id=DRAFT_ID,
+        published_workflow_id=PUBLISHED_ID,
+    )
+
+
 def test_publish_verified_graph_orders_backup_publish_and_post_verify() -> None:
     current = graph_fixture()
     candidate = graph_fixture("return {'status': 'candidate'}")
@@ -211,6 +235,93 @@ def test_publish_verified_graph_orders_backup_publish_and_post_verify() -> None:
     ]
     assert fake.draft.graph_dict == candidate_before
     assert candidate == candidate_before
+
+
+def test_publish_verified_graph_validates_and_propagates_task5_manifest() -> None:
+    current = graph_fixture()
+    candidate = graph_fixture("return {'status': 'candidate'}")
+    manifest = release_manifest(candidate)
+    manifest_before = deepcopy(manifest)
+    fake = FakeReleaseService(draft_graph=current)
+
+    result = updater.publish_verified_graph(
+        fake,
+        SimpleNamespace(id=APP_ID),
+        object(),
+        candidate,
+        expected_identity(current),
+        release_mark(),
+        release_manifest=manifest,
+    )
+
+    assert result["release_manifest"] == manifest_before
+    assert result["release_manifest"] is not manifest
+    assert manifest == manifest_before
+
+
+def test_release_manifest_live_identity_mismatch_stops_before_writes() -> None:
+    current = graph_fixture()
+    candidate = graph_fixture("return {'status': 'candidate'}")
+    manifest = release_manifest(candidate)
+    manifest["dify"]["draft_workflow_id"] = ROLLBACK_ID  # type: ignore[index]
+    fake = FakeReleaseService(draft_graph=current)
+
+    with pytest.raises(ValueError, match="release_manifest draft workflow identity mismatch"):
+        updater.publish_verified_graph(
+            fake,
+            SimpleNamespace(id=APP_ID),
+            object(),
+            candidate,
+            expected_identity(current),
+            release_mark(),
+            release_manifest=manifest,
+        )
+
+    assert fake.calls == ["read_draft", "read_published"]
+    assert fake.write_calls == []
+
+
+def test_backup_validation_failure_uses_available_explicit_id_for_rollback() -> None:
+    current = graph_fixture()
+    fake = FakeReleaseService(draft_graph=current, invalid_backup_graph=True)
+
+    result = updater.publish_verified_graph(
+        fake,
+        SimpleNamespace(id=APP_ID),
+        object(),
+        graph_fixture("return {'status': 'candidate'}"),
+        expected_identity(current),
+        release_mark(),
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["failure_code"] == "backup_validation_failed"
+    assert result["failure_operation"] == "validate_backup"
+    assert result["backup_workflow_id"] == BACKUP_ID
+    assert result["rollback_workflow_id"] == ROLLBACK_ID
+    assert fake.rollback_targets == [BACKUP_ID]
+    assert "save_draft" not in fake.calls
+
+
+def test_backup_validation_without_valid_id_reports_unrecoverable() -> None:
+    current = graph_fixture()
+    fake = FakeReleaseService(draft_graph=current, backup_id="not-a-uuid")
+
+    with pytest.raises(
+        RuntimeError,
+        match="unrecoverable Dify backup validation failure.*no valid explicit rollback ID",
+    ):
+        updater.publish_verified_graph(
+            fake,
+            SimpleNamespace(id=APP_ID),
+            object(),
+            graph_fixture("return {'status': 'candidate'}"),
+            expected_identity(current),
+            release_mark(),
+        )
+
+    assert fake.rollback_targets == []
+    assert "save_draft" not in fake.calls
 
 
 def test_publish_verified_graph_rejects_stale_draft_before_writes() -> None:

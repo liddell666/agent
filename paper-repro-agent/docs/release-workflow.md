@@ -62,7 +62,14 @@ digests without saving, backing up, publishing, or rolling back anything.
 
 All writes go through `publish_verified_graph(...)`. The caller must provide an
 `ExpectedReleaseIdentity` containing the application ID and the exact digest of
-the draft that was inspected. The operation then performs these calls in order:
+the draft that was inspected. A caller may also pass the deterministic Task 5
+manifest as `release_manifest`. The adapter reconstructs it through
+`build_release_manifest(...)`, rejects non-canonical shapes, and requires its
+application ID and graph digest to match this release before the first service
+call. After the read-only inspection, its explicit draft and published IDs must
+also match live state before the first mutation. The validated manifest is
+returned unchanged in the release result. The operation then performs these
+calls in order:
 
 1. Read and validate the current draft and published workflow.
 2. Create a named, restorable backup of the current draft.
@@ -74,6 +81,12 @@ the draft that was inspected. The operation then performs these calls in order:
    It never chooses a rollback target by version recency. On Dify versions that
    expose the complete restore service, this also restores serialized RAG
    variables and frozen agent-node bindings before the rollback is published.
+
+The returned backup ID and graph digest are validated before the draft is
+saved. If graph validation fails but a usable backup ID was returned, the
+adapter immediately restores and verifies that exact ID. If no usable ID was
+returned, recovery cannot be targeted safely: the adapter raises an explicit
+unrecoverable backup-validation error and does not claim that rollback occurred.
 
 A successful result has `status: published` and records the backup and
 published workflow IDs. A recovered verification failure has
@@ -87,9 +100,10 @@ exception message. Treat either a raised exception or `rolled_back` as a failed
 candidate release.
 
 Build the deterministic Task 5 manifest with `build_release_manifest(...)`
-before live inspection. After inspection or publishing, build the persisted
-manifest again with only the explicit IDs and digests returned by these
-functions; do not infer an ID from Dify version ordering.
+before live inspection and pass it as `release_manifest` when publishing. After
+inspection or publishing, build the persisted manifest again with only the
+explicit IDs and digests returned by these functions; do not infer an ID from
+Dify version ordering.
 
 The backward-compatible V3.1 command still runs only inside the Dify API
 container:

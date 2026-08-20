@@ -14,15 +14,18 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+from uuid import UUID
 
 try:
     from scripts.workflow_release_integrity import (
+        build_release_manifest,
         canonical_graph,
         compare_release_layers,
         graph_digest,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct ``python scripts/...`` use
     from workflow_release_integrity import (  # type: ignore[no-redef]
+        build_release_manifest,
         canonical_graph,
         compare_release_layers,
         graph_digest,
@@ -270,12 +273,19 @@ def publish_verified_graph(
     candidate_graph: dict[str, object],
     expected_identity: ExpectedReleaseIdentity | ReleaseState | Mapping[str, object],
     mark: ReleaseMark | Mapping[str, object] | str,
+    *,
+    release_manifest: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Back up, publish, verify, and explicitly roll back a candidate graph."""
     identity = _normalize_expected_identity(expected_identity)
     release_mark = _normalize_release_mark(mark)
     candidate = copy.deepcopy(candidate_graph)
     candidate_digest = graph_digest(candidate)
+    validated_manifest = _validate_release_manifest(
+        release_manifest,
+        expected_identity=identity,
+        candidate_digest=candidate_digest,
+    )
 
     state = inspect_release_state(
         service,
@@ -283,6 +293,20 @@ def publish_verified_graph(
         session,
         expected_app_id=identity.app_id,
     )
+    if validated_manifest is not None:
+        manifest_dify = validated_manifest["dify"]
+        if not isinstance(manifest_dify, dict):  # validated above; keeps narrowing local
+            raise ValueError("release_manifest must contain Task 5 Dify identity")
+        if (
+            manifest_dify["draft_workflow_id"] is not None
+            and manifest_dify["draft_workflow_id"] != state.draft_workflow_id
+        ):
+            raise ValueError("release_manifest draft workflow identity mismatch")
+        if (
+            manifest_dify["published_workflow_id"] is not None
+            and manifest_dify["published_workflow_id"] != state.published_workflow_id
+        ):
+            raise ValueError("release_manifest published workflow identity mismatch")
     if state.draft_digest != identity.draft_digest:
         raise ValueError(
             "Dify draft digest mismatch: "
@@ -313,10 +337,39 @@ def publish_verified_graph(
             comment=release_mark.backup_comment,
         ),
     )
-    backup_id = _workflow_id(backup, "backup")
-    backup_graph = getattr(backup, "graph_dict", None)
-    if backup_graph is not None and graph_digest(backup_graph) != state.draft_digest:
-        raise RuntimeError("Dify backup digest mismatch; draft was not saved")
+    try:
+        backup_id = _workflow_id(backup, "backup")
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "unrecoverable Dify backup validation failure: "
+            "no valid explicit rollback ID is available"
+        ) from exc
+    try:
+        backup_graph = getattr(backup, "graph_dict")
+        backup_digest = graph_digest(backup_graph)
+        if backup_digest != state.draft_digest:
+            raise RuntimeError(
+                f"Dify backup digest mismatch: expected {state.draft_digest}, "
+                f"got {backup_digest}"
+            )
+    except Exception as exc:
+        return _rollback_verified(
+            service=service,
+            app_model=app_model,
+            session=session,
+            state=state,
+            release_mark=release_mark,
+            backup_id=backup_id,
+            candidate_digest=candidate_digest,
+            requested_published_id=None,
+            failed_published_id=None,
+            failed_published_digest=None,
+            preexisting_drift=preexisting_drift,
+            failure_code="backup_validation_failed",
+            failure_operation="validate_backup",
+            failure_type=type(exc).__name__,
+            release_manifest=validated_manifest,
+        )
 
     published_id: str | None = None
     active_id: str | None = None
@@ -357,6 +410,7 @@ def publish_verified_graph(
             failure_code="release_operation_failed",
             failure_operation=operation,
             failure_type=type(exc).__name__,
+            release_manifest=validated_manifest,
         )
 
     if active_digest == candidate_digest and active_id == published_id:
@@ -371,6 +425,7 @@ def publish_verified_graph(
             "candidate_digest": candidate_digest,
             "published_digest": active_digest,
             "preexisting_drift": preexisting_drift,
+            "release_manifest": copy.deepcopy(validated_manifest),
         }
 
     return _rollback_verified(
@@ -387,6 +442,7 @@ def publish_verified_graph(
         preexisting_drift=preexisting_drift,
         failure_code="post_publish_verification_failed",
         failure_operation="verify_published",
+        release_manifest=validated_manifest,
     )
 
 
@@ -406,6 +462,7 @@ def _rollback_verified(
     failure_code: str,
     failure_operation: str,
     failure_type: str | None = None,
+    release_manifest: dict[str, object] | None = None,
 ) -> dict[str, object]:
     rollback = service.rollback(
         app_model=app_model,
@@ -447,7 +504,52 @@ def _rollback_verified(
         "failed_published_digest": failed_published_digest,
         "restored_digest": restored_digest,
         "preexisting_drift": preexisting_drift,
+        "release_manifest": copy.deepcopy(release_manifest),
     }
+
+
+def _validate_release_manifest(
+    manifest: Mapping[str, object] | None,
+    *,
+    expected_identity: ExpectedReleaseIdentity,
+    candidate_digest: str,
+) -> dict[str, object] | None:
+    if manifest is None:
+        return None
+    dify = manifest.get("dify")
+    if not isinstance(dify, Mapping):
+        raise ValueError("release_manifest must contain Task 5 Dify identity")
+    try:
+        validated = build_release_manifest(
+            git_commit=manifest["git_commit"],  # type: ignore[arg-type]
+            worktree_clean=manifest["worktree_clean"],  # type: ignore[arg-type]
+            source_sha256=manifest["source_digest"],  # type: ignore[arg-type]
+            dsl_sha256=manifest["dsl_digest"],  # type: ignore[arg-type]
+            graph_sha256=manifest["graph_digest"],  # type: ignore[arg-type]
+            workflow_kind=manifest["workflow_kind"],  # type: ignore[arg-type]
+            workflow_version=manifest["workflow_version"],  # type: ignore[arg-type]
+            app_id=dify.get("app_id"),  # type: ignore[arg-type]
+            draft_workflow_id=dify.get("draft_workflow_id"),  # type: ignore[arg-type]
+            published_workflow_id=dify.get("published_workflow_id"),  # type: ignore[arg-type]
+            rollback_workflow_id=dify.get("rollback_workflow_id"),  # type: ignore[arg-type]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("release_manifest must match the Task 5 manifest contract") from exc
+    if validated != dict(manifest):
+        raise ValueError("release_manifest must be a canonical Task 5 manifest")
+    if validated["graph_digest"] != candidate_digest:
+        raise ValueError("release_manifest graph digest does not match candidate graph")
+    validated_dify = validated["dify"]
+    if not isinstance(validated_dify, dict):  # defensive; Task 5 always returns a dict
+        raise ValueError("release_manifest must contain Task 5 Dify identity")
+    if validated_dify["app_id"] != expected_identity.app_id:
+        raise ValueError("release_manifest application identity mismatch")
+    if (
+        expected_identity.draft_workflow_id is not None
+        and validated_dify["draft_workflow_id"] != expected_identity.draft_workflow_id
+    ):
+        raise ValueError("release_manifest draft workflow identity mismatch")
+    return copy.deepcopy(validated)
 
 
 def _normalize_expected_identity(
@@ -496,6 +598,12 @@ def _workflow_id(workflow: object, label: str) -> str:
     workflow_id = getattr(workflow, "id", None)
     if not isinstance(workflow_id, str) or not workflow_id:
         raise RuntimeError(f"Dify {label} workflow did not return an ID")
+    try:
+        canonical_id = str(UUID(workflow_id))
+    except ValueError as exc:
+        raise RuntimeError(f"Dify {label} workflow returned an invalid ID") from exc
+    if canonical_id != workflow_id:
+        raise RuntimeError(f"Dify {label} workflow returned a non-canonical ID")
     return workflow_id
 
 
