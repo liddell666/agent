@@ -572,7 +572,9 @@ async def wait_for_job_result(
                 request_id = _request_id()
                 logger.exception("waited job result retrieval failed request_id=%s", request_id)
                 raise _internal_error("experiment_lookup_failed", request_id) from None
-        if job.status in {"failed", "cancelled", "needs_retry"}:
+        if job.status in {"failed", "cancelled"} or (
+            job.status == "needs_retry" and job.error_code == "job_inputs_missing"
+        ):
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -580,7 +582,8 @@ async def wait_for_job_result(
                     "message": "The asynchronous job did not produce a successful result.",
                 },
             )
-        if asyncio.get_running_loop().time() >= deadline:
+        now = asyncio.get_running_loop().time()
+        if now >= deadline:
             raise HTTPException(
                 status_code=504,
                 detail={
@@ -588,7 +591,7 @@ async def wait_for_job_result(
                     "message": "The asynchronous job did not finish before the wait timeout.",
                 },
             )
-        await asyncio.sleep(poll_interval)
+        await asyncio.sleep(min(poll_interval, max(0.0, deadline - now)))
 
 
 @app.post("/v1/jobs/{job_id}/cancel", response_model=JobStatusResponse)

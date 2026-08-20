@@ -4,6 +4,7 @@ import json
 from hashlib import sha256
 from threading import Event
 from time import monotonic, sleep
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from repro_runner import api
 from repro_runner.config import Settings, get_settings
 from repro_runner.job_store import JobStore
 from repro_runner.job_runner import stage_job_inputs
+from repro_runner.storage import save_suite_result
 from repro_runner.schemas import (
     DatasetProfile,
     ExperimentManifest,
@@ -229,6 +231,90 @@ def test_wait_result_returns_stored_suite_result_after_job_completion(
 
     assert waited.status_code == 200
     assert waited.json()["experiment_id"] == "exp-20260812T010203Z-deadbeef"
+
+
+def test_wait_result_allows_complete_needs_retry_job_to_resume(
+    client: TestClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api.app.state.job_runner.stop()
+    store = JobStore(settings.job_store_path)
+    content = _csv()
+    manifest = _manifest(content, hex_digit="a", model_count=1)
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    stage_job_inputs(job_id, manifest, content, settings)
+    store.mark_running(job_id, worker_pid=101)
+    store.mark_needs_retry(job_id)
+    result_id = save_suite_result(_suite_result(), settings)
+
+    async def resume_job(_delay: float) -> None:
+        store.mark_running(job_id, worker_pid=102)
+        store.mark_succeeded(job_id, result_id=result_id)
+
+    monkeypatch.setattr(
+        api,
+        "asyncio",
+        SimpleNamespace(
+            get_running_loop=lambda: SimpleNamespace(time=lambda: 0.0),
+            sleep=resume_job,
+        ),
+    )
+
+    response = client.post(f"/v1/jobs/{job_id}/wait-result")
+
+    assert response.status_code == 200
+    assert response.json()["experiment_id"] == "exp-20260812T010203Z-deadbeef"
+
+
+def test_wait_result_rejects_needs_retry_job_with_missing_inputs(
+    client: TestClient, settings: Settings
+) -> None:
+    api.app.state.job_runner.stop()
+    store = JobStore(settings.job_store_path)
+    content = _csv()
+    manifest = _manifest(content, hex_digit="b", model_count=1)
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    stage_job_inputs(job_id, manifest, content, settings)
+    store.mark_running(job_id, worker_pid=103)
+    store.mark_needs_retry(job_id, error_code="job_inputs_missing")
+
+    response = client.post(f"/v1/jobs/{job_id}/wait-result")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "job_not_successful"
+
+
+def test_wait_result_never_sleeps_past_its_deadline(
+    client: TestClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api.app.state.job_runner.stop()
+    store = JobStore(settings.job_store_path)
+    job_id = store.create("manifest-wait-timeout", "sha256:" + "c" * 64)
+    clock = SimpleNamespace(now=0.0)
+    delays: list[float] = []
+
+    def current_time() -> float:
+        return clock.now
+
+    async def advance_time(delay: float) -> None:
+        delays.append(delay)
+        clock.now += delay
+
+    monkeypatch.setattr(
+        api,
+        "asyncio",
+        SimpleNamespace(
+            get_running_loop=lambda: SimpleNamespace(time=current_time),
+            sleep=advance_time,
+        ),
+    )
+
+    response = client.post(
+        f"/v1/jobs/{job_id}/wait-result",
+        params={"timeout_seconds": 0.1, "poll_interval_seconds": 2},
+    )
+
+    assert response.status_code == 504
+    assert delays == [pytest.approx(0.1)]
 
 
 def test_create_job_returns_capacity_response_while_single_worker_is_occupied(
