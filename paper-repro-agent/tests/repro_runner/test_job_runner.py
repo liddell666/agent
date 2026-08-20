@@ -243,6 +243,89 @@ def test_job_runner_skips_needs_retry_jobs_without_staged_inputs(tmp_path):
         runner.stop()
 
 
+def test_job_runner_restart_recovers_running_job_with_complete_staged_inputs(tmp_path):
+    content = _csv()
+    manifest = _manifest(content, manifest_hex="8", models=["logistic_regression"])
+    settings = Settings(
+        storage_dir=tmp_path / "experiments",
+        job_store_path=tmp_path / "jobs.sqlite3",
+        job_work_dir=tmp_path / "job-inputs",
+    )
+    store = JobStore(settings.job_store_path)
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    stage_job_inputs(job_id, manifest, content, settings)
+    store.mark_running(job_id, worker_pid=111)
+
+    restarted_store = JobStore(settings.job_store_path)
+    restarted_runner = JobRunner(
+        store=restarted_store,
+        settings=settings,
+        execute_job=lambda **_kwargs: _suite_result(status="succeeded", model_results=[]),
+    )
+    restarted_runner.start()
+    try:
+        recovered = restarted_store.get(job_id)
+        assert recovered.status == "needs_retry"
+        assert (settings.job_work_dir / job_id / "manifest.json").exists()
+        assert (settings.job_work_dir / job_id / "input.csv").exists()
+    finally:
+        restarted_runner.stop()
+
+
+def test_job_runner_marks_damaged_staged_inputs_as_needs_retry(tmp_path):
+    content = _csv()
+    manifest = _manifest(content, manifest_hex="9", models=["logistic_regression"])
+    settings = Settings(
+        storage_dir=tmp_path / "experiments",
+        job_store_path=tmp_path / "jobs.sqlite3",
+        job_work_dir=tmp_path / "job-inputs",
+    )
+    store = JobStore(settings.job_store_path)
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    stage_job_inputs(job_id, manifest, content, settings)
+    (settings.job_work_dir / job_id / "manifest.json").unlink()
+    store.mark_running(job_id, worker_pid=222)
+    runner = JobRunner(
+        store=store,
+        settings=settings,
+        execute_job=lambda **_kwargs: _suite_result(status="succeeded", model_results=[]),
+    )
+
+    runner._process_job(job_id)
+
+    damaged = store.get(job_id)
+    assert damaged.status == "needs_retry"
+    assert damaged.error_code == "job_inputs_missing"
+
+
+def test_job_runner_restart_marks_missing_staged_inputs_as_needs_retry(tmp_path):
+    content = _csv()
+    manifest = _manifest(content, manifest_hex="a", models=["logistic_regression"])
+    settings = Settings(
+        storage_dir=tmp_path / "experiments",
+        job_store_path=tmp_path / "jobs.sqlite3",
+        job_work_dir=tmp_path / "job-inputs",
+    )
+    store = JobStore(settings.job_store_path)
+    job_id = store.create(manifest.manifest_id, manifest.dataset_id)
+    stage_job_inputs(job_id, manifest, content, settings)
+    store.mark_running(job_id, worker_pid=333)
+    (settings.job_work_dir / job_id / "manifest.json").unlink()
+
+    restarted_runner = JobRunner(
+        store=JobStore(settings.job_store_path),
+        settings=settings,
+        execute_job=lambda **_kwargs: _suite_result(status="succeeded", model_results=[]),
+    )
+    restarted_runner.start()
+    try:
+        damaged = store.get(job_id)
+        assert damaged.status == "needs_retry"
+        assert damaged.error_code == "job_inputs_missing"
+    finally:
+        restarted_runner.stop()
+
+
 @pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
 def test_job_runner_result_persistence_failure_marks_job_failed_and_keeps_worker_alive(
     tmp_path, monkeypatch: pytest.MonkeyPatch

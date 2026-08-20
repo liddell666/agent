@@ -63,6 +63,7 @@ class JobRunner:
 
     def start(self) -> None:
         self.store.recover_incomplete_jobs()
+        self._mark_missing_retry_inputs()
         self._thread = Thread(target=self._run_loop, name="repro-job-runner", daemon=True)
         self._thread.start()
 
@@ -110,7 +111,7 @@ class JobRunner:
             manifest, csv_bytes = _read_job_inputs(job_id, self.settings)
         except FileNotFoundError:
             logger.warning("job inputs missing job_id=%s", job_id)
-            self._preserve_retryable_job(job_id)
+            self._preserve_retryable_job(job_id, error_code="job_inputs_missing")
             return
 
         def progress_callback(model_name: str, completed: int, total: int) -> None:
@@ -182,11 +183,21 @@ class JobRunner:
     def _is_claimable_job(self, job) -> bool:
         return job.status != "needs_retry" or _job_inputs_exist(job.job_id, self.settings)
 
-    def _preserve_retryable_job(self, job_id: str) -> None:
+    def _mark_missing_retry_inputs(self) -> None:
+        for job in self.store.list_needs_retry():
+            if not _job_inputs_exist(job.job_id, self.settings):
+                try:
+                    self.store.mark_retry_inputs_missing(job.job_id)
+                except ValueError:
+                    continue
+
+    def _preserve_retryable_job(
+        self, job_id: str, *, error_code: str | None = ...
+    ) -> None:
         current = self.store.get(job_id)
         if current.status in {"running", "cancel_requested"}:
             try:
-                self.store.mark_needs_retry(job_id)
+                self.store.mark_needs_retry(job_id, error_code=error_code)
             except ValueError:
                 return
 

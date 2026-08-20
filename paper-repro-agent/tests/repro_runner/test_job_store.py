@@ -77,6 +77,21 @@ def test_job_store_rejects_invalid_transitions_and_supports_cancel_failure(tmp_p
         store.mark_running(failed_job_id, worker_pid=99)
 
 
+def test_job_store_only_marks_missing_inputs_for_needs_retry_jobs(tmp_path):
+    store = JobStore(tmp_path / "jobs.sqlite3")
+    job_id = store.create("manifest-missing-inputs", "sha256:" + "8" * 64)
+
+    store.mark_running(job_id, worker_pid=123)
+
+    with pytest.raises(ValueError):
+        store.mark_retry_inputs_missing(job_id)
+
+    running = store.get(job_id)
+    assert running.status == "running"
+    assert running.worker_pid == 123
+    assert running.error_code is None
+
+
 def test_job_store_conditional_transition_rejects_stale_terminal_overwrite(tmp_path):
     store = JobStore(tmp_path / "jobs.sqlite3")
     concurrent_store = JobStore(tmp_path / "jobs.sqlite3")

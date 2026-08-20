@@ -202,6 +202,35 @@ def test_create_job_returns_before_executor_completes_and_polling_shows_progress
     assert result.json()["experiment_id"] == "exp-20260812T010203Z-deadbeef"
 
 
+def test_wait_result_returns_stored_suite_result_after_job_completion(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = _csv()
+    manifest = _manifest(content, hex_digit="4", model_count=1)
+
+    def instant_execute_job(**kwargs):
+        del kwargs
+        return _suite_result()
+
+    monkeypatch.setattr(api, "_default_execute_job", instant_execute_job)
+    created = client.post(
+        "/v1/jobs",
+        data={"manifest_json": manifest.model_dump_json()},
+        files={"file": ("data.csv", content, "text/csv")},
+    )
+    assert created.status_code == 202
+    job_id = created.json()["job_id"]
+    _wait_until(lambda: client.get(f"/v1/jobs/{job_id}").json()["status"] == "succeeded")
+
+    waited = client.post(
+        f"/v1/jobs/{job_id}/wait-result",
+        params={"timeout_seconds": 2},
+    )
+
+    assert waited.status_code == 200
+    assert waited.json()["experiment_id"] == "exp-20260812T010203Z-deadbeef"
+
+
 def test_create_job_returns_capacity_response_while_single_worker_is_occupied(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):

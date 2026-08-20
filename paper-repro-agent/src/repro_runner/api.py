@@ -538,6 +538,59 @@ async def get_job(job_id: str) -> JobStatusResponse:
         raise _job_not_found_error() from None
 
 
+@app.post("/v1/jobs/{job_id}/wait-result", response_model=ExperimentSuiteResult)
+async def wait_for_job_result(
+    job_id: str,
+    timeout_seconds: float = 600.0,
+    poll_interval_seconds: float = 0.5,
+    settings: Settings = Depends(get_settings),
+) -> ExperimentSuiteResult:
+    try:
+        timeout = min(600.0, max(0.1, float(timeout_seconds)))
+    except (TypeError, ValueError):
+        timeout = 600.0
+    try:
+        poll_interval = min(2.0, max(0.05, float(poll_interval_seconds)))
+    except (TypeError, ValueError):
+        poll_interval = 0.5
+
+    store = _get_job_store()
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        try:
+            job = store.get(job_id)
+        except LookupError:
+            raise _job_not_found_error() from None
+        if job.status in {"succeeded", "partial"} and job.result_id is not None:
+            try:
+                return await run_in_threadpool(load_suite_result, job.result_id, settings)
+            except ResultNotFoundError:
+                raise _job_result_unavailable_error() from None
+            except ResultFormatError:
+                raise _result_format_error() from None
+            except Exception:
+                request_id = _request_id()
+                logger.exception("waited job result retrieval failed request_id=%s", request_id)
+                raise _internal_error("experiment_lookup_failed", request_id) from None
+        if job.status in {"failed", "cancelled", "needs_retry"}:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "job_not_successful",
+                    "message": "The asynchronous job did not produce a successful result.",
+                },
+            )
+        if asyncio.get_running_loop().time() >= deadline:
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "code": "job_wait_timeout",
+                    "message": "The asynchronous job did not finish before the wait timeout.",
+                },
+            )
+        await asyncio.sleep(poll_interval)
+
+
 @app.post("/v1/jobs/{job_id}/cancel", response_model=JobStatusResponse)
 async def cancel_job(
     job_id: str, settings: Settings = Depends(get_settings)
@@ -1171,6 +1224,7 @@ def _default_execute_job(
         random_state=manifest.random_state,
         drop_duplicates=False,
         cv_folds=manifest.cv_folds,
+        n_seeds=manifest.n_seeds,
         optimization_metric=manifest.optimization_metric,
         threshold=manifest.threshold,
         n_iter=1,

@@ -80,6 +80,14 @@ class JobStore:
             ).fetchone()
         return row is not None
 
+    def list_needs_retry(self) -> list[JobRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs WHERE status = ? ORDER BY created_at ASC",
+                ("needs_retry",),
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
     def claim_next(
         self,
         *,
@@ -199,7 +207,9 @@ class JobStore:
             ),
         )
 
-    def mark_needs_retry(self, job_id: str) -> None:
+    def mark_needs_retry(
+        self, job_id: str, *, error_code: str | None = ...
+    ) -> None:
         self._transition(
             job_id,
             invalid_message="job cannot transition to needs_retry",
@@ -210,7 +220,18 @@ class JobStore:
                     "stage": "needs_retry",
                     "progress": job.progress,
                     "worker_pid": None,
+                    "error_code": error_code,
                 },
+            ),
+        )
+
+    def mark_retry_inputs_missing(self, job_id: str) -> None:
+        self._transition(
+            job_id,
+            invalid_message="job is no longer waiting for retry inputs",
+            transition=lambda _job: (
+                {"needs_retry"},
+                {"error_code": "job_inputs_missing"},
             ),
         )
 
