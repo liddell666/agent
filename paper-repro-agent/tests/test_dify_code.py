@@ -142,6 +142,37 @@ def test_evidence_validator_accepts_page_backed_metric() -> None:
     assert "0.91" in result["markdown_summary"]
 
 
+def test_evidence_validator_normalizes_supported_metrics_for_suite_comparison() -> None:
+    dossier = _dossier()
+    dossier["metrics"].append(
+        {
+            "name": "custom score",
+            "reported_value": "0.5",
+            "dataset": None,
+            "split": None,
+            "evidence": [
+                {
+                    "page": 2,
+                    "source_text": "The test AUC is 0.91.",
+                    "source": "paper",
+                    "confidence": 1.0,
+                }
+            ],
+        }
+    )
+
+    result = validate_evidence(dossier, 2)
+    metrics = json.loads(result["validated_json"])["metrics"]
+
+    assert metrics[0]["normalized_name"] == "roc_auc"
+    assert metrics[0]["supported"] is True
+    assert metrics[0]["ambiguous"] is False
+    assert metrics[0]["reported_value"] == "0.91"
+    assert metrics[1]["normalized_name"] == "custom_score"
+    assert metrics[1]["supported"] is False
+    assert metrics[1]["ambiguous"] is True
+
+
 def test_evidence_validator_accepts_dify_structured_output_object() -> None:
     result = validate_evidence(_dossier(), 2)
 

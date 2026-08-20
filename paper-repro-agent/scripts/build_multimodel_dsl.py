@@ -12,6 +12,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
 PAPER_DOSSIER_DSL = PROJECT_ROOT / "dify" / "paper-dossier-workflow.yml"
+PAPER_DOSSIER_VALIDATOR = PROJECT_ROOT / "dify" / "code" / "validate_evidence.py"
 TARGET_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
 PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
 MERGED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-merged-workflow.yml"
@@ -1616,6 +1617,7 @@ def build_prepare_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     dossier_validate["position"] = {"x": 1700, "y": 300}
     dossier_validate["positionAbsolute"] = {"x": 1700, "y": 300}
     dossier_validate["data"]["title"] = "validate_paper_dossier"
+    dossier_validate["data"]["code"] = PAPER_DOSSIER_VALIDATOR.read_text(encoding="utf-8")
     dossier_validate["data"]["variables"] = [
         {"value_selector": [extract_id, "text"], "value_type": "string", "variable": "dossier_json"},
         {"value_selector": [parser_validate_id, "parsed_json"], "value_type": "string", "variable": "page_count"},

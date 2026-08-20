@@ -91,6 +91,15 @@ def test_ollama_profile_uses_unconstrained_json_with_downstream_validation() -> 
     assert validator["variables"][0]["value_selector"][-1] == "text"
 
 
+def test_generated_dossier_validator_matches_canonical_code_file() -> None:
+    validator = _node(build_prepare_dsl(), "validate_paper_dossier")["data"]
+    canonical = (Path(__file__).parents[1] / "dify" / "code" / "validate_evidence.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert validator["code"] == canonical
+
+
 def test_ollama_bundle_has_no_secret_values() -> None:
     for document in (build_prepare_dsl("ollama"), build_merged_dsl("ollama")):
         serialized = yaml.safe_dump(document, allow_unicode=True, sort_keys=False, width=4096)

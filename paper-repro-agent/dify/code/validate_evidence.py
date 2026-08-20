@@ -1,7 +1,66 @@
 """Validate dossier citations and build a deterministic Markdown summary."""
 
 import json
+import unicodedata
 from typing import Any
+
+
+_METRIC_ALIASES = {
+    "auc": "roc_auc",
+    "roc_auc": "roc_auc",
+    "总精度": "accuracy",
+    "准确率": "accuracy",
+    "平衡准确率": "balanced_accuracy",
+    "精确率": "precision",
+    "查准率": "precision",
+    "召回率": "recall",
+    "查全率": "recall",
+    "f1值": "f1",
+}
+_SUPPORTED_METRICS = {
+    "roc_auc",
+    "accuracy",
+    "balanced_accuracy",
+    "precision",
+    "recall",
+    "f1",
+}
+
+
+def _normalized_metric_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    display_name = unicodedata.normalize("NFKC", value.strip())
+    if "(" in display_name:
+        display_name = display_name.split("(", 1)[0].strip()
+    normalized = "_".join(
+        display_name.casefold().replace("-", " ").replace("_", " ").split()
+    )
+    return _METRIC_ALIASES.get(normalized, normalized)
+
+
+def _has_metric_qualifier(metric: dict[str, Any]) -> bool:
+    if any(isinstance(metric.get(key), str) and metric[key].strip() for key in ("dataset", "split")):
+        return True
+    name = metric.get("name")
+    if not isinstance(name, str):
+        return False
+    display_name = unicodedata.normalize("NFKC", name)
+    return "(" in display_name and ")" in display_name
+
+
+def _normalize_metrics(dossier: dict[str, Any]) -> None:
+    metrics = dossier.get("metrics")
+    if not isinstance(metrics, list):
+        return
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        normalized_name = _normalized_metric_name(metric.get("name"))
+        supported = normalized_name in _SUPPORTED_METRICS
+        metric["normalized_name"] = normalized_name
+        metric["supported"] = supported
+        metric["ambiguous"] = not supported or not _has_metric_qualifier(metric)
 
 
 def _evidence_pages(items: Any) -> str:
@@ -147,6 +206,7 @@ def main(dossier_json: Any, page_count: Any) -> dict[str, Any]:
             "can_continue": False,
         }
 
+    _normalize_metrics(dossier)
     normalized = json.dumps(dossier, ensure_ascii=False, separators=(",", ":"))
     return {
         "validated_json": normalized,
