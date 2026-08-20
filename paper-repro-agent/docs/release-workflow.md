@@ -50,17 +50,19 @@ $mainCheckout = (Get-Location).Path
 $repoRoot = (git rev-parse --show-toplevel).Trim()
 $commit = (git rev-parse HEAD).Trim()
 $prefix = (git rev-parse --show-prefix).TrimEnd('/')
+$archiveTree = if ($prefix) { "$commit`:$prefix" } else { $commit }
 $archive = Join-Path ([System.IO.Path]::GetTempPath()) ("release-baseline-$($commit.Substring(0, 12))-$([guid]::NewGuid().ToString('N'))")
 New-Item -ItemType Directory -Path $archive | Out-Null
 $archiveZip = Join-Path $archive 'candidate.zip'
-if ($prefix) {
-  git -c core.autocrlf=false -c core.eol=lf -C $repoRoot archive --format=zip --output $archiveZip $commit -- $prefix
-} else {
-  git -c core.autocrlf=false -c core.eol=lf -C $repoRoot archive --format=zip --output $archiveZip $commit
-}
+git -c core.autocrlf=false -c core.eol=lf -C $repoRoot archive --format=zip --prefix='' --output $archiveZip $archiveTree
 if ($LASTEXITCODE -ne 0) { throw 'git archive export failed' }
+if ((Get-Item -LiteralPath $archiveZip).Length -le 22) { throw 'git archive export is empty' }
 Expand-Archive -LiteralPath $archiveZip -DestinationPath $archive
-$candidateRoot = if ($prefix) { Join-Path $archive $prefix } else { $archive }
+$candidateRoot = $archive
+if (-not (Test-Path (Join-Path $candidateRoot 'scripts')) -or
+    -not (Test-Path (Join-Path $candidateRoot 'src'))) {
+  throw 'git archive export is missing scripts or src'
+}
 
 function Assert-ArchiveBlobBytes([string] $relativePath) {
   $repoPath = if ($prefix) { "$prefix/$relativePath" } else { $relativePath }
