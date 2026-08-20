@@ -42,8 +42,25 @@ def graph_fixture() -> dict[str, object]:
                     "conditions": [{"operator": "is", "value": "ready"}],
                 },
             },
+            {
+                "id": "start",
+                "position": {"x": 0, "y": 120},
+                "data": {
+                    "code": "query = inputs['query']",
+                    "inputs": ["query"],
+                    "outputs": ["query"],
+                },
+            },
         ],
         "edges": [
+            {
+                "id": "edge-start-runner",
+                "source": "start",
+                "sourceHandle": "query",
+                "target": "runner",
+                "targetHandle": "query",
+                "selected": True,
+            },
             {
                 "id": "edge-runner-answer",
                 "source": "runner",
@@ -75,13 +92,41 @@ def test_graph_digest_ignores_layout_but_not_behavior():
 
 
 @pytest.mark.parametrize(
+    "key,value",
+    [
+        ("selected", True),
+        ("position", {"x": 1, "y": 2}),
+        ("positionAbsolute", {"x": 3, "y": 4}),
+        ("viewport", {"x": 5, "y": 6, "zoom": 2}),
+        ("width", 100),
+        ("height", 200),
+        ("zIndex", 3),
+    ],
+)
+def test_graph_digest_ignores_every_volatile_graph_key(key: str, value: object):
+    baseline = graph_fixture()
+    layout_only = deepcopy(baseline)
+    layout_only["nodes"][0][key] = value  # type: ignore[index]
+
+    assert graph_digest(layout_only) == graph_digest(baseline)
+
+
+def test_graph_digest_rejects_nonfinite_values():
+    graph = graph_fixture()
+    graph["nodes"][0]["data"]["score"] = float("nan")  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        graph_digest(graph)
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         lambda graph: graph["nodes"][0].update({"id": "different-answer"}),
         lambda graph: graph["nodes"][0]["data"].update({"inputs": ["other"]}),
         lambda graph: graph["nodes"][0]["data"].update({"outputs": ["other"]}),
         lambda graph: graph["nodes"][1]["data"].update({"conditions": []}),
-        lambda graph: graph["edges"][0].update({"target": "runner"}),
+        lambda graph: graph["edges"][0].update({"target": "answer"}),
     ],
 )
 def test_graph_digest_preserves_behavioral_identity(mutation):
@@ -110,11 +155,35 @@ def test_source_digest_uses_sorted_relative_posix_paths_and_file_bytes(tmp_path:
     first.write_bytes(b"A = 1\n")
     second.write_bytes(b"B = 2\n")
 
-    payload = b"a.py\0A = 1\n\0nested/b.py\0B = 2\n\0"
+    def frame(value: bytes) -> bytes:
+        return len(value).to_bytes(8, "big") + value
+
+    payload = b"".join(
+        [
+            frame(b"a.py"),
+            frame(b"A = 1\n"),
+            frame(b"nested/b.py"),
+            frame(b"B = 2\n"),
+        ]
+    )
     expected = "sha256:" + sha256(payload).hexdigest()
 
     assert source_digest([second, first], source_root) == expected
     assert source_digest([first, second], source_root) == expected
+
+
+def test_source_digest_distinguishes_nul_delimited_collision_source_sets(tmp_path: Path):
+    one = tmp_path / "one"
+    two = tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    (one / "a").write_bytes(b"B\0c\0D")
+    (two / "a").write_bytes(b"B")
+    (two / "c").write_bytes(b"D")
+
+    assert source_digest([one / "a"], one) != source_digest(
+        [two / "a", two / "c"], two
+    )
 
 
 @pytest.mark.parametrize(

@@ -86,10 +86,8 @@ def source_digest(paths: Sequence[Path], root: Path) -> str:
 
     digest = hashlib.sha256()
     for relative, path in entries:
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
+        _update_framed(digest, relative.encode("utf-8"))
+        _update_framed(digest, path.read_bytes())
     return "sha256:" + digest.hexdigest()
 
 
@@ -251,3 +249,9 @@ def _optional_uuid(name: str, value: str | None) -> str | None:
     if str(parsed) != value:
         raise ValueError(f"{name} must be a canonical UUID or None")
     return value
+
+
+def _update_framed(digest: hashlib._Hash, value: bytes) -> None:
+    """Append an unambiguous length-prefixed byte field to a digest."""
+    digest.update(len(value).to_bytes(8, "big"))
+    digest.update(value)
