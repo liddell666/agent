@@ -8,6 +8,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from uuid import UUID
 
 sys.dont_write_bytecode = True
 
@@ -85,22 +86,43 @@ def _source_baseline(document: Mapping[str, object], actual_digest: str) -> str:
     return declared
 
 
+def _canonical_application_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InputError("application identity must be a canonical UUID")
+    try:
+        parsed = UUID(value)
+    except ValueError as exc:
+        raise InputError("application identity must be a canonical UUID") from exc
+    if str(parsed) != value:
+        raise InputError("application identity must be a canonical UUID")
+    return value
+
+
 def _application_id(mapping: Mapping[str, object]) -> str | None:
     identity = mapping.get("identity", mapping)
     if not isinstance(identity, Mapping):
         raise InputError("snapshot identity must be an object")
-    value = identity.get("app_id")
-    if value is None:
-        return None
-    if not isinstance(value, str) or not value:
-        raise InputError("snapshot application identity must be a non-empty string")
-    return value
+    return _canonical_application_id(identity.get("app_id"))
+
+
+def _manifest_application_id(document: Mapping[str, object]) -> str | None:
+    metadata = _metadata(document)
+    legacy = _canonical_application_id(metadata.get("app_id"))
+    if "dify" not in metadata:
+        return legacy
+    dify = _mapping(metadata["dify"], "release dify metadata")
+    manifest = _canonical_application_id(dify.get("app_id"))
+    if legacy is not None and manifest is not None and legacy != manifest:
+        raise InputError("application identity mismatch")
+    return manifest if manifest is not None else legacy
 
 
 def _require_matching_identity(
     document: Mapping[str, object], snapshots: list[Mapping[str, object]]
 ) -> None:
-    expected = _application_id(_metadata(document))
+    expected = _manifest_application_id(document)
     actual = [identity for snapshot in snapshots if (identity := _application_id(snapshot))]
     if expected is not None and any(identity != expected for identity in actual):
         raise InputError("application identity mismatch")

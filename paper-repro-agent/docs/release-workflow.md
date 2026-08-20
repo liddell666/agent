@@ -21,9 +21,19 @@ python scripts/check_workflow_release.py `
 
 Snapshots are JSON objects containing either a graph directly or a `graph`
 object. A snapshot may include `app_id` (or `identity.app_id`); provided draft
-and published application IDs must agree. To enable a source-to-DSL baseline,
-the DSL may contain a top-level `release.source_digest` matching the Task 5
-digest format. When that field is absent, the checker still compares the DSL,
+and published application IDs must be canonical UUIDs and agree with the Task
+5 manifest identity at `document.release.dify.app_id`. To enable a
+source-to-DSL baseline, declare the digest explicitly as
+`document.release.source_digest`:
+
+```yaml
+release:
+  source_digest: sha256:...
+  dify:
+    app_id: b9a766a0-0ad0-415b-8d42-60459c92bec7
+```
+
+When `release.source_digest` is absent, the checker still compares the DSL,
 draft, and published graphs.
 
 The command writes only its result to standard output. It never saves a draft,
