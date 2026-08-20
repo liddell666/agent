@@ -83,23 +83,23 @@ def test_ollama_bundle_has_no_secret_values() -> None:
 
 
 def test_ollama_output_paths_are_suffixed_and_deterministic(tmp_path: Path) -> None:
-    first = write_profile_dsls("ollama", tmp_path)
+    first = write_profile_dsls("ollama", output_root=tmp_path)
     first_bytes = tuple(path.read_bytes() for path in first)
-    second = write_profile_dsls("ollama", tmp_path)
+    second = write_profile_dsls("ollama", output_root=tmp_path)
     assert tuple(path.name for path in first) == (
+        "paper-comparison-merged-workflow-ollama.yml",
         "paper-comparison-multimodel-workflow-ollama.yml",
         "paper-comparison-prepare-workflow-ollama.yml",
-        "paper-comparison-merged-workflow-ollama.yml",
     )
     assert tuple(path.read_bytes() for path in second) == first_bytes
 
 
 def test_default_output_paths_have_no_profile_suffix(tmp_path: Path) -> None:
-    paths = write_profile_dsls("deepseek", tmp_path)
+    paths = write_profile_dsls("deepseek", output_root=tmp_path)
     assert tuple(path.name for path in paths) == (
+        "paper-comparison-merged-workflow.yml",
         "paper-comparison-multimodel-workflow.yml",
         "paper-comparison-prepare-workflow.yml",
-        "paper-comparison-merged-workflow.yml",
     )
 
 

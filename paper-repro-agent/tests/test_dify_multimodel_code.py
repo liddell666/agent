@@ -15,6 +15,7 @@ from dify.code.experiment_workflow import (
     prepare_protocol_artifacts,
     normalize_suite_inputs,
     poll_job_until_terminal,
+    poll_submitted_job_until_terminal,
 )
 
 
@@ -156,6 +157,84 @@ def test_suite_request_only_forwards_experiment_id_and_supported_metric_provenan
         ],
     }
     assert RAW_SENTINEL not in result["suite_comparison_request_json"]
+
+
+def test_suite_request_accepts_explicitly_qualified_duplicate_metrics() -> None:
+    dossier = json.dumps(
+        {
+            "metrics": [
+                {
+                    "name": "AUC (random forest best model)",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": True,
+                    "reported_value": 0.91,
+                },
+                {
+                    "name": "AUC (neural network best model)",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": True,
+                    "reported_value": 0.88,
+                },
+                {
+                    "name": "AUC",
+                    "normalized_name": "roc_auc",
+                    "supported": True,
+                    "ambiguous": True,
+                    "reported_value": 0.81,
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+    suite = json.dumps(
+        {"experiment_id": "exp-20260811T000000Z-qualified", "results": []},
+        ensure_ascii=False,
+    )
+
+    result = build_suite_comparison_request(dossier, suite)
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"])["reported_metrics"] == [
+        {"name": "roc_auc", "reported_value": 0.91},
+        {"name": "roc_auc", "reported_value": 0.88},
+    ]
+
+
+def test_suite_request_forwards_model_and_threshold_qualifiers() -> None:
+    dossier = json.dumps(
+        {
+            "metrics": [
+                {
+                    "name": "总精度（阈值0.5，随机森林）",
+                    "normalized_name": "accuracy",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 0.951,
+                    "model": "random_forest",
+                    "threshold": 0.5,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    suite = json.dumps(
+        {"experiment_id": "exp-suite-qualified", "results": []},
+        ensure_ascii=False,
+    )
+
+    result = build_suite_comparison_request(dossier, suite)
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"])["reported_metrics"] == [
+        {
+            "name": "accuracy",
+            "reported_value": 0.951,
+            "model": "random_forest",
+            "threshold": 0.5,
+        }
+    ]
 
 
 def test_suite_request_sanitizes_invalid_provenance_fields_without_echoing_raw_payloads() -> None:
@@ -666,6 +745,38 @@ def test_prepare_protocol_artifacts_returns_bound_draft_id_and_expiry():
     assert confirmed["draft_id"] == result["draft_id"]
 
 
+def test_confirmed_manifest_carries_workflow_contract_version() -> None:
+    result = prepare_protocol_artifacts(
+        '{"title":"Paper"}',
+        json.dumps(
+            {
+                "valid": True,
+                "dataset": {
+                    "dataset_id": "sha256:" + "5" * 64,
+                    "target": "Y_cls",
+                    "column_names": ["x1", "Y_cls"],
+                },
+                "recommended_options": {"feature_columns": ["x1"]},
+            },
+            ensure_ascii=False,
+        ),
+        target_column="Y_cls",
+        secret="workflow-version-secret",
+        now=1_000,
+    )
+
+    preview = json.loads(result["protocol_preview_json"])
+    confirmed = normalize_protocol_confirmation(
+        result["protocol_token"],
+        True,
+        secret="workflow-version-secret",
+        now=1_001,
+    )
+
+    assert preview["manifest_draft"]["workflow_version"] == "multimodel-0.8.0"
+    assert json.loads(confirmed["manifest_json"])["workflow_version"] == "multimodel-0.8.0"
+
+
 def test_prepare_protocol_artifacts_never_echoes_protocol_secret():
     protocol_secret = "helper-secret-should-not-appear"
     result = prepare_protocol_artifacts(
@@ -1025,6 +1136,32 @@ def test_poll_job_until_terminal_redacts_malformed_backend_payloads() -> None:
         assert sentinel not in payload
 
 
+def test_format_suite_comparison_report_surfaces_runtime_provenance() -> None:
+    result = format_suite_comparison_report(
+        json.dumps({"title": "Paper", "metrics": []}, ensure_ascii=False),
+        json.dumps({"valid": True}, ensure_ascii=False),
+        json.dumps(
+            {
+                "experiment_id": "exp-suite-runtime",
+                "status": "succeeded",
+                "runtime": {
+                    "service_version": "0.2.0",
+                    "source_digest": "sha256:" + "a" * 64,
+                    "git_commit": "abc123",
+                    "workflow_version": "multimodel-0.8.0",
+                },
+                "results": [],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps({"experiment_id": "exp-suite-runtime", "items": []}),
+        json.dumps({"strict_status": "not_comparable", "items": []}),
+    )
+
+    assert "runner commit: abc123" in result["markdown_report"]
+    assert "workflow version: multimodel-0.8.0" in result["markdown_report"]
+
+
 def test_poll_job_until_terminal_rejects_empty_terminal_result() -> None:
     def fake_request(method: str, url: str, payload: str | None = None) -> tuple[int, str]:
         if method == "POST":
@@ -1043,3 +1180,39 @@ def test_poll_job_until_terminal_rejects_empty_terminal_result() -> None:
 
     assert result["experiment_ok"] is False
     assert json.loads(result["experiment_errors"])[0]["code"] == "job_result_failed"
+
+
+def test_poll_submitted_job_until_terminal_only_polls_an_already_admitted_job() -> None:
+    calls: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+
+    def fake_request(method: str, url: str, payload: str | None = None) -> tuple[int, str]:
+        calls.append((method, url))
+        if url.endswith("/result"):
+            return 200, json.dumps(
+                {
+                    "experiment_id": "exp-20260812T010203Z-deadbeef",
+                    "results": [],
+                },
+                ensure_ascii=False,
+            )
+        if len(calls) == 1:
+            return 200, '{"job_id":"job-123","status":"running"}'
+        return 200, '{"job_id":"job-123","status":"succeeded","result_id":"exp-20260812T010203Z-deadbeef"}'
+
+    result = poll_submitted_job_until_terminal(
+        "http://repro-runner:8001",
+        '{"job_id":"job-123","status":"queued"}',
+        request_func=fake_request,
+        sleep_func=sleeps.append,
+        poll_interval_seconds=0.25,
+        max_polls=3,
+    )
+
+    assert result["experiment_ok"] is True
+    assert calls == [
+        ("GET", "http://repro-runner:8001/v1/jobs/job-123"),
+        ("GET", "http://repro-runner:8001/v1/jobs/job-123"),
+        ("GET", "http://repro-runner:8001/v1/jobs/job-123/result"),
+    ]
+    assert sleeps == [0.25]

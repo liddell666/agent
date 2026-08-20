@@ -72,6 +72,7 @@ _SUITE_MODEL_NAMES = (
     "knn",
     "mlp",
 )
+_SUITE_WORKFLOW_VERSION = "multimodel-0.8.0"
 _SUITE_METRICS = {"roc_auc", "f1", "recall", "balanced_accuracy"}
 
 
@@ -344,6 +345,12 @@ def _safe_metrics(value):
             "supported": raw.get("supported") is True,
             "reported_value": _safe_number(raw.get("reported_value"), 0, 1),
         }
+        model = raw.get("model")
+        if model in _SUITE_MODEL_NAMES:
+            item["model"] = model
+        threshold = _safe_number(raw.get("threshold"), 0, 1)
+        if threshold is not None:
+            item["threshold"] = threshold
         for key in ("dataset", "split"):
             value = _safe_text(raw.get(key), 64)
             if value is not None:
@@ -411,6 +418,7 @@ def _manifest_draft(diagnosis, target_column, protocol_notes):
         "optimization_metric": recommended.get("optimization_metric") if recommended.get("optimization_metric") in _SUITE_METRICS else "roc_auc",
         "threshold": _safe_number(recommended.get("threshold"), 0, 1) if _safe_number(recommended.get("threshold"), 0, 1) is not None else 0.5,
         "models": list(_SUITE_MODEL_NAMES),
+        "workflow_version": _SUITE_WORKFLOW_VERSION,
     }
     notes = _safe_text(protocol_notes, 512)
     canonical = dict(draft)
@@ -476,6 +484,11 @@ def _validate_manifest(manifest):
     if not isinstance(manifest, dict):
         return ["protocol_payload_invalid"]
     errors = []
+    if (
+        "workflow_version" in manifest
+        and _safe_text(manifest.get("workflow_version"), 128) is None
+    ):
+        errors.append("protocol_options_invalid")
     if _safe_sha(manifest.get("manifest_id")) is None:
         errors.append("protocol_payload_invalid")
     if _safe_sha(manifest.get("dataset_id")) is None:
@@ -783,6 +796,25 @@ def _safe_result(value, job_id, status):
             metrics = raw.get("metrics")
             if isinstance(metrics, dict):
                 item["metrics"] = {key: score for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1") if (score := _safe_number(metrics.get(key), 0, 1)) is not None}
+            for metric_key in ("cv_mean", "cv_std"):
+                distribution = raw.get(metric_key)
+                if isinstance(distribution, dict):
+                    item[metric_key] = {
+                        key: score
+                        for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1")
+                        if (score := _safe_number(distribution.get(key), 0, 1)) is not None
+                    }
+            seed_means = raw.get("seed_means")
+            if isinstance(seed_means, dict):
+                item["seed_means"] = {
+                    key: [
+                        score
+                        for value in values
+                        if (score := _safe_number(value, 0, 1)) is not None
+                    ]
+                    for key, values in seed_means.items()
+                    if key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1") and isinstance(values, list)
+                }
             if isinstance(raw.get("error"), dict):
                 item["error"] = {"code": _safe_code(raw["error"].get("code")) or "unavailable", "message": "Model result is unavailable."}
             safe_results.append(item)
@@ -838,37 +870,29 @@ def _request(method, url, manifest_json, csv_bytes=None):
         return 599, ""
 
 
-def poll_job_until_terminal(
+def _poll_submitted_job_until_terminal(
     base_url,
-    manifest_json,
-    training_csv=None,
+    job,
     *,
     request_func=None,
     sleep_func=None,
     poll_interval_seconds=0.5,
     max_polls=60,
 ):
-    if not isinstance(manifest_json, str) or not _object(manifest_json):
-        return _error_result("protocol_payload_invalid")
     if not isinstance(base_url, str) or re.fullmatch(r"https?://[A-Za-z0-9._:-]{1,200}", base_url.rstrip("/")) is None:
         return _error_result("job_transport_failed")
+    safe_job = _safe_job(job)
+    if safe_job is None:
+        return _error_result("job_response_invalid")
     try:
         interval = min(10.0, max(0.1, float(poll_interval_seconds)))
     except (TypeError, ValueError):
         interval = 0.5
     polls = min(120, max(1, _safe_int(max_polls, 1) or 60))
-    csv_bytes = _csv_bytes(training_csv)
-    requester = request_func or (lambda method, url, payload=None: _request(method, url, payload or manifest_json, csv_bytes))
+    requester = request_func or (lambda method, url, payload=None: _request(method, url, "{}"))
     sleeper = sleep_func or time.sleep
     root = base_url.rstrip("/")
-    try:
-        status_code, body = requester("POST", root + "/v1/jobs", manifest_json)
-    except Exception:
-        return _error_result("job_transport_failed")
-    job = _safe_job(_object(body))
-    if status_code not in {200, 202} or job is None:
-        return _error_result("job_submit_rejected")
-    job_id = job["job_id"]
+    job_id = safe_job["job_id"]
     for attempt in range(polls):
         try:
             status_code, body = requester("GET", root + f"/v1/jobs/{job_id}")
@@ -902,3 +926,65 @@ def poll_job_until_terminal(
             except Exception:
                 return _error_result("job_transport_failed", job_id, status)
     return _error_result("poll_timeout", job_id, "running")
+
+
+def poll_submitted_job_until_terminal(
+    base_url,
+    job_response_json,
+    *,
+    request_func=None,
+    sleep_func=None,
+    poll_interval_seconds=0.5,
+    max_polls=60,
+):
+    job = _object(job_response_json)
+    if not isinstance(job_response_json, (str, dict)) or _safe_job(job) is None:
+        return _error_result("job_response_invalid")
+    return _poll_submitted_job_until_terminal(
+        base_url,
+        job,
+        request_func=request_func,
+        sleep_func=sleep_func,
+        poll_interval_seconds=poll_interval_seconds,
+        max_polls=max_polls,
+    )
+
+
+def poll_job_until_terminal(
+    base_url,
+    manifest_json,
+    training_csv=None,
+    *,
+    request_func=None,
+    sleep_func=None,
+    poll_interval_seconds=0.5,
+    max_polls=60,
+):
+    if not isinstance(manifest_json, str) or not _object(manifest_json):
+        return _error_result("protocol_payload_invalid")
+    if not isinstance(base_url, str) or re.fullmatch(r"https?://[A-Za-z0-9._:-]{1,200}", base_url.rstrip("/")) is None:
+        return _error_result("job_transport_failed")
+    try:
+        interval = min(10.0, max(0.1, float(poll_interval_seconds)))
+    except (TypeError, ValueError):
+        interval = 0.5
+    polls = min(120, max(1, _safe_int(max_polls, 1) or 60))
+    csv_bytes = _csv_bytes(training_csv)
+    requester = request_func or (lambda method, url, payload=None: _request(method, url, payload or manifest_json, csv_bytes))
+    sleeper = sleep_func or time.sleep
+    root = base_url.rstrip("/")
+    try:
+        status_code, body = requester("POST", root + "/v1/jobs", manifest_json)
+    except Exception:
+        return _error_result("job_transport_failed")
+    job = _safe_job(_object(body))
+    if status_code not in {200, 202} or job is None:
+        return _error_result("job_submit_rejected")
+    return _poll_submitted_job_until_terminal(
+        base_url,
+        job,
+        request_func=requester,
+        sleep_func=sleeper,
+        poll_interval_seconds=interval,
+        max_polls=polls,
+    )

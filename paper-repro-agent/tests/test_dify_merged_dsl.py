@@ -88,16 +88,28 @@ def test_merged_outputs_are_separate_and_non_empty():
     }
 
 
-def test_merged_graph_wires_prepare_and_run_directly_to_their_outputs():
+def test_merged_output_variable_names_are_unique_across_all_end_nodes():
+    ends = [node for node in _nodes() if node["data"]["type"] == "end"]
+    output_names = [
+        output["variable"]
+        for node in ends
+        for output in node["data"].get("outputs", [])
+    ]
+
+    assert len(output_names) == len(set(output_names))
+
+
+def test_merged_graph_wires_prepare_and_run_through_shared_output_aggregators():
     nodes = _node_map()
     edges = _document()["workflow"]["graph"]["edges"]
     assert _has_edge(edges, nodes["run_mode?"], nodes["prepare_pdf_present?"], "true")
-    assert _has_edge(edges, nodes["draft_saved_ok?"], nodes["Output_prepare"], "true")
-    assert _has_edge(edges, nodes["format_suite_comparison_report"], nodes["Output_run"], "source")
+    assert _has_edge(edges, nodes["draft_saved_ok?"], nodes["prepare_output_success"], "true")
+    assert _has_edge(edges, nodes["aggregate_prepare_draft_expires_at"], nodes["Output_prepare"], "source")
+    assert _has_edge(edges, nodes["aggregate_run_markdown_report"], nodes["Output_run"], "source")
     assert all(
         edge["target"] != nodes["Output_run"]["id"]
         for edge in edges
-        if edge["source"] == nodes["prepare_protocol_draft_response"]["id"]
+        if edge["source"] == nodes["format_suite_comparison_report"]["id"]
     )
 
 
@@ -196,6 +208,33 @@ def test_merged_run_path_reads_draft_with_header_token_and_no_prepare_inputs():
     assert "extract_paper_dossier" not in serialized_run_nodes
 
 
+def test_merged_experiment_failure_normalizer_uses_context_inputs():
+    node = _node_map()["normalize_experiment_http_failure"]
+    assert node["data"]["variables"] == [
+        {
+            "value_selector": [_node_map()["normalize_protocol_draft_read_response"]["id"], "dossier_json"],
+            "value_type": "string",
+            "variable": "dossier_json",
+        },
+        {
+            "value_selector": [_node_map()["parse_validation_response"]["id"], "validation_json"],
+            "value_type": "string",
+            "variable": "validation_json",
+        }
+    ]
+
+
+def test_merged_poll_failure_routes_to_experiment_failure_normalizer():
+    nodes = _node_map()
+    edges = _document()["workflow"]["graph"]["edges"]
+    assert _has_edge(
+        edges,
+        nodes["poll_confirmed_job"],
+        nodes["normalize_experiment_http_failure"],
+        "fail-branch",
+    )
+
+
 def test_merged_protocol_confirmation_outputs_match_declared_keys_on_false_and_true_branches():
     node = _node_map()["normalize_protocol_confirmation"]
     declared = set(node["data"]["outputs"])
@@ -249,7 +288,7 @@ def test_merged_value_selectors_reference_existing_or_runtime_sources():
     assert missing == []
 
 
-def test_merged_failure_nodes_have_direct_output_edges_and_all_nodes_reach_end():
+def test_merged_failure_nodes_feed_shared_output_aggregators_and_all_nodes_reach_end():
     nodes = _node_map()
     node_by_id = {node["id"]: node for node in _nodes()}
     edges = _document()["workflow"]["graph"]["edges"]
@@ -257,19 +296,55 @@ def test_merged_failure_nodes_have_direct_output_edges_and_all_nodes_reach_end()
     for edge in edges:
         adjacency.setdefault(edge["source"], set()).add(edge["target"])
 
-    direct_failure_pairs = {
-        "protocol_confirmation_failure": "Output_protocol_confirmation_failure",
-        "normalize_job_submission_http_failure": "Output_job_submission_failure",
-        "normalize_validation_http_failure": "Output_normalize_validation_http_failure",
-        "validation_semantic_failure": "Output_validation_semantic_failure",
-        "normalize_experiment_http_failure": "Output_normalize_experiment_http_failure",
-        "experiment_semantic_failure": "Output_experiment_semantic_failure",
-        "request_failure": "Output_request_failure",
-        "normalize_comparison_http_failure": "Output_normalize_comparison_http_failure",
-        "comparison_semantic_failure": "Output_comparison_semantic_failure",
+    prepare_failure_titles = {
+        "prepare_input_failure",
+        "protocol_not_ready_failure",
+        "protocol_draft_save_failure",
+        "protocol_draft_write_http_failure",
+        "prepare_parse_http_failure",
+        "prepare_parser_semantic_failure",
+        "prepare_dossier_semantic_failure",
+        "prepare_dataset_diagnosis_failure",
     }
-    for source_title, output_title in direct_failure_pairs.items():
-        assert _has_edge(edges, nodes[source_title], nodes[output_title], "source"), source_title
+    prepare_aggregator_ids = {
+        nodes["aggregate_prepare_protocol_preview_json"]["id"],
+        nodes["aggregate_prepare_protocol_token"]["id"],
+        nodes["aggregate_prepare_draft_expires_at"]["id"],
+    }
+    for title in prepare_failure_titles:
+        assert any(
+            edge["source"] == nodes[title]["id"] and edge["target"] in prepare_aggregator_ids
+            for edge in edges
+        ), title
+
+    run_failure_titles = {
+        "protocol_confirmation_failure",
+        "protocol_draft_read_failure",
+        "normalize_job_submission_http_failure",
+        "normalize_validation_http_failure",
+        "validation_semantic_failure",
+        "normalize_experiment_http_failure",
+        "experiment_semantic_failure",
+        "request_failure",
+        "normalize_comparison_http_failure",
+        "comparison_semantic_failure",
+    }
+    run_aggregator_ids = {
+        nodes[f"aggregate_run_{variable}"]["id"]
+        for variable in (
+            "dossier_json",
+            "validation_json",
+            "experiment_json",
+            "comparison_json",
+            "assessment_json",
+            "markdown_report",
+        )
+    }
+    for title in run_failure_titles:
+        assert any(
+            edge["source"] == nodes[title]["id"] and edge["target"] in run_aggregator_ids
+            for edge in edges
+        ), title
 
     end_ids = {node["id"] for node in _nodes() if node["data"]["type"] == "end"}
     cannot_reach_end = []

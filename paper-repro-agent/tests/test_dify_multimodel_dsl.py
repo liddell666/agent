@@ -7,6 +7,7 @@ from scripts.build_multimodel_dsl import (
     build_multimodel_dsl,
     build_prepare_dsl,
     build_prepare_dsl_legacy,
+    write_profile_dsls,
     write_multimodel_dsl,
 )
 
@@ -70,6 +71,19 @@ def test_generator_output_is_deterministic_and_keeps_source_workflow_unchanged(t
     assert first.read_bytes() == second.read_bytes()
     assert SOURCE_DSL.read_bytes() == original
     assert GENERATED_DSL.read_bytes() == first.read_bytes()
+
+
+def test_generated_dsls_are_byte_stable(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    write_profile_dsls(profile="deepseek", output_root=first)
+    write_profile_dsls(profile="deepseek", output_root=second)
+
+    first_files = {path.name: path.read_bytes() for path in first.iterdir()}
+    second_files = {path.name: path.read_bytes() for path in second.iterdir()}
+    assert first_files == second_files
 
 
 def test_multimodel_dsl_has_suite_urls_inputs_and_stable_idempotency_key() -> None:
@@ -330,6 +344,21 @@ def test_multimodel_embedded_python_compiles_and_failure_branches_avoid_http_out
         assert all(types_by_id[source_id] != "http-request" for source_id in variable_sources)
         assert all(titles_by_id[source_id] != "run_model_suite" for source_id in variable_sources)
         assert all(titles_by_id[source_id] != "compare_model_suite_result" for source_id in variable_sources)
+
+
+def test_generated_suite_code_carries_qualifiers_runtime_and_workflow_version() -> None:
+    document = _document()
+    nodes = _node_map(document)
+
+    request_code = nodes["build_suite_comparison_request"]["data"]["code"]
+    report_code = nodes["format_suite_comparison_report"]["data"]["code"]
+    experiment_code = nodes["normalize_protocol_confirmation"]["data"]["code"]
+
+    assert 'item["model"]' in request_code
+    assert 'item["threshold"]' in request_code
+    assert "runner commit" in report_code
+    assert "workflow version" in report_code
+    assert '"workflow_version": _SUITE_WORKFLOW_VERSION' in experiment_code
 
 
 def test_build_multimodel_dsl_returns_the_generated_document_contract() -> None:

@@ -3,10 +3,13 @@
 import json
 import math
 import re
+import unicodedata
 
 
 _COMPARE_FIELDS = (
     "reported_value",
+    "model",
+    "threshold",
     "dataset",
     "split",
     "dataset_id",
@@ -63,7 +66,18 @@ def _number(value):
     return parsed if math.isfinite(parsed) else None
 
 
-_SUITE_METRIC_ALIASES = {"auc": "roc_auc", "roc_auc": "roc_auc"}
+_SUITE_METRIC_ALIASES = {
+    "auc": "roc_auc",
+    "roc_auc": "roc_auc",
+    "总精度": "accuracy",
+    "准确率": "accuracy",
+    "平衡准确率": "balanced_accuracy",
+    "精确率": "precision",
+    "查准率": "precision",
+    "召回率": "recall",
+    "查全率": "recall",
+    "f1值": "f1",
+}
 _SUITE_SUPPORTED_METRICS = {
     "roc_auc",
     "accuracy",
@@ -72,19 +86,34 @@ _SUITE_SUPPORTED_METRICS = {
     "recall",
     "f1",
 }
+_SUITE_MODEL_NAMES = (
+    "logistic_regression",
+    "random_forest",
+    "xgboost",
+    "lightgbm",
+    "svm",
+    "knn",
+    "mlp",
+)
 _SAFE_SUITE_ERROR_MESSAGES = {"bounded_failure"}
 _SAFE_SUITE_ERROR_REDACTION = "details redacted for privacy."
 _SAFE_SUITE_MANUAL_QUALIFIERS = {"\u5949\u8282\u53bf\uff08\u5168\u57df\u6a21\u578b\uff09", "\u6d4b\u8bd5\u96c6"}
 _SAFE_SUITE_EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
 _SAFE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_SAFE_RUNTIME_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 
 
 def _normalized_metric_name(value):
     if not isinstance(value, str):
         return None
-    normalized = "_".join(value.strip().casefold().replace("-", " ").split())
+    display_name = unicodedata.normalize("NFKC", value.strip())
+    if "(" in display_name:
+        display_name = display_name.split("(", 1)[0].strip()
+    normalized = "_".join(display_name.casefold().replace("-", " ").replace("_", " ").split())
     normalized = _SUITE_METRIC_ALIASES.get(normalized, normalized)
+    if normalized == "f1值":
+        normalized = "f1"
     return normalized if normalized in _SUITE_SUPPORTED_METRICS else None
 
 
@@ -126,6 +155,10 @@ def _safe_suite_score(value):
     return parsed if parsed is not None and 0 <= parsed <= 1 else None
 
 
+def _safe_suite_model(value):
+    return value if isinstance(value, str) and value in _SUITE_MODEL_NAMES else None
+
+
 def _safe_suite_fraction(value):
     parsed = _number(value)
     return parsed if parsed is not None and 0 < parsed < 1 else None
@@ -160,6 +193,16 @@ def _safe_suite_error_code(value):
     return candidate if _SAFE_ERROR_CODE_RE.fullmatch(candidate) else "unavailable"
 
 
+def _has_explicit_metric_qualifier(metric):
+    name = metric.get("name") if isinstance(metric, dict) else None
+    if not isinstance(name, str):
+        return False
+    candidate = unicodedata.normalize("NFKC", name.strip())
+    return ("(" in candidate and ")" in candidate) or (
+        "\uff08" in candidate and "\uff09" in candidate
+    )
+
+
 def build_suite_comparison_request(dossier_json, suite_json):
     dossier = _object(dossier_json, {})
     suite = _object(suite_json, {})
@@ -170,8 +213,11 @@ def build_suite_comparison_request(dossier_json, suite_json):
         for metric in metrics:
             if (
                 not isinstance(metric, dict)
-                or metric.get("ambiguous") is True
                 or metric.get("supported") is not True
+                or (
+                    metric.get("ambiguous") is True
+                    and not _has_explicit_metric_qualifier(metric)
+                )
             ):
                 continue
             name = _normalized_metric_name(metric.get("normalized_name") or metric.get("name"))
@@ -179,6 +225,12 @@ def build_suite_comparison_request(dossier_json, suite_json):
             if name is None or reported_value is None:
                 continue
             item = {"name": name, "reported_value": reported_value}
+            model = _safe_suite_model(metric.get("model"))
+            if model is not None:
+                item["model"] = model
+            threshold = _safe_suite_score(metric.get("threshold"))
+            if threshold is not None:
+                item["threshold"] = threshold
             for key, validator, raw in (
                 ("dataset", _safe_suite_qualifier, metric.get("dataset")),
                 ("split", _safe_suite_qualifier, metric.get("split")),
@@ -279,6 +331,44 @@ def _suite_metric_value(metrics, key):
     return metrics.get(key)
 
 
+def _format_metric_float(value):
+    if value is None:
+        return "未提供"
+    return "{0:.3f}".format(float(value))
+
+
+def _render_cv_lines(result, config):
+    cv_mean = result.get("cv_mean") if isinstance(result.get("cv_mean"), dict) else {}
+    cv_std = result.get("cv_std") if isinstance(result.get("cv_std"), dict) else {}
+    seed_means = result.get("seed_means") if isinstance(result.get("seed_means"), dict) else {}
+    cv_folds = config.get("cv_folds") if isinstance(config, dict) else None
+    n_seeds = config.get("n_seeds") if isinstance(config, dict) else None
+    if isinstance(n_seeds, int) and n_seeds > 1:
+        n_seeds = n_seeds
+    else:
+        n_seeds = 1
+    lines = []
+    for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
+        mean = cv_mean.get(key)
+        if mean is None:
+            continue
+        label = "{0}-fold CV {1}".format(cv_folds, key) if cv_folds else "CV {0}".format(key)
+        std = cv_std.get(key)
+        if std is not None:
+            lines.append("- {0} = {1} ± {2}".format(label, _format_metric_float(mean), _format_metric_float(std)))
+        else:
+            lines.append("- {0} = {1}".format(label, _format_metric_float(mean)))
+    for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
+        values = seed_means.get(key)
+        if isinstance(values, list) and len(values) > 1:
+            lines.append(
+                "- {0}-seed {1} range = {2} ~ {3}".format(
+                    n_seeds, key, _format_metric_float(min(values)), _format_metric_float(max(values))
+                )
+            )
+    return lines
+
+
 def format_suite_comparison_report(
     dossier_json,
     validation_json,
@@ -308,6 +398,7 @@ def format_suite_comparison_report(
     job_id = suite.get("job_id") if isinstance(suite.get("job_id"), str) else "unavailable"
     job_status = suite.get("job_status") if isinstance(suite.get("job_status"), str) else suite.get("status")
     title = dossier.get("title") if isinstance(dossier.get("title"), str) else "Unnamed paper"
+    runtime = suite.get("runtime") if isinstance(suite.get("runtime"), dict) else {}
 
     lines = [
         "# Multi-model comparison report",
@@ -322,6 +413,17 @@ def format_suite_comparison_report(
         f"- cv_folds={_report_value(config.get('cv_folds'))}, optimization_metric={_report_value(config.get('optimization_metric'))}, n_iter={_report_value(config.get('n_iter'))}, use_gpu={_report_value(config.get('use_gpu'))}",
         "",
     ]
+    if runtime:
+        lines.extend(
+            [
+                "runner runtime provenance:",
+                f"- service version: {_safe_runtime_text(runtime.get('service_version'))}",
+                f"- runner commit: {_safe_runtime_text(runtime.get('git_commit'))}",
+                f"- source digest: {_safe_runtime_digest(runtime.get('source_digest'))}",
+                f"- workflow version: {_safe_runtime_text(runtime.get('workflow_version'))}",
+                "",
+            ]
+        )
     if performance_ranking:
         lines.append("performance ranking: " + " > ".join(performance_ranking))
     if paper_distance_ranking:
@@ -342,6 +444,11 @@ def format_suite_comparison_report(
                 f"- status: {_report_value(result.get('status'))}",
                 f"- cv_best_score: {_report_value(result.get('cv_best_score'))}",
                 f"- auc={_report_value(_suite_metric_value(metrics, 'roc_auc'))}, accuracy={_report_value(_suite_metric_value(metrics, 'accuracy'))}, f1={_report_value(_suite_metric_value(metrics, 'f1'))}, recall={_report_value(_suite_metric_value(metrics, 'recall'))}",
+            ]
+        )
+        lines.extend(_render_cv_lines(result, config))
+        lines.extend(
+            [
                 f"- paper_value={_report_value(comparison_item.get('paper_value'))}, absolute_difference={_report_value(comparison_item.get('absolute_difference'))}, relative_difference={_report_value(comparison_item.get('relative_difference'))}",
                 f"- comparison_reason={_report_value(comparison_item.get('reason'))}, approximate_grade={_report_value(assessment_item.get('grade'))}",
             ]
@@ -628,6 +735,17 @@ def _report_value(value):
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value).replace("\r", " ").replace("\n", " ")
+
+
+def _safe_runtime_text(value):
+    if not isinstance(value, str):
+        return "unavailable"
+    candidate = value.strip()
+    return candidate if _SAFE_RUNTIME_TEXT_RE.fullmatch(candidate) else "unavailable"
+
+
+def _safe_runtime_digest(value):
+    return value if isinstance(value, str) and _SAFE_SHA256_RE.fullmatch(value) else "unavailable"
 
 
 def _selected_metrics(metrics):

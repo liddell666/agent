@@ -53,6 +53,10 @@ Default `models_json`:
 | `protocol_token` | empty | Required from the prepare workflow; expires after a bounded lifetime and is bound to the prepared dataset/manifest. |
 | `confirm_protocol` | `false` | Must be explicitly set to `true` after reviewing the preview. |
 
+The confirmed manifest carries `workflow_version=multimodel-0.8.0`. The runner also exposes
+`service_version`, `git_commit`, `source_digest`, and `workflow_version` from `/healthz` and
+persists the same runtime provenance under `suite_result.runtime`.
+
 Idempotency / 幂等:
 
 - The workflow sends `idempotency_key={{#sys.workflow_run_id#}}`.
@@ -97,7 +101,7 @@ Additional suite endpoints:
   - Returns the persisted `ExperimentSuiteResult` for the suite ID
 - `POST /v1/compare-model-suite-result`
   - Returns `SuiteComparisonResponse`
-  - Includes `experiment_id`, `paper_reference_metric`, and one comparison item per successful model for each requested paper metric
+  - Includes `experiment_id`, `paper_reference_metric`, and comparison items. A paper metric with an explicit `model` qualifier is matched only to that model; an unqualified metric is compared with each successful model.
 
 ## 6. Output fields to inspect / 重点输出字段
 
@@ -122,6 +126,7 @@ Comparison fields / 对比字段:
 
 - `items[].model`
 - `items[].name`
+- Request `reported_metrics[].model` and `reported_metrics[].threshold` when the paper label identifies a model or classification threshold.
 - `items[].paper_value`
 - `items[].independent_value`
 - `items[].absolute_difference`
@@ -129,6 +134,7 @@ Comparison fields / 对比字段:
 - `items[].comparable`
 - `items[].reason`
 - `paper_reference_metric`
+- `runtime.service_version`, `runtime.git_commit`, `runtime.source_digest`, `runtime.workflow_version`
 
 Interpretation / 解释:
 
@@ -152,8 +158,10 @@ Interpretation / 解释:
 7. Confirm the suite/comparison nodes use:
    - `http://repro-runner:8001/v1/run-model-suite`
    - `http://repro-runner:8001/v1/compare-model-suite-result`
-8. Confirm the workflow still ends in one Output node with six string outputs:
-   `dossier_json`, `validation_json`, `experiment_json`, `comparison_json`, `assessment_json`, `markdown_report`
+8. Confirm the success path goes from `format_suite_comparison_report` through the shared run-output aggregators to the main `Output` node with six string outputs:
+   `dossier_json`, `validation_json`, `experiment_json`, `comparison_json`, `assessment_json`, `markdown_report`.
+   The protocol, submission, and downstream semantic/HTTP failure branches converge through the same aggregators,
+   so a failed branch returns its structured error report instead of an empty `{}` without duplicating output-variable names.
 9. Run a manual-override verification in the generated comparison request. Use this exact metric payload:
 
 ```json

@@ -149,6 +149,20 @@ MERGED_OUTPUT_PREPARE_DOSSIER_FAILURE_ID = "3900000000030"
 MERGED_OUTPUT_PREPARE_DIAGNOSIS_FAILURE_ID = "3900000000031"
 MERGED_DRAFT_POST_FAILURE_ID = "3900000000032"
 MERGED_OUTPUT_DRAFT_POST_FAILURE_ID = "3900000000033"
+MERGED_PREPARE_OUTPUT_SUCCESS_ID = "3900000000037"
+MERGED_PREPARE_AGGREGATOR_IDS = {
+    "protocol_preview_json": "3900000000034",
+    "protocol_token": "3900000000035",
+    "draft_expires_at": "3900000000036",
+}
+MERGED_RUN_AGGREGATOR_IDS = {
+    "dossier_json": "3900000000040",
+    "validation_json": "3900000000041",
+    "experiment_json": "3900000000042",
+    "comparison_json": "3900000000043",
+    "assessment_json": "3900000000044",
+    "markdown_report": "3900000000045",
+}
 
 
 def _load_source() -> dict:
@@ -281,9 +295,30 @@ def _suite_request_code() -> str:
     return """import json
 import math
 import re
+import unicodedata
 
-ALIASES = {"auc": "roc_auc", "roc_auc": "roc_auc"}
+ALIASES = {
+    "auc": "roc_auc",
+    "roc_auc": "roc_auc",
+    "总精度": "accuracy",
+    "准确率": "accuracy",
+    "平衡准确率": "balanced_accuracy",
+    "精确率": "precision",
+    "查准率": "precision",
+    "召回率": "recall",
+    "查全率": "recall",
+    "f1值": "f1",
+}
 SUPPORTED = {"roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"}
+KNOWN_MODELS = {
+    "logistic_regression",
+    "random_forest",
+    "xgboost",
+    "lightgbm",
+    "svm",
+    "knn",
+    "mlp",
+}
 MANUAL_OVERRIDE_QUALIFIERS = {"\u5949\u8282\u53bf\uff08\u5168\u57df\u6a21\u578b\uff09", "\u6d4b\u8bd5\u96c6"}
 EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{0,127}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -308,9 +343,17 @@ def metric_name(metric):
     candidate = metric.get("normalized_name") or metric.get("name")
     if not isinstance(candidate, str):
         return None
-    normalized = "_".join(candidate.strip().casefold().replace("-", " ").split())
+    display_name = unicodedata.normalize("NFKC", candidate.strip())
+    if "(" in display_name:
+        display_name = display_name.split("(", 1)[0].strip()
+    normalized = "_".join(display_name.casefold().replace("-", " ").replace("_", " ").split())
     normalized = ALIASES.get(normalized, normalized)
+    if normalized == "f1值":
+        normalized = "f1"
     return normalized if normalized in SUPPORTED else None
+
+def safe_model(value):
+    return value if isinstance(value, str) and value in KNOWN_MODELS else None
 
 def safe_qualifier(value):
     if not isinstance(value, str):
@@ -350,7 +393,7 @@ def has_explicit_metric_qualifier(metric):
     name = metric.get("name") if isinstance(metric, dict) else None
     if not isinstance(name, str):
         return False
-    candidate = name.strip()
+    candidate = unicodedata.normalize("NFKC", name.strip())
     return ("(" in candidate and ")" in candidate) or ("\\uff08" in candidate and "\\uff09" in candidate)
 
 def safe_fraction(value):
@@ -394,6 +437,12 @@ def main(dossier_json: str, experiment_json: str) -> dict:
         if name is None or reported_value is None:
             continue
         item = {"name": name, "reported_value": reported_value}
+        model = safe_model(metric.get("model"))
+        if model is not None:
+            item["model"] = model
+        threshold = safe_score(metric.get("threshold"))
+        if threshold is not None:
+            item["threshold"] = threshold
         for key, validator, raw in (
             ("dataset", safe_qualifier, metric.get("dataset")),
             ("split", safe_qualifier, metric.get("split")),
@@ -448,6 +497,8 @@ import re
 SAFE_ERROR_MESSAGES = {"bounded_failure"}
 SAFE_ERROR_REDACTION = "details redacted for privacy."
 SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SAFE_RUNTIME_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+SAFE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 def object_or_empty(value):
     try:
@@ -484,6 +535,15 @@ def safe_error_message(value):
     candidate = value.strip()
     return candidate if candidate in SAFE_ERROR_MESSAGES else SAFE_ERROR_REDACTION
 
+def safe_runtime_text(value):
+    if not isinstance(value, str):
+        return "unavailable"
+    candidate = value.strip()
+    return candidate if SAFE_RUNTIME_TEXT_RE.fullmatch(candidate) else "unavailable"
+
+def safe_runtime_digest(value):
+    return value if isinstance(value, str) and SAFE_SHA256_RE.fullmatch(value) else "unavailable"
+
 def results_list(suite):
     values = suite.get("results")
     return [item for item in values if isinstance(item, dict)] if isinstance(values, list) else []
@@ -502,6 +562,36 @@ def first_by_model(items):
 
 def ranking_list(value):
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+def metric_float(value):
+    if value is None:
+        return "unavailable"
+    return "{0:.3f}".format(float(value))
+
+def render_cv_lines(item, config):
+    cv_mean = item.get("cv_mean") if isinstance(item.get("cv_mean"), dict) else {}
+    cv_std = item.get("cv_std") if isinstance(item.get("cv_std"), dict) else {}
+    seed_means = item.get("seed_means") if isinstance(item.get("seed_means"), dict) else {}
+    cv_folds = config.get("cv_folds") if isinstance(config, dict) else None
+    n_seeds = config.get("n_seeds") if isinstance(config, dict) else None
+    if not isinstance(n_seeds, int) or n_seeds <= 1:
+        n_seeds = 1
+    lines = []
+    for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
+        mean = cv_mean.get(key)
+        if mean is None:
+            continue
+        label = "{0}-fold CV {1}".format(cv_folds, key) if cv_folds else "CV {0}".format(key)
+        std = cv_std.get(key)
+        if std is not None:
+            lines.append("- {0} = {1} ± {2}".format(label, metric_float(mean), metric_float(std)))
+        else:
+            lines.append("- {0} = {1}".format(label, metric_float(mean)))
+    for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
+        values = seed_means.get(key)
+        if isinstance(values, list) and len(values) > 1:
+            lines.append("- {0}-seed {1} range = {2} ~ {3}".format(n_seeds, key, metric_float(min(values)), metric_float(max(values))))
+    return lines
 
 def main(dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str, assessment_json: str) -> dict:
     dossier_string, dossier = report_json(dossier_json)
@@ -530,6 +620,16 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
         f"- cv_folds={report_value(config.get('cv_folds'))}, optimization_metric={report_value(config.get('optimization_metric'))}, n_iter={report_value(config.get('n_iter'))}, use_gpu={report_value(config.get('use_gpu'))}",
         "",
     ]
+    runtime = experiment.get("runtime") if isinstance(experiment.get("runtime"), dict) else {}
+    if runtime:
+        lines.extend([
+            "runner runtime provenance:",
+            f"- service version: {safe_runtime_text(runtime.get('service_version'))}",
+            f"- runner commit: {safe_runtime_text(runtime.get('git_commit'))}",
+            f"- source digest: {safe_runtime_digest(runtime.get('source_digest'))}",
+            f"- workflow version: {safe_runtime_text(runtime.get('workflow_version'))}",
+            "",
+        ])
     if performance_ranking:
         lines.append("performance ranking: " + " > ".join(performance_ranking))
     if paper_distance_ranking:
@@ -553,6 +653,7 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
             f"- paper_value={report_value(comparison_item.get('paper_value'))}, absolute_difference={report_value(comparison_item.get('absolute_difference'))}, relative_difference={report_value(comparison_item.get('relative_difference'))}",
             f"- comparison_reason={report_value(comparison_item.get('reason'))}, approximate_grade={report_value(assessment_item.get('grade'))}",
         ])
+        lines.extend(render_cv_lines(item, config))
         if error:
             lines.append(f"- safe_error={safe_error_code(error.get('code'))}: {safe_error_message(error.get('message'))}")
     if not results_list(experiment):
@@ -1278,9 +1379,14 @@ def _add_protocol_path(document: dict, nodes: dict[str, dict]) -> None:
     )
     nodes["normalize_experiment_http_failure"]["data"]["variables"] = [
         {
-            "value_selector": [poll["id"], "experiment_json"],
+            "value_selector": [nodes["parse_dossier_response"]["id"], "dossier_json"],
             "value_type": "string",
-            "variable": "experiment_json",
+            "variable": "dossier_json",
+        },
+        {
+            "value_selector": [nodes["parse_validation_response"]["id"], "validation_json"],
+            "value_type": "string",
+            "variable": "validation_json",
         },
     ]
 
@@ -1931,7 +2037,7 @@ def _merged_prepare_code() -> str:
 
 
 def _merged_prepare_draft_response_code() -> str:
-    return _secret_safe_embedded_experiment_helper_code("""def main(body: str, status_code: int, expected_draft_id: str, expected_manifest_json: str) -> dict:
+    return _secret_safe_embedded_experiment_helper_code("""def main(body: str, status_code: int, expected_draft_id: str, expected_manifest_json: str, expected_protocol_token: str = "") -> dict:
     preview = _object(expected_manifest_json)
     manifest = preview.get("manifest_draft") if isinstance(preview, dict) else {}
     result = normalize_protocol_draft_write_response(
@@ -1941,9 +2047,19 @@ def _merged_prepare_draft_response_code() -> str:
         manifest,
     )
     result["protocol_preview_json"] = _json(preview)
-    result["protocol_token"] = ""
+    result["protocol_token"] = expected_protocol_token if result.get("draft_saved_ok") else ""
     return result
 """)
+
+
+def _merged_prepare_output_code() -> str:
+    return """def main(protocol_preview_json: str, protocol_token: str, draft_expires_at: str) -> dict:
+    return {
+        "protocol_preview_json": protocol_preview_json if isinstance(protocol_preview_json, str) else "",
+        "protocol_token": protocol_token if isinstance(protocol_token, str) else "",
+        "draft_expires_at": draft_expires_at if isinstance(draft_expires_at, str) else "",
+    }
+"""
 
 
 def _merged_protocol_draft_read_response_code() -> str:
@@ -2012,6 +2128,19 @@ def main(draft_errors: str) -> dict:
 """
 
 
+def _merged_run_output_code() -> str:
+    return """def main(dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str, assessment_json: str, markdown_report: str) -> dict:
+    return {
+        "dossier_json": dossier_json if isinstance(dossier_json, str) else "{}",
+        "validation_json": validation_json if isinstance(validation_json, str) else "{}",
+        "experiment_json": experiment_json if isinstance(experiment_json, str) else "{}",
+        "comparison_json": comparison_json if isinstance(comparison_json, str) else "{}",
+        "assessment_json": assessment_json if isinstance(assessment_json, str) else "{}",
+        "markdown_report": markdown_report if isinstance(markdown_report, str) else "",
+    }
+"""
+
+
 def _merged_remap_value_selectors(value: object, id_map: dict[str, str]) -> object:
     if isinstance(value, list):
         if len(value) >= 1 and isinstance(value[0], str) and value[0] in id_map:
@@ -2040,6 +2169,50 @@ def _merged_end_from_source(template: dict, node_id: str, title: str, source_id:
     output["data"]["title"] = title
     output["data"]["outputs"] = [
         {"value_selector": [source_id, variable], "value_type": "string", "variable": variable}
+        for variable in variables
+    ]
+    return output
+
+
+def _merged_variable_aggregator(
+    template: dict,
+    node_id: str,
+    title: str,
+    sources: list[tuple[str, str]],
+    x: int,
+    y: int,
+) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["type"] = "variable-aggregator"
+    node["data"]["output_type"] = "string"
+    node["data"]["variables"] = [[source_id, variable] for source_id, variable in sources]
+    return node
+
+
+def _merged_end_from_aggregators(
+    template: dict,
+    node_id: str,
+    title: str,
+    aggregators: dict[str, str],
+    variables: tuple[str, ...],
+    x: int,
+    y: int,
+) -> dict:
+    output = deepcopy(template)
+    output["id"] = node_id
+    output["position"] = {"x": x, "y": y}
+    output["positionAbsolute"] = {"x": x, "y": y}
+    output["data"]["title"] = title
+    output["data"]["outputs"] = [
+        {
+            "value_selector": [aggregators[variable], "output"],
+            "value_type": "string",
+            "variable": variable,
+        }
         for variable in variables
     ]
     return output
@@ -2289,6 +2462,7 @@ def build_merged_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
             {"value_selector": [MERGED_PROTOCOL_DRAFT_POST_ID, "status_code"], "value_type": "number", "variable": "status_code"},
             {"value_selector": [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "draft_id"], "value_type": "string", "variable": "expected_draft_id"},
             {"value_selector": [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_preview_json"], "value_type": "string", "variable": "expected_manifest_json"},
+            {"value_selector": [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_token"], "value_type": "string", "variable": "expected_protocol_token"},
         ],
         4600,
         -260,
@@ -2299,6 +2473,24 @@ def build_merged_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
         "draft_saved_ok?",
         [MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "draft_saved_ok"],
         4930,
+        -260,
+    )
+    prepare_output_success = _clone_code_node(
+        run_nodes["normalize_suite_inputs"],
+        MERGED_PREPARE_OUTPUT_SUCCESS_ID,
+        "prepare_output_success",
+        _merged_prepare_output_code(),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "protocol_preview_json"], "value_type": "string", "variable": "protocol_preview_json"},
+            {"value_selector": [MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "protocol_token"], "value_type": "string", "variable": "protocol_token"},
+            {"value_selector": [MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "draft_expires_at"], "value_type": "string", "variable": "draft_expires_at"},
+        ],
+        5260,
         -260,
     )
 
@@ -2434,69 +2626,42 @@ def build_merged_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     ]
 
     output_template = source_nodes["Output"]
-    output_prepare = _merged_end_from_source(
+    aggregator_template = source_nodes["aggregate_dossier_json"]
+    prepare_output_source_ids = [
+        MERGED_PREPARE_OUTPUT_SUCCESS_ID,
+        MERGED_PREPARE_INPUT_FAILURE_ID,
+        MERGED_PROTOCOL_NOT_READY_ID,
+        MERGED_DRAFT_SAVE_FAILURE_ID,
+        MERGED_DRAFT_POST_FAILURE_ID,
+        MERGED_PREPARE_PARSE_HTTP_FAILURE_ID,
+        MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID,
+        MERGED_PREPARE_DOSSIER_FAILURE_ID,
+        MERGED_PREPARE_DIAGNOSIS_FAILURE_ID,
+    ]
+    prepare_output_aggregators = [
+        _merged_variable_aggregator(
+            aggregator_template,
+            MERGED_PREPARE_AGGREGATOR_IDS[variable],
+            f"aggregate_prepare_{variable}",
+            [(source_id, variable) for source_id in prepare_output_source_ids],
+            5000 + index * 330,
+            -260,
+        )
+        for index, variable in enumerate(PREPARE_OUTPUT_VARIABLES)
+    ]
+    prepare_output_aggregator_ids = {
+        variable: MERGED_PREPARE_AGGREGATOR_IDS[variable]
+        for variable in PREPARE_OUTPUT_VARIABLES
+    }
+    output_prepare = _merged_end_from_aggregators(
         output_template,
         MERGED_OUTPUT_PREPARE_ID,
         "Output_prepare",
-        MERGED_PROTOCOL_DRAFT_RESPONSE_ID,
+        prepare_output_aggregator_ids,
         PREPARE_OUTPUT_VARIABLES,
-        4930,
+        6000,
         -260,
     )
-    output_prepare["data"]["outputs"][1]["value_selector"] = [id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "protocol_token"]
-    output_prepare_input_failure = _merged_end_from_source(
-        output_template,
-        MERGED_OUTPUT_PREPARE_INPUT_FAILURE_ID,
-        "Output_prepare_input_failure",
-        MERGED_PREPARE_INPUT_FAILURE_ID,
-        PREPARE_OUTPUT_VARIABLES,
-        2080,
-        -620,
-    )
-    output_protocol_not_ready = _merged_end_from_source(
-        output_template,
-        MERGED_OUTPUT_PROTOCOL_NOT_READY_ID,
-        "Output_protocol_not_ready",
-        MERGED_PROTOCOL_NOT_READY_ID,
-        PREPARE_OUTPUT_VARIABLES,
-        4600,
-        -620,
-    )
-    output_draft_save_failure = _merged_end_from_source(
-        output_template,
-        MERGED_OUTPUT_DRAFT_SAVE_FAILURE_ID,
-        "Output_protocol_draft_save_failure",
-        MERGED_DRAFT_SAVE_FAILURE_ID,
-        PREPARE_OUTPUT_VARIABLES,
-        5260,
-        -620,
-    )
-    output_draft_post_failure = _merged_end_from_source(
-        output_template,
-        MERGED_OUTPUT_DRAFT_POST_FAILURE_ID,
-        "Output_protocol_draft_write_http_failure",
-        MERGED_DRAFT_POST_FAILURE_ID,
-        PREPARE_OUTPUT_VARIABLES,
-        4930,
-        -820,
-    )
-    prepare_direct_failure_outputs = [
-        _merged_end_from_source(
-            output_template,
-            output_id,
-            title,
-            source_id,
-            PREPARE_OUTPUT_VARIABLES,
-            x,
-            -1180,
-        )
-        for output_id, title, source_id, x in [
-            (MERGED_OUTPUT_PREPARE_PARSE_HTTP_FAILURE_ID, "Output_prepare_parse_http_failure", MERGED_PREPARE_PARSE_HTTP_FAILURE_ID, 2080),
-            (MERGED_OUTPUT_PREPARE_PARSE_SEMANTIC_FAILURE_ID, "Output_prepare_parser_semantic_failure", MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID, 2410),
-            (MERGED_OUTPUT_PREPARE_DOSSIER_FAILURE_ID, "Output_prepare_dossier_semantic_failure", MERGED_PREPARE_DOSSIER_FAILURE_ID, 2740),
-            (MERGED_OUTPUT_PREPARE_DIAGNOSIS_FAILURE_ID, "Output_prepare_dataset_diagnosis_failure", MERGED_PREPARE_DIAGNOSIS_FAILURE_ID, 3070),
-        ]
-    ]
 
     run_titles = [
         "normalize_suite_inputs",
@@ -2628,16 +2793,6 @@ def main(
         3400,
         40,
     )
-    output_run_draft_failure = _merged_end_from_source(
-        output_template,
-        MERGED_OUTPUT_RUN_DRAFT_FAILURE_ID,
-        "Output_protocol_draft_read_failure",
-        MERGED_RUN_DRAFT_FAILURE_ID,
-        REPORT_OUTPUT_VARIABLES,
-        3730,
-        40,
-    )
-
     run_branch_by_title["build_suite_comparison_request"]["data"]["variables"][0] = {
         "value_selector": [MERGED_DRAFT_RESPONSE_ID, "dossier_json"],
         "value_type": "string",
@@ -2648,6 +2803,18 @@ def main(
         "value_type": "string",
         "variable": "dossier_json",
     }
+    run_branch_by_title["normalize_experiment_http_failure"]["data"]["variables"] = [
+        {
+            "value_selector": [MERGED_DRAFT_RESPONSE_ID, "dossier_json"],
+            "value_type": "string",
+            "variable": "dossier_json",
+        },
+        {
+            "value_selector": [id_map[run_nodes["parse_validation_response"]["id"]], "validation_json"],
+            "value_type": "string",
+            "variable": "validation_json",
+        },
+    ]
     for title in (
         "normalize_validation_http_failure",
         "validation_semantic_failure",
@@ -2673,29 +2840,42 @@ def main(
     validate_dataset = _merged_clone_node(run_nodes["validate_dataset"], id_map[run_nodes["validate_dataset"]["id"]], id_map)
     parse_validation = _merged_clone_node(run_nodes["parse_validation_response"], id_map[run_nodes["parse_validation_response"]["id"]], id_map)
     validation_ok = _merged_clone_node(run_nodes["validation_ok?"], id_map[run_nodes["validation_ok?"]["id"]], id_map)
-    validation_failure_outputs = _merged_failure_outputs_for_run(
-        {"workflow": {"graph": {"nodes": []}}},
-        {
-            **run_branch_by_title,
-            "normalize_validation_http_failure": run_branch_by_title["normalize_validation_http_failure"],
-            "validation_semantic_failure": run_branch_by_title["validation_semantic_failure"],
-        },
-        output_template,
-    )
-    output_run = _merged_end_from_source(
+    run_output_source_ids = [
+        id_map[run_nodes["format_suite_comparison_report"]["id"]],
+        MERGED_RUN_DRAFT_FAILURE_ID,
+        run_branch_by_title["protocol_confirmation_failure"]["id"],
+        run_branch_by_title["normalize_job_submission_http_failure"]["id"],
+        run_branch_by_title["normalize_validation_http_failure"]["id"],
+        run_branch_by_title["validation_semantic_failure"]["id"],
+        run_branch_by_title["normalize_experiment_http_failure"]["id"],
+        run_branch_by_title["experiment_semantic_failure"]["id"],
+        run_branch_by_title["request_failure"]["id"],
+        run_branch_by_title["normalize_comparison_http_failure"]["id"],
+        run_branch_by_title["comparison_semantic_failure"]["id"],
+    ]
+    run_output_aggregators = [
+        _merged_variable_aggregator(
+            aggregator_template,
+            MERGED_RUN_AGGREGATOR_IDS[variable],
+            f"aggregate_run_{variable}",
+            [(source_id, variable) for source_id in run_output_source_ids],
+            7000 + index * 330,
+            360,
+        )
+        for index, variable in enumerate(REPORT_OUTPUT_VARIABLES)
+    ]
+    run_output_aggregator_ids = {
+        variable: MERGED_RUN_AGGREGATOR_IDS[variable]
+        for variable in REPORT_OUTPUT_VARIABLES
+    }
+    output_run = _merged_end_from_aggregators(
         output_template,
         MERGED_OUTPUT_RUN_ID,
         "Output_run",
-        id_map[run_nodes["format_suite_comparison_report"]["id"]],
+        run_output_aggregator_ids,
         REPORT_OUTPUT_VARIABLES,
-        7000,
+        9000,
         360,
-    )
-
-    failure_outputs = _merged_failure_outputs_for_run(
-        {"workflow": {"graph": {"nodes": []}}},
-        run_branch_by_title,
-        output_template,
     )
 
     document = {
@@ -2729,17 +2909,14 @@ def main(
                     draft_post,
                     draft_response,
                     draft_saved_ok,
+                    prepare_output_success,
                     prepare_failure,
                     protocol_not_ready,
                     draft_save_failure,
                     draft_post_failure,
                     *prepare_direct_failures,
+                    *prepare_output_aggregators,
                     output_prepare,
-                    output_prepare_input_failure,
-                    output_protocol_not_ready,
-                    output_draft_save_failure,
-                    output_draft_post_failure,
-                    *prepare_direct_failure_outputs,
                     run_branch_by_title["normalize_suite_inputs"],
                     run_branch_by_title["normalize_protocol_confirmation"],
                     run_branch_by_title["protocol_ok?"],
@@ -2772,9 +2949,8 @@ def main(
                     run_branch_by_title["request_failure"],
                     run_branch_by_title["normalize_comparison_http_failure"],
                     run_branch_by_title["comparison_semantic_failure"],
+                    *run_output_aggregators,
                     output_run,
-                    output_run_draft_failure,
-                    *failure_outputs,
                 ],
                 "viewport": {"x": 0, "y": 0, "zoom": 0.7},
             },
@@ -2790,34 +2966,26 @@ def main(
         _make_edge(document, MERGED_RUN_MODE_ID + "g", "true", MERGED_PREPARE_PDF_PRESENT_ID),
         _make_edge(document, MERGED_RUN_MODE_ID + "g", "false", id_map[run_nodes["normalize_suite_inputs"]["id"]]),
         _make_edge(document, MERGED_PREPARE_PDF_PRESENT_ID, "false", MERGED_PREPARE_INPUT_FAILURE_ID),
-        _make_edge(document, MERGED_PREPARE_INPUT_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_INPUT_FAILURE_ID),
         _make_edge(document, MERGED_PREPARE_PDF_PRESENT_ID, "true", id_map[prepare_nodes["parse_paper"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["parse_paper"]["id"]], "fail-branch", MERGED_PREPARE_PARSE_HTTP_FAILURE_ID),
-        _make_edge(document, MERGED_PREPARE_PARSE_HTTP_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_PARSE_HTTP_FAILURE_ID),
         _make_edge(document, id_map[prepare_nodes["parse_paper"]["id"]], "source", id_map[prepare_nodes["validate_parser_response"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["validate_parser_response"]["id"]], "source", id_map[prepare_nodes["paper_parser_ok?"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["paper_parser_ok?"]["id"]], "false", MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID),
-        _make_edge(document, MERGED_PREPARE_PARSE_SEMANTIC_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_PARSE_SEMANTIC_FAILURE_ID),
         _make_edge(document, id_map[prepare_nodes["paper_parser_ok?"]["id"]], "true", id_map[prepare_nodes["extract_paper_dossier"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["extract_paper_dossier"]["id"]], "source", id_map[prepare_nodes["validate_paper_dossier"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["validate_paper_dossier"]["id"]], "source", id_map[prepare_nodes["paper_dossier_ok?"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["paper_dossier_ok?"]["id"]], "false", MERGED_PREPARE_DOSSIER_FAILURE_ID),
-        _make_edge(document, MERGED_PREPARE_DOSSIER_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_DOSSIER_FAILURE_ID),
         _make_edge(document, id_map[prepare_nodes["paper_dossier_ok?"]["id"]], "true", id_map[prepare_nodes["diagnose_dataset"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["diagnose_dataset"]["id"]], "fail-branch", MERGED_PREPARE_DIAGNOSIS_FAILURE_ID),
-        _make_edge(document, MERGED_PREPARE_DIAGNOSIS_FAILURE_ID, "source", MERGED_OUTPUT_PREPARE_DIAGNOSIS_FAILURE_ID),
         _make_edge(document, id_map[prepare_nodes["diagnose_dataset"]["id"]], "source", id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]]),
         _make_edge(document, id_map[prepare_nodes["prepare_protocol_artifacts"]["id"]], "source", MERGED_PREPARE_READY_ID),
         _make_edge(document, MERGED_PREPARE_READY_ID, "true", MERGED_PROTOCOL_DRAFT_POST_ID),
         _make_edge(document, MERGED_PREPARE_READY_ID, "false", MERGED_PROTOCOL_NOT_READY_ID),
-        _make_edge(document, MERGED_PROTOCOL_NOT_READY_ID, "source", MERGED_OUTPUT_PROTOCOL_NOT_READY_ID),
         _make_edge(document, MERGED_PROTOCOL_DRAFT_POST_ID, "source", MERGED_PROTOCOL_DRAFT_RESPONSE_ID),
         _make_edge(document, MERGED_PROTOCOL_DRAFT_POST_ID, "fail-branch", MERGED_DRAFT_POST_FAILURE_ID),
-        _make_edge(document, MERGED_DRAFT_POST_FAILURE_ID, "source", MERGED_OUTPUT_DRAFT_POST_FAILURE_ID),
         _make_edge(document, MERGED_PROTOCOL_DRAFT_RESPONSE_ID, "source", MERGED_DRAFT_SAVED_OK_ID),
-        _make_edge(document, MERGED_DRAFT_SAVED_OK_ID, "true", MERGED_OUTPUT_PREPARE_ID),
+        _make_edge(document, MERGED_DRAFT_SAVED_OK_ID, "true", MERGED_PREPARE_OUTPUT_SUCCESS_ID),
         _make_edge(document, MERGED_DRAFT_SAVED_OK_ID, "false", MERGED_DRAFT_SAVE_FAILURE_ID),
-        _make_edge(document, MERGED_DRAFT_SAVE_FAILURE_ID, "source", MERGED_OUTPUT_DRAFT_SAVE_FAILURE_ID),
         _make_edge(document, id_map[run_nodes["normalize_suite_inputs"]["id"]], "source", id_map[run_nodes["normalize_protocol_confirmation"]["id"]]),
         _make_edge(document, id_map[run_nodes["normalize_protocol_confirmation"]["id"]], "source", id_map[run_nodes["protocol_ok?"]["id"]]),
         _make_edge(document, id_map[run_nodes["protocol_ok?"]["id"]], "true", MERGED_GET_DRAFT_ID),
@@ -2827,7 +2995,6 @@ def main(
         _make_edge(document, MERGED_DRAFT_RESPONSE_ID, "source", MERGED_DOSSIER_OK_ID),
         _make_edge(document, MERGED_DOSSIER_OK_ID, "true", id_map[run_nodes["validate_dataset"]["id"]]),
         _make_edge(document, MERGED_DOSSIER_OK_ID, "false", MERGED_RUN_DRAFT_FAILURE_ID),
-        _make_edge(document, MERGED_RUN_DRAFT_FAILURE_ID, "source", MERGED_OUTPUT_RUN_DRAFT_FAILURE_ID),
         _make_edge(document, id_map[run_nodes["validate_dataset"]["id"]], "source", id_map[run_nodes["parse_validation_response"]["id"]]),
         _make_edge(document, id_map[run_nodes["validate_dataset"]["id"]], "fail-branch", id_map[run_nodes["normalize_validation_http_failure"]["id"]]),
         _make_edge(document, id_map[run_nodes["parse_validation_response"]["id"]], "source", id_map[run_nodes["validation_ok?"]["id"]]),
@@ -2839,7 +3006,7 @@ def main(
         _make_edge(document, id_map[run_nodes["job_submission_ok?"]["id"]], "true", id_map[run_nodes["poll_confirmed_job"]["id"]]),
         _make_edge(document, id_map[run_nodes["job_submission_ok?"]["id"]], "false", id_map[run_nodes["normalize_job_submission_http_failure"]["id"]]),
         _make_edge(document, id_map[run_nodes["poll_confirmed_job"]["id"]], "source", id_map[run_nodes["parse_suite_response"]["id"]]),
-        _make_edge(document, id_map[run_nodes["poll_confirmed_job"]["id"]], "fail-branch", id_map[run_nodes["normalize_job_submission_http_failure"]["id"]]),
+        _make_edge(document, id_map[run_nodes["poll_confirmed_job"]["id"]], "fail-branch", id_map[run_nodes["normalize_experiment_http_failure"]["id"]]),
         _make_edge(document, id_map[run_nodes["parse_suite_response"]["id"]], "source", id_map[run_nodes["experiment_ok?"]["id"]]),
         _make_edge(document, id_map[run_nodes["experiment_ok?"]["id"]], "true", id_map[run_nodes["build_suite_comparison_request"]["id"]]),
         _make_edge(document, id_map[run_nodes["experiment_ok?"]["id"]], "false", id_map[run_nodes["experiment_semantic_failure"]["id"]]),
@@ -2852,19 +3019,32 @@ def main(
         _make_edge(document, id_map[run_nodes["comparison_ok?"]["id"]], "true", id_map[run_nodes["score_approximate_similarity"]["id"]]),
         _make_edge(document, id_map[run_nodes["comparison_ok?"]["id"]], "false", id_map[run_nodes["comparison_semantic_failure"]["id"]]),
         _make_edge(document, id_map[run_nodes["score_approximate_similarity"]["id"]], "source", id_map[run_nodes["format_suite_comparison_report"]["id"]]),
-        _make_edge(document, id_map[run_nodes["format_suite_comparison_report"]["id"]], "source", MERGED_OUTPUT_RUN_ID),
     ]
-    output_source_titles = {
-        "Output_protocol_confirmation_failure": "protocol_confirmation_failure",
-        "Output_job_submission_failure": "normalize_job_submission_http_failure",
-    }
-    for output in failure_outputs:
-        source_title = output_source_titles.get(
-            output["data"]["title"],
-            output["data"]["title"].removeprefix("Output_"),
-        )
-        if source_title in nodes_by_title:
-            edges.append(_make_edge(document, nodes_by_title[source_title]["id"], "source", output["id"]))
+    prepare_aggregator_ids = [MERGED_PREPARE_AGGREGATOR_IDS[variable] for variable in PREPARE_OUTPUT_VARIABLES]
+    for source_id in prepare_output_source_ids:
+        for aggregator_id in prepare_aggregator_ids:
+            edges.append(_make_edge(document, source_id, "source", aggregator_id))
+    for source_id in run_output_source_ids:
+        for variable in REPORT_OUTPUT_VARIABLES:
+            edges.append(
+                _make_edge(
+                    document,
+                    source_id,
+                    "source",
+                    MERGED_RUN_AGGREGATOR_IDS[variable],
+                )
+            )
+    run_aggregator_ids = [MERGED_RUN_AGGREGATOR_IDS[variable] for variable in REPORT_OUTPUT_VARIABLES]
+    edges.extend(
+        _make_edge(document, first_id, "source", second_id)
+        for first_id, second_id in zip(run_aggregator_ids, run_aggregator_ids[1:])
+    )
+    edges.append(_make_edge(document, run_aggregator_ids[-1], "source", MERGED_OUTPUT_RUN_ID))
+    edges.extend(
+        _make_edge(document, first_id, "source", second_id)
+        for first_id, second_id in zip(prepare_aggregator_ids, prepare_aggregator_ids[1:])
+    )
+    edges.append(_make_edge(document, prepare_aggregator_ids[-1], "source", MERGED_OUTPUT_PREPARE_ID))
     document["workflow"]["graph"]["edges"] = edges
 
     # Tests and Dify users expect the branch decision node to be titled run_mode?.
@@ -2887,30 +3067,32 @@ def _profile_path(path: Path, profile: LLMProfile) -> Path:
 
 def _write_dsl(path: Path, document: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
         yaml.safe_dump(
             document,
+            stream,
             allow_unicode=True,
             sort_keys=False,
-            width=4096,
-        ),
-        encoding="utf-8",
-    )
+            width=10_000,
+        )
 
 
 def write_profile_dsls(
-    profile: str,
-    output_dir: Path = PROJECT_ROOT / "dify",
-) -> tuple[Path, Path, Path]:
+    profile: str = DEFAULT_LLM_PROFILE,
+    *,
+    output_root: Path = PROJECT_ROOT / "dify",
+) -> tuple[Path, ...]:
     resolved_profile = resolve_llm_profile(profile)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    run_path = _profile_path(output_dir / TARGET_DSL.name, resolved_profile)
-    prepare_path = _profile_path(output_dir / PREPARE_DSL.name, resolved_profile)
-    merged_path = _profile_path(output_dir / MERGED_DSL.name, resolved_profile)
-    _write_dsl(run_path, build_multimodel_dsl(profile))
-    _write_dsl(prepare_path, build_prepare_dsl(profile))
-    _write_dsl(merged_path, build_merged_dsl(profile))
-    return run_path, prepare_path, merged_path
+    output_root.mkdir(parents=True, exist_ok=True)
+    documents = {
+        _profile_path(output_root / TARGET_DSL.name, resolved_profile): build_multimodel_dsl(profile),
+        _profile_path(output_root / PREPARE_DSL.name, resolved_profile): build_prepare_dsl(profile),
+        _profile_path(output_root / MERGED_DSL.name, resolved_profile): build_merged_dsl(profile),
+    }
+    paths = tuple(sorted(documents, key=lambda path: path.name))
+    for path in paths:
+        _write_dsl(path, documents[path])
+    return paths
 
 
 def write_multimodel_dsl(path: Path) -> None:
@@ -2942,4 +3124,4 @@ def _build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
-    write_profile_dsls(args.profile, args.output_dir)
+    write_profile_dsls(args.profile, output_root=args.output_dir)
