@@ -60,3 +60,4 @@ def test_minimal_experiment_suite_result_validates():
     assert result.status == "partial"
     assert result.dataset.rows == 4
     assert result.split_provenance.test_rows == 1
+    assert result.paper_closeness_ranking == []

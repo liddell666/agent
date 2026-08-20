@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from repro_runner.dossier import normalize_metric_name, parse_dossier, parse_reported_value
+from repro_runner.dossier import (
+    extract_metric_qualifiers,
+    normalize_metric_name,
+    parse_dossier,
+    parse_reported_value,
+)
 from repro_runner.schemas import DossierMetric
 
 
@@ -54,6 +59,22 @@ def _evidence() -> list[dict[str, object]]:
 )
 def test_normalize_metric_name(name, expected):
     assert normalize_metric_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_model"),
+    [
+        ("AUC (best performance)", None),
+        ("AUC (RF)", "random_forest"),
+        ("AUC (random forest)", "random_forest"),
+        ("AUC（随机森林）", "random_forest"),
+    ],
+)
+def test_extract_metric_qualifiers_matches_model_alias_tokens_only(name, expected_model):
+    model, threshold = extract_metric_qualifiers(name)
+
+    assert model == expected_model
+    assert threshold is None
 
 
 @pytest.mark.parametrize(

@@ -83,6 +83,16 @@ def save_suite_result(result: ExperimentSuiteResult, settings: Settings) -> str:
     return experiment_id
 
 
+def update_suite_result(result: ExperimentSuiteResult, settings: Settings) -> str:
+    """Atomically update the public suite payload after comparison enrichment."""
+    experiment_id = _validate_experiment_id(result.experiment_id)
+    directory = _experiment_directory(experiment_id, settings)
+    if not directory.is_dir():
+        raise ResultNotFoundError("experiment result was not found")
+    _write_json_atomic(directory / "result.json", _suite_result_payload(result))
+    return experiment_id
+
+
 def load_result(experiment_id: str, settings: Settings) -> ExperimentResult:
     """Load a persisted result without permitting paths outside the result root."""
     try:
@@ -236,6 +246,7 @@ def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
         "split_provenance": _split_provenance_payload(result),
         "results": [_model_run_payload(item) for item in result.results],
         "performance_ranking": list(result.performance_ranking),
+        "paper_closeness_ranking": list(result.paper_closeness_ranking),
         "reproducibility_status": result.reproducibility_status,
     }
     if result.runtime is not None:

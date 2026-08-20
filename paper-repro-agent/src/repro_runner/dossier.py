@@ -98,12 +98,9 @@ def extract_metric_qualifiers(name: str) -> tuple[str | None, float | None]:
     if "(" not in display_name:
         return None, None
     qualifier = display_name.split("(", 1)[1].rsplit(")", 1)[0]
-    qualifier_casefold = qualifier.casefold()
-
     model = None
     for alias in sorted(_MODEL_ALIASES, key=len, reverse=True):
-        normalized_alias = alias.casefold().replace("_", " ")
-        if normalized_alias in qualifier_casefold.replace("_", " "):
+        if _qualifier_contains_model_alias(qualifier, alias):
             model = _MODEL_ALIASES[alias]
             break
 
@@ -114,6 +111,17 @@ def extract_metric_qualifiers(name: str) -> tuple[str | None, float | None]:
         if math.isfinite(parsed) and 0.0 <= parsed <= 1.0:
             threshold = round(parsed, 6)
     return model, threshold
+
+
+def _qualifier_contains_model_alias(qualifier: str, alias: str) -> bool:
+    normalized_alias = alias.casefold().replace("_", " ")
+    normalized_qualifier = qualifier.casefold().replace("_", " ")
+    if normalized_alias.isascii():
+        pattern = r"(?<![a-z0-9])" + re.escape(normalized_alias).replace(
+            r"\ ", r"\s+"
+        ) + r"(?![a-z0-9])"
+        return re.search(pattern, normalized_qualifier) is not None
+    return normalized_alias in normalized_qualifier
 
 
 def parse_reported_value(value: object) -> float | None:

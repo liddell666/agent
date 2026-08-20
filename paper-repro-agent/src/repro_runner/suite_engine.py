@@ -63,6 +63,7 @@ def run_model_suite(
     y_train, y_test = target[train_indices], target[test_indices]
     training_class_counts = _training_class_counts(y_train)
     _validate_cv_folds(training_class_counts, config.cv_folds)
+    _validate_nested_cv_folds(training_class_counts, config.cv_folds)
 
     split_provenance = SplitProvenance(
         test_size=config.test_size,
@@ -324,6 +325,19 @@ def _validate_cv_folds(class_counts: Mapping[str, int], cv_folds: int) -> None:
         raise ExperimentError(
             "invalid_cv_folds",
             "the requested cross-validation folds cannot be represented by the training partition",
+        )
+
+
+def _validate_nested_cv_folds(class_counts: Mapping[str, int], cv_folds: int) -> None:
+    """Reject outer splits that cannot support the configured inner CV folds."""
+    minimum_inner_class_count = min(
+        count - ((count + cv_folds - 1) // cv_folds)
+        for count in class_counts.values()
+    )
+    if minimum_inner_class_count < cv_folds:
+        raise ExperimentError(
+            "invalid_nested_cv_folds",
+            "the requested cross-validation folds cannot be represented by nested training partitions",
         )
 
 

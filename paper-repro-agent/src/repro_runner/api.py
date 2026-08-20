@@ -66,6 +66,7 @@ from repro_runner.storage import (
     load_suite_result,
     save_result,
     save_suite_result,
+    update_suite_result,
 )
 
 
@@ -615,9 +616,12 @@ async def compare_model_suite_result(
         raise _internal_error("comparison_failed", request_id) from None
 
     try:
-        return await run_in_threadpool(
+        comparison = await run_in_threadpool(
             compare_suite_metrics, result, request.reported_metrics
         )
+        result.paper_closeness_ranking = comparison.paper_closeness_ranking
+        await run_in_threadpool(update_suite_result, result, settings)
+        return comparison
     except Exception:
         request_id = _request_id()
         logger.exception("model suite comparison failed request_id=%s", request_id)

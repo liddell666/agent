@@ -212,6 +212,28 @@ def test_get_model_suite_round_trips_the_persisted_result(client: TestClient):
     assert fetched.json() == created
 
 
+def test_load_suite_result_defaults_missing_historical_paper_closeness_ranking(
+    client: TestClient, tmp_path
+):
+    created = client.post(
+        "/v1/run-model-suite",
+        data={
+            "models_json": '["logistic_regression"]',
+            "cv_folds": "3",
+            "n_iter": "1",
+        },
+        files={"file": ("data.csv", _csv(), "text/csv")},
+    ).json()
+    result_path = tmp_path / created["experiment_id"] / "result.json"
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    payload.pop("paper_closeness_ranking")
+    result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_suite_result(created["experiment_id"], Settings(storage_dir=tmp_path))
+
+    assert loaded.paper_closeness_ranking == []
+
+
 @pytest.mark.parametrize(
     "experiment_id", ["exp-20260811T010203Z-deadbeef", "not-an-experiment"]
 )

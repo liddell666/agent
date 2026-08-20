@@ -248,6 +248,32 @@ def test_run_model_suite_rejects_invalid_cv_folds_before_search(monkeypatch):
     assert called is False
 
 
+def test_run_model_suite_rejects_infeasible_nested_cv_before_model_failures():
+    bundle = _bundle(
+        pd.DataFrame(
+            {
+                "x": list(range(8)),
+                "Y_cls": [0, 0, 0, 0, 1, 1, 1, 1],
+            }
+        )
+    )
+
+    with pytest.raises(ExperimentError) as raised:
+        suite_engine.run_model_suite(
+            bundle,
+            ModelSuiteConfig(
+                models=["logistic_regression"],
+                test_size=0.25,
+                cv_folds=3,
+                n_iter=1,
+                n_jobs=1,
+            ),
+        )
+
+    assert raised.value.code == "invalid_nested_cv_folds"
+    assert "nested" in raised.value.message
+
+
 def test_run_model_suite_ranks_by_auc_then_f1_then_recall_with_stable_ties(
     monkeypatch,
 ):

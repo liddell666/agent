@@ -313,6 +313,7 @@ class ExperimentSuiteResult(BaseModel):
     split_provenance: SplitProvenance
     results: list[ModelRunResult] = Field(default_factory=list)
     performance_ranking: list[ModelName] = Field(default_factory=list)
+    paper_closeness_ranking: list[ModelName] = Field(default_factory=list)
     reproducibility_status: Literal["cv_tuned", "cv_evaluated"] = "cv_evaluated"
     preprocessing: PreprocessingSummary | None = None
     runtime: RuntimeProvenance | None = None
@@ -422,6 +423,7 @@ class SuiteComparisonResponse(BaseModel):
     experiment_id: str
     items: list[SuiteComparisonItem] = Field(default_factory=list)
     paper_reference_metric: str | None = None
+    paper_closeness_ranking: list[ModelName] = Field(default_factory=list)
 
 
 class DossierEvidence(BaseModel):

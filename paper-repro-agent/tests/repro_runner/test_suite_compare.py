@@ -133,6 +133,25 @@ def test_suite_comparison_returns_one_item_per_successful_model(suite_result):
     ]
 
 
+def test_suite_comparison_ranks_models_by_paper_closeness_with_model_qualifiers(
+    suite_result,
+):
+    all_models = compare_suite_metrics(
+        suite_result,
+        [_reported_metric(reported_value=0.90)],
+    )
+    reference_model = compare_suite_metrics(
+        suite_result,
+        [_reported_metric(reported_value=0.90, model="random_forest")],
+    )
+
+    assert all_models.paper_closeness_ranking == [
+        "random_forest",
+        "logistic_regression",
+    ]
+    assert reference_model.paper_closeness_ranking == ["random_forest"]
+
+
 def test_missing_dataset_identity_preserves_reason_and_arithmetic_difference(suite_result):
     item = compare_suite_metrics(
         suite_result,
@@ -223,6 +242,32 @@ def test_compare_model_suite_result_route_returns_suite_response(
     assert [item["model"] for item in body["items"]] == [
         "logistic_regression",
         "random_forest",
+    ]
+
+
+def test_compare_model_suite_result_persists_paper_closeness_ranking(
+    client: TestClient, tmp_path, suite_result: ExperimentSuiteResult
+):
+    save_suite_result(suite_result, Settings(storage_dir=tmp_path))
+
+    response = client.post(
+        "/v1/compare-model-suite-result",
+        json={
+            "experiment_id": suite_result.experiment_id,
+            "reported_metrics": [_reported_metric(reported_value=0.90)],
+        },
+    )
+    fetched = client.get(f"/v1/model-suites/{suite_result.experiment_id}")
+
+    assert response.status_code == 200
+    assert response.json()["paper_closeness_ranking"] == [
+        "random_forest",
+        "logistic_regression",
+    ]
+    assert fetched.status_code == 200
+    assert fetched.json()["paper_closeness_ranking"] == [
+        "random_forest",
+        "logistic_regression",
     ]
 
 

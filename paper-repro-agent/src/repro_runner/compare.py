@@ -88,16 +88,18 @@ def compare_suite_metrics(
         item.model: _metric_values_from_metrics(item.metrics) for item in successful_models
     }
     items = []
+    items_by_reported_metric: list[tuple[ReportedMetricInput, list[SuiteComparisonItem]]] = []
     for metric in reported_metrics:
         metric_key = _normalize_metric_name(metric.name)
         paper_value = _parse_number(metric.reported_value)
+        metric_items: list[SuiteComparisonItem] = []
         selected_models = successful_models
         if metric.model is not None:
             selected_models = [
                 item for item in successful_models if item.model == metric.model
             ]
             if not selected_models:
-                items.append(
+                metric_items.append(
                     SuiteComparisonItem(
                         model=metric.model,
                         name=metric.name,
@@ -109,6 +111,8 @@ def compare_suite_metrics(
                         reason="requested model is not available in the suite result",
                     )
                 )
+                items.extend(metric_items)
+                items_by_reported_metric.append((metric, metric_items))
                 continue
         for model_result in selected_models:
             independent_value = metric_values[model_result.model].get(metric_key)
@@ -125,7 +129,7 @@ def compare_suite_metrics(
             absolute_difference, relative_difference = _difference_fields(
                 paper_value, independent_value
             )
-            items.append(
+            metric_items.append(
                 SuiteComparisonItem(
                     model=model_result.model,
                     name=metric.name,
@@ -137,11 +141,20 @@ def compare_suite_metrics(
                     reason=reason,
                 )
             )
+        items.extend(metric_items)
+        items_by_reported_metric.append((metric, metric_items))
+
+    paper_reference_metric, reference_items = _suite_reference_items(
+        items_by_reported_metric, metric_values
+    )
 
     return SuiteComparisonResponse(
         experiment_id=result.experiment_id,
         items=items,
-        paper_reference_metric=_suite_reference_metric(reported_metrics, metric_values),
+        paper_reference_metric=paper_reference_metric,
+        paper_closeness_ranking=_paper_closeness_ranking(
+            reference_items, result.performance_ranking
+        ),
     )
 
 
@@ -230,20 +243,37 @@ def _difference_fields(
     return absolute_difference, relative_difference
 
 
-def _suite_reference_metric(
-    reported_metrics: list[ReportedMetricInput],
+def _suite_reference_items(
+    items_by_reported_metric: list[tuple[ReportedMetricInput, list[SuiteComparisonItem]]],
     metric_values: dict[str, dict[str, float]],
-) -> str | None:
+) -> tuple[str | None, list[SuiteComparisonItem]]:
     if not metric_values:
-        return None
+        return None, []
     supported_metrics = {
         metric_name for values in metric_values.values() for metric_name in values
     }
-    for metric in reported_metrics:
+    for metric, items in items_by_reported_metric:
         metric_key = _normalize_metric_name(metric.name)
         if metric_key in supported_metrics:
-            return metric_key
-    return None
+            return metric_key, items
+    return None, []
+
+
+def _paper_closeness_ranking(
+    reference_items: Iterable[SuiteComparisonItem],
+    performance_ranking: list[str],
+) -> list[str]:
+    """Order only successful models with a finite difference for the reference."""
+    rank = {model: index for index, model in enumerate(performance_ranking)}
+    differences = {
+        item.model: item.absolute_difference
+        for item in reference_items
+        if item.absolute_difference is not None
+    }
+    return sorted(
+        differences,
+        key=lambda model: (differences[model], rank.get(model, len(rank)), model),
+    )
 
 
 def _normalized_qualifier(value: str) -> str:
