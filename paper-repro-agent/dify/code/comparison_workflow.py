@@ -332,9 +332,10 @@ def _suite_metric_value(metrics, key):
 
 
 def _format_metric_float(value):
-    if value is None:
+    parsed = None if isinstance(value, bool) else _number(value)
+    if parsed is None:
         return "未提供"
-    return "{0:.3f}".format(float(value))
+    return "{0:.3f}".format(parsed)
 
 
 def _render_cv_lines(result, config):
@@ -349,21 +350,29 @@ def _render_cv_lines(result, config):
         n_seeds = 1
     lines = []
     for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
-        mean = cv_mean.get(key)
+        mean = None if isinstance(cv_mean.get(key), bool) else _number(cv_mean.get(key))
         if mean is None:
             continue
         label = "{0}-fold CV {1}".format(cv_folds, key) if cv_folds else "CV {0}".format(key)
-        std = cv_std.get(key)
+        std = None if isinstance(cv_std.get(key), bool) else _number(cv_std.get(key))
         if std is not None:
             lines.append("- {0} = {1} ± {2}".format(label, _format_metric_float(mean), _format_metric_float(std)))
         else:
             lines.append("- {0} = {1}".format(label, _format_metric_float(mean)))
     for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
         values = seed_means.get(key)
-        if isinstance(values, list) and len(values) > 1:
+        finite_values = [
+            parsed
+            for value in values
+            if not isinstance(value, bool) and (parsed := _number(value)) is not None
+        ] if isinstance(values, list) else []
+        if len(finite_values) > 1:
             lines.append(
                 "- {0}-seed {1} range = {2} ~ {3}".format(
-                    n_seeds, key, _format_metric_float(min(values)), _format_metric_float(max(values))
+                    n_seeds,
+                    key,
+                    _format_metric_float(min(finite_values)),
+                    _format_metric_float(max(finite_values)),
                 )
             )
     return lines

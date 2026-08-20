@@ -577,6 +577,48 @@ def test_format_suite_comparison_report_returns_six_strings_with_rankings_and_sa
     assert RAW_SENTINEL not in report
 
 
+def test_format_suite_comparison_report_filters_malformed_cv_statistics() -> None:
+    result = format_suite_comparison_report(
+        json.dumps({"title": "Malformed CV paper"}),
+        json.dumps({"valid": True}),
+        json.dumps(
+            {
+                "experiment_id": "exp-malformed-cv",
+                "status": "succeeded",
+                "config": {"cv_folds": 5, "n_seeds": 3},
+                "results": [
+                    {
+                        "model": "random_forest",
+                        "status": "succeeded",
+                        "cv_mean": {
+                            "roc_auc": "not-a-number",
+                            "accuracy": 0.8,
+                            "f1": float("nan"),
+                            "recall": float("inf"),
+                        },
+                        "cv_std": {"accuracy": "invalid-std"},
+                        "seed_means": {
+                            "accuracy": ["invalid-seed", 0.8, float("inf"), 0.7],
+                            "roc_auc": ["not-a-number", float("nan")],
+                        },
+                    }
+                ],
+            }
+        ),
+        json.dumps({"experiment_id": "exp-malformed-cv", "items": []}),
+        json.dumps({"strict_status": "not_comparable", "items": []}),
+    )
+
+    report = result["markdown_report"]
+    assert "- 5-fold CV accuracy = 0.800" in report
+    assert "- 3-seed accuracy range = 0.700 ~ 0.800" in report
+    assert "not-a-number" not in report
+    assert "invalid-std" not in report
+    assert "invalid-seed" not in report
+    assert "nan" not in report.casefold()
+    assert "inf" not in report.casefold()
+
+
 def test_format_suite_comparison_report_redacts_arbitrary_backend_error_text() -> None:
     result = format_suite_comparison_report(
         json.dumps({"title": "Sentinel paper"}, ensure_ascii=False),

@@ -491,201 +491,25 @@ def main(comparison_response_json: str) -> dict:
 
 
 def _suite_report_code() -> str:
-    return """import json
-import re
-
-SAFE_ERROR_MESSAGES = {"bounded_failure"}
-SAFE_ERROR_REDACTION = "details redacted for privacy."
-SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-SAFE_RUNTIME_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
-SAFE_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-
-def object_or_empty(value):
-    try:
-        parsed = json.loads(value) if isinstance(value, str) else value
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-def encoded(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-def report_json(value):
-    parsed = object_or_empty(value)
-    if isinstance(value, str) and (parsed or value.strip() == "{}"):
-        return value, parsed
-    return encoded(parsed), parsed
-
-def report_value(value):
-    if value is None or value == "":
-        return "unavailable"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value).replace("\\r", " ").replace("\\n", " ")
-
-def safe_error_code(value):
-    if not isinstance(value, str):
-        return "unavailable"
-    candidate = value.strip()
-    return candidate if SAFE_ERROR_CODE_RE.fullmatch(candidate) else "unavailable"
-
-def safe_error_message(value):
-    if not isinstance(value, str):
-        return SAFE_ERROR_REDACTION
-    candidate = value.strip()
-    return candidate if candidate in SAFE_ERROR_MESSAGES else SAFE_ERROR_REDACTION
-
-def safe_runtime_text(value):
-    if not isinstance(value, str):
-        return "unavailable"
-    candidate = value.strip()
-    return candidate if SAFE_RUNTIME_TEXT_RE.fullmatch(candidate) else "unavailable"
-
-def safe_runtime_digest(value):
-    return value if isinstance(value, str) and SAFE_SHA256_RE.fullmatch(value) else "unavailable"
-
-def results_list(suite):
-    values = suite.get("results")
-    return [item for item in values if isinstance(item, dict)] if isinstance(values, list) else []
-
-def first_by_model(items):
-    mapped = {}
-    if not isinstance(items, list):
-        return mapped
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        model = item.get("model")
-        if isinstance(model, str) and model not in mapped:
-            mapped[model] = item
-    return mapped
-
-def ranking_list(value):
-    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
-
-def metric_float(value):
-    if value is None:
-        return "unavailable"
-    return "{0:.3f}".format(float(value))
-
-def render_cv_lines(item, config):
-    cv_mean = item.get("cv_mean") if isinstance(item.get("cv_mean"), dict) else {}
-    cv_std = item.get("cv_std") if isinstance(item.get("cv_std"), dict) else {}
-    seed_means = item.get("seed_means") if isinstance(item.get("seed_means"), dict) else {}
-    cv_folds = config.get("cv_folds") if isinstance(config, dict) else None
-    n_seeds = config.get("n_seeds") if isinstance(config, dict) else None
-    if not isinstance(n_seeds, int) or n_seeds <= 1:
-        n_seeds = 1
-    lines = []
-    for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
-        mean = cv_mean.get(key)
-        if mean is None:
-            continue
-        label = "{0}-fold CV {1}".format(cv_folds, key) if cv_folds else "CV {0}".format(key)
-        std = cv_std.get(key)
-        if std is not None:
-            lines.append("- {0} = {1} ± {2}".format(label, metric_float(mean), metric_float(std)))
-        else:
-            lines.append("- {0} = {1}".format(label, metric_float(mean)))
-    for key in ("roc_auc", "accuracy", "balanced_accuracy", "precision", "recall", "f1"):
-        values = seed_means.get(key)
-        if isinstance(values, list) and len(values) > 1:
-            lines.append("- {0}-seed {1} range = {2} ~ {3}".format(n_seeds, key, metric_float(min(values)), metric_float(max(values))))
-    return lines
-
-def main(dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str, assessment_json: str) -> dict:
-    dossier_string, dossier = report_json(dossier_json)
-    validation_string, validation = report_json(validation_json)
-    experiment_string, experiment = report_json(experiment_json)
-    comparison_string, comparison = report_json(comparison_json)
-    assessment_string, assessment = report_json(assessment_json)
-    dataset = validation.get("dataset") if isinstance(validation.get("dataset"), dict) else {}
-    if not dataset and isinstance(experiment.get("dataset"), dict):
-        dataset = experiment.get("dataset")
-    split = experiment.get("split_provenance") if isinstance(experiment.get("split_provenance"), dict) else {}
-    config = experiment.get("config") if isinstance(experiment.get("config"), dict) else {}
-    title = dossier.get("title") if isinstance(dossier.get("title"), str) else "Unnamed paper"
-    performance_ranking = ranking_list(experiment.get("performance_ranking"))
-    paper_distance_ranking = ranking_list(comparison.get("paper_distance_ranking") or assessment.get("paper_distance_ranking"))
-    comparison_by_model = first_by_model(comparison.get("items"))
-    assessment_by_model = first_by_model(assessment.get("items"))
-    lines = [
-        "# Multi-model comparison report",
-        "",
-        f"paper: {report_value(title)}",
-        f"suite experiment id: {report_value(experiment.get('experiment_id') or comparison.get('experiment_id'))}",
-        "shared dataset/split summary:",
-        f"- rows={report_value(dataset.get('rows'))}, effective_rows={report_value(dataset.get('effective_rows'))}, features={report_value(dataset.get('features'))}, target={report_value(dataset.get('target') or config.get('target_column'))}",
-        f"- test_size={report_value(split.get('test_size', config.get('test_size')))}, random_state={report_value(split.get('random_state', config.get('random_state')))}, train_rows={report_value(split.get('train_rows'))}, test_rows={report_value(split.get('test_rows'))}",
-        f"- cv_folds={report_value(config.get('cv_folds'))}, optimization_metric={report_value(config.get('optimization_metric'))}, n_iter={report_value(config.get('n_iter'))}, use_gpu={report_value(config.get('use_gpu'))}",
-        "",
-    ]
-    runtime = experiment.get("runtime") if isinstance(experiment.get("runtime"), dict) else {}
-    if runtime:
-        lines.extend([
-            "runner runtime provenance:",
-            f"- service version: {safe_runtime_text(runtime.get('service_version'))}",
-            f"- runner commit: {safe_runtime_text(runtime.get('git_commit'))}",
-            f"- source digest: {safe_runtime_digest(runtime.get('source_digest'))}",
-            f"- workflow version: {safe_runtime_text(runtime.get('workflow_version'))}",
-            "",
-        ])
-    if performance_ranking:
-        lines.append("performance ranking: " + " > ".join(performance_ranking))
-    if paper_distance_ranking:
-        lines.append("paper-distance ranking: " + " > ".join(paper_distance_ranking))
-    if performance_ranking or paper_distance_ranking:
-        lines.append("")
-    lines.append("## model summaries")
-    for item in results_list(experiment):
-        model = item.get("model")
-        if not isinstance(model, str):
-            continue
-        metrics = item.get("metrics") if isinstance(item.get("metrics"), dict) else {}
-        comparison_item = comparison_by_model.get(model, {})
-        assessment_item = assessment_by_model.get(model, {})
-        error = item.get("error") if isinstance(item.get("error"), dict) else {}
-        lines.extend([
-            f"### {model}",
-            f"- status: {report_value(item.get('status'))}",
-            f"- cv_best_score: {report_value(item.get('cv_best_score'))}",
-            f"- auc={report_value(metrics.get('roc_auc'))}, accuracy={report_value(metrics.get('accuracy'))}, f1={report_value(metrics.get('f1'))}, recall={report_value(metrics.get('recall'))}",
-            f"- paper_value={report_value(comparison_item.get('paper_value'))}, absolute_difference={report_value(comparison_item.get('absolute_difference'))}, relative_difference={report_value(comparison_item.get('relative_difference'))}",
-            f"- comparison_reason={report_value(comparison_item.get('reason'))}, approximate_grade={report_value(assessment_item.get('grade'))}",
-        ])
-        lines.extend(render_cv_lines(item, config))
-        if error:
-            lines.append(f"- safe_error={safe_error_code(error.get('code'))}: {safe_error_message(error.get('message'))}")
-    if not results_list(experiment):
-        lines.append("- no suite results were available.")
-    if performance_ranking or paper_distance_ranking:
-        lines.extend(["", "## rankings"])
-        if performance_ranking:
-            lines.append("- performance ranking: " + " > ".join(performance_ranking))
-        if paper_distance_ranking:
-            lines.append("- paper-distance ranking: " + " > ".join(paper_distance_ranking))
-    incomparable = sorted(
-        {
-            item.get("reason")
-            for item in comparison_by_model.values()
-            if isinstance(item.get("reason"), str) and item.get("comparable") is not True
-        }
+    helper_path = PROJECT_ROOT / "dify" / "code" / "comparison_workflow.py"
+    helper = helper_path.read_text(encoding="utf-8").rstrip()
+    entrypoint = """
+def main(
+    dossier_json: str,
+    validation_json: str,
+    experiment_json: str,
+    comparison_json: str,
+    assessment_json: str,
+) -> dict:
+    return format_suite_comparison_report(
+        dossier_json,
+        validation_json,
+        experiment_json,
+        comparison_json,
+        assessment_json,
     )
-    if incomparable:
-        lines.extend([
-            "",
-            "numeric similarity is not strict reproduction when provenance does not match.",
-            "not strict reproduction: " + "; ".join(incomparable),
-        ])
-    return {
-        "dossier_json": dossier_string,
-        "validation_json": validation_string,
-        "experiment_json": experiment_string,
-        "comparison_json": comparison_string,
-        "assessment_json": assessment_string,
-        "markdown_report": "\\n".join(lines),
-    }
 """
+    return helper + "\n\n" + entrypoint.strip() + "\n"
 
 
 def _embedded_experiment_helper_code(entrypoint: str) -> str:

@@ -88,12 +88,17 @@ Legacy compatibility path (kept for existing synchronous consumers):
   - Returns `ExperimentSuiteResult`
   - Includes `experiment_id`, overall `status`, shared `config`, `dataset`, `split_provenance`, per-model `results`, `performance_ranking`, and `reproducibility_status=cv_tuned`
 
-Additional suite endpoints:
+Confirmed workflow path:
 
 - `POST /v1/jobs`
-  - Confirmed path: receives the manifest and CSV upload, returns a job ID immediately with status `queued`.
+  - Receives the confirmed manifest and CSV upload, then returns a job ID immediately with status `queued`.
+- `POST /v1/jobs/{job_id}/wait-result`
+  - Waits for that admitted job to reach a bounded terminal state and returns the saved suite result.
+
+Additional job-inspection endpoints:
+
 - `GET /v1/jobs/{job_id}`
-  - Returns bounded stage/progress/status data for polling.
+  - Returns bounded stage/progress/status data for recovery and inspection.
 - `GET /v1/jobs/{job_id}/result`
   - Returns the saved aggregate suite result after `succeeded` or `partial`.
 
@@ -155,9 +160,10 @@ Interpretation / 解释:
    in the token. Keep the existing `paper_dossier_json` input for the dossier output.
 6. Confirm the Start node includes the multi-model inputs:
    `models_json`, `target_column`, `test_size`, `random_state`, `cv_folds`, `optimization_metric`, `n_iter`, `use_gpu`, `drop_duplicates`, plus the existing similarity thresholds.
-7. Confirm the suite/comparison nodes use:
-   - `http://repro-runner:8001/v1/run-model-suite`
-   - `http://repro-runner:8001/v1/compare-model-suite-result`
+7. Confirm the active confirmed-job and comparison nodes use:
+   - `submit_confirmed_job`: `POST http://repro-runner:8001/v1/jobs`
+   - `poll_confirmed_job`: `POST http://repro-runner:8001/v1/jobs/{job_id}/wait-result`
+   - `compare_model_suite_result`: `POST http://repro-runner:8001/v1/compare-model-suite-result`
 8. Confirm the success path goes from `format_suite_comparison_report` through the shared run-output aggregators to the main `Output` node with six string outputs:
    `dossier_json`, `validation_json`, `experiment_json`, `comparison_json`, `assessment_json`, `markdown_report`.
    The protocol, submission, and downstream semantic/HTTP failure branches converge through the same aggregators,

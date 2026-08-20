@@ -3,6 +3,7 @@ from pathlib import Path
 
 import yaml
 
+from dify.code.comparison_workflow import format_suite_comparison_report
 from scripts.build_multimodel_dsl import (
     build_multimodel_dsl,
     build_prepare_dsl,
@@ -513,3 +514,128 @@ def test_multimodel_embedded_formatter_redacts_arbitrary_backend_error_text() ->
     assert "details redacted for privacy" in report
     for sentinel in SECRET_SENTINELS[1:]:
         assert sentinel not in report
+
+
+def test_multimodel_embedded_formatter_filters_malformed_cv_statistics() -> None:
+    main = _exec_code_node("format_suite_comparison_report")
+
+    result = main(
+        json.dumps({"title": "Malformed embedded CV paper"}),
+        json.dumps({"valid": True}),
+        json.dumps(
+            {
+                "experiment_id": "exp-malformed-embedded-cv",
+                "status": "succeeded",
+                "config": {"cv_folds": 5, "n_seeds": 3},
+                "results": [
+                    {
+                        "model": "random_forest",
+                        "status": "succeeded",
+                        "cv_mean": {"roc_auc": "not-a-number", "accuracy": 0.8},
+                        "cv_std": {"accuracy": float("nan")},
+                        "seed_means": {
+                            "accuracy": ["invalid-seed", 0.8, float("-inf"), 0.7],
+                            "roc_auc": ["not-a-number", float("inf")],
+                        },
+                    }
+                ],
+            }
+        ),
+        json.dumps({"experiment_id": "exp-malformed-embedded-cv", "items": []}),
+        json.dumps({"strict_status": "not_comparable", "items": []}),
+    )
+
+    report = result["markdown_report"]
+    assert "- 5-fold CV accuracy = 0.800" in report
+    assert "- 3-seed accuracy range = 0.700 ~ 0.800" in report
+    assert "not-a-number" not in report
+    assert "invalid-seed" not in report
+    assert "nan" not in report.casefold()
+    assert "inf" not in report.casefold()
+
+
+def test_multimodel_embedded_formatter_matches_source_contract() -> None:
+    payloads = (
+        json.dumps({"title": "Formatter parity paper"}, ensure_ascii=False),
+        json.dumps(
+            {
+                "valid": True,
+                "dataset": {
+                    "rows": 10,
+                    "effective_rows": 10,
+                    "features": 2,
+                    "target": "Y_cls",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {
+                "experiment_id": "exp-formatter-parity",
+                "job_id": "job-formatter-parity",
+                "job_status": "succeeded",
+                "status": "succeeded",
+                "config": {
+                    "cv_folds": 5,
+                    "n_seeds": 3,
+                    "optimization_metric": "roc_auc",
+                    "n_iter": 4,
+                    "use_gpu": False,
+                },
+                "split_provenance": {
+                    "test_size": 0.2,
+                    "random_state": 42,
+                    "train_rows": 8,
+                    "test_rows": 2,
+                },
+                "results": [
+                    {
+                        "model": "random_forest",
+                        "status": "succeeded",
+                        "cv_best_score": 0.82,
+                        "metrics": {"roc_auc": 0.81, "accuracy": 0.8},
+                        "cv_mean": {"roc_auc": 0.8},
+                        "cv_std": {"roc_auc": 0.02},
+                        "seed_means": {"roc_auc": [0.79, 0.8, 0.81]},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {
+                "experiment_id": "exp-formatter-parity",
+                "items": [
+                    {
+                        "model": "random_forest",
+                        "paper_value": 0.82,
+                        "absolute_difference": 0.01,
+                        "relative_difference": -0.012,
+                        "comparable": True,
+                        "reason": "matched",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {
+                "strict_status": "comparable",
+                "items": [
+                    {
+                        "model": "random_forest",
+                        "grade": "highly_similar",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    embedded_result = _exec_code_node("format_suite_comparison_report")(*payloads)
+    source_result = format_suite_comparison_report(*payloads)
+
+    assert embedded_result == source_result
+    report = embedded_result["markdown_report"]
+    assert report.index("job id: job-formatter-parity") < report.index("## model summaries")
+    assert report.index("5-fold CV roc_auc") < report.index("paper_value=0.82")
