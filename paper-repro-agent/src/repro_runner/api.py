@@ -35,6 +35,7 @@ from repro_runner.idempotency import (
     IdempotencyRegistry,
 )
 from repro_runner.protocol_drafts import ProtocolDraftError, ProtocolDraftStore
+from repro_runner.runtime import runtime_provenance
 from repro_runner.schemas import (
     ComparisonResponse,
     DEFAULT_MODEL_NAMES,
@@ -163,7 +164,10 @@ async def request_validation_error(
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        **runtime_provenance().model_dump(mode="json"),
+    }
 
 
 @app.post("/v1/protocol-drafts", response_model=ProtocolDraftCreateResponse)
@@ -1164,6 +1168,7 @@ def _default_execute_job(
         n_iter=1,
         use_gpu=False,
         n_jobs=1,
+        workflow_version=manifest.workflow_version,
     )
     return run_model_suite(
         bundle,

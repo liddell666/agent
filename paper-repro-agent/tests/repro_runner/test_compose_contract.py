@@ -11,6 +11,10 @@ def test_compose_declares_repro_runner():
     assert service["build"] == {
         "context": ".",
         "dockerfile": "Dockerfile.repro",
+        "args": {
+            "REPRO_RUNNER_GIT_COMMIT": "${REPRO_RUNNER_GIT_COMMIT:-unknown}",
+            "REPRO_RUNNER_WORKFLOW_VERSION": "${REPRO_RUNNER_WORKFLOW_VERSION:-multimodel-0.8.0}",
+        },
     }
     assert service["env_file"] == ".env"
     assert service["environment"]["REPRO_RUNNER_STORAGE_DIR"] == (

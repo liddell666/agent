@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from repro_runner.runtime import RuntimeProvenance
+
 
 MissingPolicy = Literal["reject", "drop_rows", "impute"]
 SamplingStrategy = Literal["original", "class_weight", "balanced_undersample"]
@@ -207,6 +209,7 @@ class ModelSuiteConfig(BaseModel):
     n_iter: int = Field(default=8, ge=1, le=32)
     use_gpu: bool = False
     n_jobs: int = Field(default=4, ge=1, le=16)
+    workflow_version: str = Field(default="unknown", min_length=1, max_length=128)
 
     @field_validator("threshold")
     @classmethod
@@ -239,6 +242,7 @@ class ExperimentManifest(BaseModel):
     threshold: float = Field(ge=0.0, le=1.0)
     models: list[ModelName] = Field(min_length=1)
     dossier_id: str | None = None
+    workflow_version: str = Field(default="unknown", min_length=1, max_length=128)
 
     @field_validator("threshold")
     @classmethod
@@ -290,6 +294,7 @@ class ExperimentSuiteResult(BaseModel):
     performance_ranking: list[ModelName] = Field(default_factory=list)
     reproducibility_status: Literal["cv_tuned"] = "cv_tuned"
     preprocessing: PreprocessingSummary | None = None
+    runtime: RuntimeProvenance | None = None
 
 
 JobStatus = Literal[

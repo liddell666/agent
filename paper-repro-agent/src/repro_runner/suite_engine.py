@@ -11,6 +11,7 @@ from repro_runner.data import DatasetBundle
 from repro_runner.metrics import evaluate_classifier, feature_importances
 from repro_runner.model_registry import get_model_spec
 from repro_runner.preprocessing import build_preprocessor, transformed_feature_names
+from repro_runner.runtime import runtime_provenance
 from repro_runner.schemas import (
     ExperimentSuiteResult,
     ModelRunResult,
@@ -176,6 +177,7 @@ def run_model_suite(
             bundle.sampling_strategy,
             transformed_names=observed_transformed_names,
         ),
+        runtime=runtime_provenance(config.workflow_version),
     )
 
 

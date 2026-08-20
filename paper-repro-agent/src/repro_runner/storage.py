@@ -238,6 +238,8 @@ def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
         "performance_ranking": list(result.performance_ranking),
         "reproducibility_status": result.reproducibility_status,
     }
+    if result.runtime is not None:
+        payload["runtime"] = result.runtime.model_dump(mode="json")
     if result.preprocessing is not None:
         payload["preprocessing"] = {
             "numeric_columns": list(result.preprocessing.numeric_columns),
@@ -263,6 +265,7 @@ def _suite_config_payload(result: ExperimentSuiteResult) -> dict[str, object]:
         "n_iter": config.n_iter,
         "use_gpu": config.use_gpu,
         "n_jobs": config.n_jobs,
+        "workflow_version": config.workflow_version,
     }
 
 
