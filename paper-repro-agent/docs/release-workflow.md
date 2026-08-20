@@ -10,9 +10,10 @@ python scripts/build_multimodel_dsl.py --profile ollama --output-dir dify
 
 Build a candidate only from a clean export of the exact commit being reviewed.
 This avoids treating unrelated files in an operator's checkout as part of the
-release. The only local paths allowed when checking a checkout are
-`.live-artifacts/`, `.pytest-tmp*/`, and `.pytest_cache/`; every other staged,
-modified, or untracked path blocks use of that checkout as the candidate.
+release. The index must be empty. After that unconditional staged-change gate,
+the only unstaged local paths allowed when checking a checkout are
+`.live-artifacts/`, `.pytest-tmp*/`, and `.pytest_cache/`; every other modified
+or untracked path blocks use of that checkout as the candidate.
 
 Run this check when the current checkout itself is intended to be the
 candidate. If it reports an unexpected path, preserve that checkout and use
@@ -20,6 +21,13 @@ the exact-commit export below; the export deliberately excludes all
 uncommitted files.
 
 ```powershell
+$staged = @(git diff --cached --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'unable to inspect the Git index' }
+if ($staged.Count -ne 0) {
+  $staged
+  throw 'the Git index is not empty; never build a candidate with staged content'
+}
+
 $allowedLocal = '^[ MADRCU?!]{2} (?:\.live-artifacts/|\.pytest-tmp[^/]*\/|\.pytest_cache/)'
 $unexpected = git status --porcelain=v1 | Where-Object { $_ -notmatch $allowedLocal }
 if ($unexpected) {
@@ -29,24 +37,56 @@ if ($unexpected) {
 ```
 
 For a reproducible candidate, export the commit instead of creating a linked
-worktree. The commands below regenerate both profiles twice, compare the two
-hash captures, require the repository-only drift check to exit zero, and then
+worktree. The commands below disable checkout conversion for the archive,
+verify the extracted release inputs byte-for-byte against their Git blobs and
+require LF repository bytes, capture the committed DSL baseline, regenerate
+both profiles twice, and require the baseline, first, and second captures to be
+identical. They then require the repository-only drift check to exit zero and
 write the manifest to the caller's local `.live-artifacts/` directory. They do
 not contact Dify.
 
 ```powershell
 $mainCheckout = (Get-Location).Path
-$commit = git rev-parse HEAD
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+$commit = (git rev-parse HEAD).Trim()
 $prefix = (git rev-parse --show-prefix).TrimEnd('/')
-$archiveTree = if ($prefix) { "$commit`:$prefix" } else { $commit }
 $archive = Join-Path ([System.IO.Path]::GetTempPath()) ("release-baseline-$($commit.Substring(0, 12))-$([guid]::NewGuid().ToString('N'))")
 New-Item -ItemType Directory -Path $archive | Out-Null
 $archiveZip = Join-Path $archive 'candidate.zip'
-git archive --format=zip --output $archiveZip $archiveTree
+if ($prefix) {
+  git -c core.autocrlf=false -c core.eol=lf -C $repoRoot archive --format=zip --output $archiveZip $commit -- $prefix
+} else {
+  git -c core.autocrlf=false -c core.eol=lf -C $repoRoot archive --format=zip --output $archiveZip $commit
+}
 if ($LASTEXITCODE -ne 0) { throw 'git archive export failed' }
 Expand-Archive -LiteralPath $archiveZip -DestinationPath $archive
+$candidateRoot = if ($prefix) { Join-Path $archive $prefix } else { $archive }
 
-Push-Location $archive
+function Assert-ArchiveBlobBytes([string] $relativePath) {
+  $repoPath = if ($prefix) { "$prefix/$relativePath" } else { $relativePath }
+  $expectedBlob = (git -C $repoRoot rev-parse "$commit`:$repoPath").Trim()
+  if ($LASTEXITCODE -ne 0) { throw "unable to resolve release blob $repoPath" }
+  $archivePath = Join-Path $candidateRoot $relativePath
+  $actualBlob = (git hash-object --no-filters $archivePath).Trim()
+  if ($LASTEXITCODE -ne 0 -or $actualBlob -ne $expectedBlob) {
+    throw "archive byte mismatch for $relativePath"
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($archivePath)
+  for ($index = 0; $index -lt ($bytes.Length - 1); $index++) {
+    if ($bytes[$index] -eq 13 -and $bytes[$index + 1] -eq 10) {
+      throw "release input is not canonical LF: $relativePath"
+    }
+  }
+}
+
+$releaseInputs = @(
+  'scripts/build_multimodel_dsl.py'
+  'src/repro_runner/runtime.py'
+) + @(Get-ChildItem (Join-Path $candidateRoot 'dify') -Filter '*.yml' -File |
+  Sort-Object Name | ForEach-Object { "dify/$($_.Name)" })
+$releaseInputs | ForEach-Object { Assert-ArchiveBlobBytes $_ }
+
+Push-Location $candidateRoot
 function Save-WorkflowHashes([string] $path) {
   $hashes = Get-ChildItem -Path dify -Filter '*.yml' -File |
     Sort-Object Name |
@@ -58,18 +98,25 @@ function Invoke-DslGeneration([string] $profile) {
   if ($LASTEXITCODE -ne 0) { throw "DSL generation failed for profile $profile" }
 }
 New-Item -ItemType Directory -Force .live-artifacts | Out-Null
+Save-WorkflowHashes .live-artifacts/dsl-hashes-committed.json
 Invoke-DslGeneration deepseek
 Invoke-DslGeneration ollama
 Save-WorkflowHashes .live-artifacts/dsl-hashes-first.json
 Invoke-DslGeneration deepseek
 Invoke-DslGeneration ollama
 Save-WorkflowHashes .live-artifacts/dsl-hashes-second.json
-if ((Get-Content .live-artifacts/dsl-hashes-first.json -Raw) -ne (Get-Content .live-artifacts/dsl-hashes-second.json -Raw)) { throw 'DSL generation is not byte-stable' }
+$committedHashes = Get-Content .live-artifacts/dsl-hashes-committed.json -Raw
+$firstHashes = Get-Content .live-artifacts/dsl-hashes-first.json -Raw
+$secondHashes = Get-Content .live-artifacts/dsl-hashes-second.json -Raw
+if ($committedHashes -ne $firstHashes -or $firstHashes -ne $secondHashes) {
+  throw 'tracked DSL differs from deterministic generation'
+}
 
-python scripts/check_workflow_release.py `
+$repositoryCheck = python scripts/check_workflow_release.py `
   --dsl dify/paper-comparison-merged-workflow-ollama.yml `
   --source scripts/build_multimodel_dsl.py src/repro_runner/runtime.py --json
 if ($LASTEXITCODE -ne 0) { throw 'repository-only release check failed' }
+$repositoryCheck | Set-Content .live-artifacts/repository-check.json -Encoding utf8
 
 $env:PYTHONDONTWRITEBYTECODE = '1'
 python -c "from pathlib import Path; import hashlib, json, sys, yaml; sys.path.insert(0, 'scripts'); from workflow_release_integrity import build_release_manifest, graph_digest, source_digest; paths = [Path('scripts/build_multimodel_dsl.py').resolve(), Path('src/repro_runner/runtime.py').resolve()]; dsl = Path('dify/paper-comparison-merged-workflow-ollama.yml'); document = yaml.safe_load(dsl.read_text(encoding='utf-8')); manifest = build_release_manifest(git_commit='$commit', worktree_clean=True, source_sha256=source_digest(paths, Path('.').resolve()), dsl_sha256='sha256:' + hashlib.sha256(dsl.read_bytes()).hexdigest(), graph_sha256=graph_digest(document['workflow']['graph']), workflow_kind=str(document['kind']), workflow_version=str(document['version'])); Path('.live-artifacts/release-baseline-candidate.json').write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n', encoding='utf-8')"
@@ -77,9 +124,11 @@ if ($LASTEXITCODE -ne 0) { throw 'candidate manifest generation failed' }
 Pop-Location
 
 New-Item -ItemType Directory -Force (Join-Path $mainCheckout '.live-artifacts') | Out-Null
-Copy-Item (Join-Path $archive '.live-artifacts/release-baseline-candidate.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json') -Force
-Copy-Item (Join-Path $archive '.live-artifacts/dsl-hashes-first.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-first.json') -Force
-Copy-Item (Join-Path $archive '.live-artifacts/dsl-hashes-second.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-second.json') -Force
+Copy-Item (Join-Path $candidateRoot '.live-artifacts/release-baseline-candidate.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json') -Force
+Copy-Item (Join-Path $candidateRoot '.live-artifacts/repository-check.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-repository-check.json') -Force
+Copy-Item (Join-Path $candidateRoot '.live-artifacts/dsl-hashes-committed.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-committed.json') -Force
+Copy-Item (Join-Path $candidateRoot '.live-artifacts/dsl-hashes-first.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-first.json') -Force
+Copy-Item (Join-Path $candidateRoot '.live-artifacts/dsl-hashes-second.json') (Join-Path $mainCheckout '.live-artifacts/release-baseline-dsl-hashes-second.json') -Force
 Get-Content (Join-Path $mainCheckout '.live-artifacts/release-baseline-candidate.json')
 ```
 
