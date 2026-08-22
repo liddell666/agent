@@ -1,0 +1,3 @@
+services:
+  repro-runner:
+    image: "${REPRO_RUNNER_CUTOVER_IMAGE:?REPRO_RUNNER_CUTOVER_IMAGE must be set when using this override}"

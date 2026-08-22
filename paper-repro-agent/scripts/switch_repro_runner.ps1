@@ -11,8 +11,10 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $networkName = "docker_default"
 $composeBaseFile = Join-Path $projectRoot "compose.yaml"
 $composeOverrideFile = Join-Path $projectRoot "compose.runner-data-source.yaml"
+$composeImageOverrideFile = Join-Path $projectRoot "compose.runner-image.yaml"
 $composeFileArguments = @("-f", $composeBaseFile)
 $composeDataSourceEnvName = "REPRO_RUNNER_CUTOVER_DATA_SOURCE"
+$composeImageEnvName = "REPRO_RUNNER_CUTOVER_IMAGE"
 
 function Invoke-DockerChecked {
     param([Parameter(Mandatory)][string[]]$Arguments)
@@ -459,6 +461,9 @@ if ($Rollback) {
 $previousDataSourceEnvExists = Test-Path "Env:$composeDataSourceEnvName"
 $previousDataSourceEnvValue = $env:REPRO_RUNNER_CUTOVER_DATA_SOURCE
 $dataSourceEnvConfigured = $false
+$previousImageEnvExists = Test-Path "Env:$composeImageEnvName"
+$previousImageEnvValue = $env:REPRO_RUNNER_CUTOVER_IMAGE
+$imageEnvConfigured = $false
 
 if (-not [string]::IsNullOrWhiteSpace($ExperimentDataSource)) {
     $resolvedDataSource = Resolve-ExperimentDataSource -Path $ExperimentDataSource
@@ -503,6 +508,9 @@ try {
         & docker rm -f $smokeName 2>$null | Out-Null
     }
 
+    $env:REPRO_RUNNER_CUTOVER_IMAGE = $imageId
+    $imageEnvConfigured = $true
+
     $oldRunner = Get-RunnerContainerJson -Name $ContainerName
     Assert-NoActiveJobs -Name $ContainerName
 
@@ -536,7 +544,7 @@ try {
 
         $cutoverProjectName = "repro-runner-cutover-$(Get-Date -Format yyyyMMdd-HHmmss)-$PID"
         $replacementMayExist = $true
-        Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName) + $composeFileArguments + @("up", "-d", "--no-build", "--no-deps", "repro-runner")) | Out-Null
+        Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName) + $composeFileArguments + @("-f", $composeImageOverrideFile, "up", "-d", "--no-build", "--no-deps", "repro-runner")) | Out-Null
 
         $cutoverHealth = Wait-RunnerHealth -Url "http://127.0.0.1:8001/healthz" -ExpectedCommit $expectedCommit -ExpectedWorkflowVersion $WorkflowVersion -Context "active runner" -MaxAttempts 60 -DelaySeconds 2
 
@@ -572,6 +580,14 @@ try {
     Write-Host "Source digest: $($cutoverHealth.source_digest)"
     Write-Host "Legacy container retained as $legacyName"
 } finally {
+    if ($imageEnvConfigured) {
+        if ($previousImageEnvExists) {
+            Set-Item -Path "Env:$composeImageEnvName" -Value $previousImageEnvValue
+        } else {
+            [Environment]::SetEnvironmentVariable($composeImageEnvName, $null, [System.EnvironmentVariableTarget]::Process)
+        }
+    }
+
     if ($dataSourceEnvConfigured) {
         if ($previousDataSourceEnvExists) {
             Set-Item -Path "Env:$composeDataSourceEnvName" -Value $previousDataSourceEnvValue

@@ -74,13 +74,33 @@ def test_forward_cutover_uses_a_fresh_compose_project_after_renaming_runner() ->
     assert "$cutoverProjectName = \"repro-runner-cutover-$(Get-Date -Format yyyyMMdd-HHmmss)-$PID\"" in cutover
     assert (
         'Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName) + '
-        '$composeFileArguments + @("up", "-d", "--no-build", "--no-deps", "repro-runner"))'
+        '$composeFileArguments + @("-f", $composeImageOverrideFile, "up", "-d", '
+        '"--no-build", "--no-deps", "repro-runner"))'
     ) in cutover
     _assert_in_order(
         cutover,
         'Invoke-DockerChecked @("rename", $ContainerName, $legacyName)',
         "$cutoverProjectName =",
         'Invoke-DockerChecked -Arguments (@("compose", "-p", $cutoverProjectName)',
+    )
+
+
+def test_forward_cutover_pins_the_smoke_tested_image_id() -> None:
+    source = _script_source()
+    override = Path("compose.runner-image.yaml").read_text(encoding="utf-8")
+
+    assert "REPRO_RUNNER_CUTOVER_IMAGE" in override
+    assert "image:" in override
+    assert "$composeImageOverrideFile" in source
+    assert '$env:REPRO_RUNNER_CUTOVER_IMAGE = $imageId' in source
+    cutover = source[source.index("$imageId = Resolve-ReproRunnerImageId") :]
+    _assert_in_order(
+        cutover,
+        "$imageId = Resolve-ReproRunnerImageId",
+        '$env:REPRO_RUNNER_CUTOVER_IMAGE = $imageId',
+        'Invoke-DockerChecked @("stop", $ContainerName)',
+        "$composeImageOverrideFile",
+        '"up", "-d", "--no-build", "--no-deps", "repro-runner"',
     )
 
 
