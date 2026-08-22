@@ -114,7 +114,12 @@ def test_healthz_is_public(client: TestClient):
     response = client.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["service_version"] == "0.2.0"
+    assert body["source_digest"].startswith("sha256:")
+    assert body["git_commit"]
+    assert body["workflow_version"]
 
 
 def test_protocol_draft_post_get_round_trip(client: TestClient, settings: Settings):
@@ -1167,11 +1172,11 @@ def test_missing_experiment_has_not_found_code_and_request_id(client: TestClient
 
 @pytest.mark.parametrize("entrypoint", ["get", "compare"])
 def test_corrupt_stored_result_returns_409_not_not_found(
-    client: TestClient, tmp_path, entrypoint: str
+    client: TestClient, settings: Settings, entrypoint: str
 ):
     experiment_id = "exp-20260805T010203Z-deadbeef"
-    directory = tmp_path / experiment_id
-    directory.mkdir()
+    directory = settings.storage_dir / experiment_id
+    directory.mkdir(parents=True)
     (directory / "result.json").write_bytes(b"{not-json")
 
     if entrypoint == "get":
