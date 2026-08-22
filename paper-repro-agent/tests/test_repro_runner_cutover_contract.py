@@ -118,6 +118,26 @@ def test_rollback_requires_no_active_jobs_and_restores_alias() -> None:
     assert "Assert-NoActiveJobs" in source
 
 
+def test_restore_checks_for_an_actual_replacement_before_removal() -> None:
+    source = _script_source()
+    restore = _between(
+        source,
+        "function Restore-RunnerState {",
+        "# The forward cutover mutates only after preflight succeeds:",
+    )
+
+    assert "function Test-RunnerContainerExists" in source
+    assert "if ($ReplacementMayExist -and (Test-RunnerContainerExists -Name $Container))" in restore
+    assert 'Invoke-DockerChecked @("rm", "-f", $Container)' in restore
+    _assert_in_order(
+        restore,
+        "Test-RunnerContainerExists -Name $Container",
+        'Invoke-DockerChecked @("rm", "-f", $Container)',
+        'Invoke-DockerChecked @("rename", $LegacyName, $Container)',
+        'Invoke-DockerChecked @("start", $Container)',
+    )
+
+
 def test_image_resolution_handles_compose_without_an_existing_container() -> None:
     source = _script_source()
     resolver = _between(

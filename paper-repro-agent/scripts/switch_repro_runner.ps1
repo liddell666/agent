@@ -91,6 +91,30 @@ function Get-RunnerContainerJson {
     return (($raw -join [Environment]::NewLine) | ConvertFrom-Json)[0]
 }
 
+function Test-RunnerContainerExists {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & docker container inspect $Name 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($exitCode -eq 0) {
+        return $true
+    }
+
+    $detail = ($output -join [Environment]::NewLine)
+    if ($detail -match "No such container|No such object") {
+        return $false
+    }
+
+    throw "docker container inspect failed for ${Name}: $detail"
+}
+
 function Normalize-HostPath {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -346,8 +370,8 @@ function Restore-RunnerState {
         [Parameter(Mandatory)][bool]$ReplacementMayExist
     )
 
-    if ($ReplacementMayExist) {
-        & docker rm -f $Container 2>$null | Out-Null
+    if ($ReplacementMayExist -and (Test-RunnerContainerExists -Name $Container)) {
+        Invoke-DockerChecked @("rm", "-f", $Container) | Out-Null
     }
 
     if ($OldRenamed) {
