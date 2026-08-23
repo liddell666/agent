@@ -50,8 +50,32 @@ def graph_fixture(code: str = "return {'status': 'current'}") -> dict[str, objec
     }
 
 
-def workflow(workflow_id: str, graph: dict[str, object]) -> SimpleNamespace:
-    return SimpleNamespace(id=workflow_id, graph_dict=deepcopy(graph))
+def metadata_fixture(label: str) -> updater.WorkflowReleaseMetadata:
+    return updater.WorkflowReleaseMetadata.from_values(
+        features={"label": label, "file_upload": {"enabled": True}},
+        environment_variables=[{"name": "endpoint", "value": label}],
+        conversation_variables=[],
+    )
+
+
+def workflow(
+    workflow_id: str,
+    graph: dict[str, object],
+    metadata: updater.WorkflowReleaseMetadata | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=workflow_id,
+        graph_dict=deepcopy(graph),
+        normalized_features_dict=deepcopy(
+            metadata.features if metadata is not None else {"features": "current"}
+        ),
+        environment_variables=deepcopy(
+            metadata.environment_variables if metadata is not None else ["environment"]
+        ),
+        conversation_variables=deepcopy(
+            metadata.conversation_variables if metadata is not None else ["conversation"]
+        ),
+    )
 
 
 class FakeReleaseService:
@@ -65,11 +89,17 @@ class FakeReleaseService:
         fail_once_on: str | None = None,
         invalid_backup_graph: bool = False,
         backup_id: object = BACKUP_ID,
+        draft_metadata: updater.WorkflowReleaseMetadata | None = None,
+        published_metadata: updater.WorkflowReleaseMetadata | None = None,
     ) -> None:
         current = draft_graph or graph_fixture()
         published = published_graph or current
-        self.draft = workflow(DRAFT_ID, current)
-        self.published = workflow(PUBLISHED_ID, published)
+        self.draft = workflow(DRAFT_ID, current, draft_metadata)
+        self.published = workflow(
+            PUBLISHED_ID,
+            published,
+            published_metadata or draft_metadata,
+        )
         self.post_publish_graph = deepcopy(post_publish_graph)
         self.post_publish_id = post_publish_id
         self.fail_once_on = fail_once_on
@@ -144,6 +174,51 @@ class FakeReleaseService:
         if self.fail_once_on == operation:
             self.fail_once_on = None
             raise RuntimeError(f"simulated {operation} failure")
+
+
+def test_workflow_metadata_digest_is_deterministic_and_value_is_immutable() -> None:
+    source = {
+        "features": {"b": 2, "a": 1},
+        "environment_variables": [{"name": "x", "value": "secret-value"}],
+        "conversation_variables": [],
+    }
+    metadata = updater.WorkflowReleaseMetadata.from_values(**source)
+    expected = updater.WorkflowReleaseMetadata.from_values(
+        features={"a": 1, "b": 2},
+        environment_variables=[{"value": "secret-value", "name": "x"}],
+        conversation_variables=[],
+    )
+    source["features"]["a"] = 99
+    returned = metadata.features
+    returned["a"] = 88
+
+    assert updater.workflow_metadata_digest(metadata) == updater.workflow_metadata_digest(expected)
+    assert metadata.features == {"a": 1, "b": 2}
+    assert "secret-value" not in repr(metadata)
+
+
+def test_inspect_release_state_returns_metadata_identities_without_writes() -> None:
+    fake = FakeReleaseService(
+        draft_metadata=metadata_fixture("draft"),
+        published_metadata=metadata_fixture("published"),
+    )
+
+    state = updater.inspect_release_state(
+        fake,
+        SimpleNamespace(id=APP_ID),
+        object(),
+        APP_ID,
+    )
+
+    assert state.draft_metadata == metadata_fixture("draft")
+    assert state.published_metadata == metadata_fixture("published")
+    assert state.draft_metadata_digest == updater.workflow_metadata_digest(
+        state.draft_metadata
+    )
+    assert state.published_metadata_digest == updater.workflow_metadata_digest(
+        state.published_metadata
+    )
+    assert fake.write_calls == []
 
 
 def test_inspect_release_state_returns_canonical_read_only_snapshot() -> None:

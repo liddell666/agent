@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -211,6 +212,72 @@ class ReleaseMark:
     backup_comment: str = ""
 
 
+@dataclass(frozen=True, repr=False)
+class WorkflowReleaseMetadata:
+    """Canonical workflow metadata without value-bearing repr output."""
+
+    _canonical_json: str
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        features: object,
+        environment_variables: object,
+        conversation_variables: object,
+    ) -> WorkflowReleaseMetadata:
+        payload = {
+            "features": copy.deepcopy(features),
+            "environment_variables": copy.deepcopy(environment_variables),
+            "conversation_variables": copy.deepcopy(conversation_variables),
+        }
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        return cls(encoded)
+
+    @classmethod
+    def from_workflow(cls, workflow: object) -> WorkflowReleaseMetadata:
+        return cls.from_values(
+            features=getattr(workflow, "normalized_features_dict"),
+            environment_variables=getattr(workflow, "environment_variables"),
+            conversation_variables=getattr(workflow, "conversation_variables"),
+        )
+
+    def _payload(self) -> dict[str, object]:
+        value = json.loads(self._canonical_json)
+        if not isinstance(value, dict):  # pragma: no cover - constructor invariant
+            raise RuntimeError("canonical workflow metadata is not an object")
+        return value
+
+    @property
+    def features(self) -> object:
+        return self._payload()["features"]
+
+    @property
+    def environment_variables(self) -> object:
+        return self._payload()["environment_variables"]
+
+    @property
+    def conversation_variables(self) -> object:
+        return self._payload()["conversation_variables"]
+
+    def __repr__(self) -> str:
+        return f"WorkflowReleaseMetadata(digest={workflow_metadata_digest(self)!r})"
+
+
+def workflow_metadata_digest(metadata: WorkflowReleaseMetadata) -> str:
+    """Return a stable identity without exposing metadata values."""
+
+    if not isinstance(metadata, WorkflowReleaseMetadata):
+        raise TypeError("metadata must be WorkflowReleaseMetadata")
+    return "sha256:" + hashlib.sha256(metadata._canonical_json.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class ExpectedReleaseIdentity:
     """Optimistic concurrency guard required before any release mutation."""
@@ -218,6 +285,7 @@ class ExpectedReleaseIdentity:
     app_id: str
     draft_digest: str
     draft_workflow_id: str | None = None
+    draft_metadata_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +299,10 @@ class ReleaseState:
     published_graph: dict[str, object]
     draft_digest: str
     published_digest: str
+    draft_metadata: WorkflowReleaseMetadata
+    published_metadata: WorkflowReleaseMetadata
+    draft_metadata_digest: str
+    published_metadata_digest: str
 
 
 def inspect_release_state(
@@ -255,6 +327,8 @@ def inspect_release_state(
 
     draft_graph = canonical_graph(getattr(draft, "graph_dict"))
     published_graph = canonical_graph(getattr(published, "graph_dict"))
+    draft_metadata = WorkflowReleaseMetadata.from_workflow(draft)
+    published_metadata = WorkflowReleaseMetadata.from_workflow(published)
     return ReleaseState(
         app_id=app_id,
         draft_workflow_id=str(getattr(draft, "id")),
@@ -263,6 +337,10 @@ def inspect_release_state(
         published_graph=published_graph,
         draft_digest=graph_digest(draft_graph),
         published_digest=graph_digest(published_graph),
+        draft_metadata=draft_metadata,
+        published_metadata=published_metadata,
+        draft_metadata_digest=workflow_metadata_digest(draft_metadata),
+        published_metadata_digest=workflow_metadata_digest(published_metadata),
     )
 
 
@@ -559,17 +637,26 @@ def _normalize_expected_identity(
         app_id = value.get("app_id")
         draft_digest = value.get("draft_digest")
         draft_workflow_id = value.get("draft_workflow_id")
+        draft_metadata_digest = value.get("draft_metadata_digest")
     else:
         app_id = getattr(value, "app_id", None)
         draft_digest = getattr(value, "draft_digest", None)
         draft_workflow_id = getattr(value, "draft_workflow_id", None)
+        draft_metadata_digest = getattr(value, "draft_metadata_digest", None)
     if not isinstance(app_id, str) or not app_id:
         raise ValueError("expected release identity requires app_id")
     if not isinstance(draft_digest, str) or not draft_digest:
         raise ValueError("expected release identity requires draft_digest")
     if draft_workflow_id is not None and not isinstance(draft_workflow_id, str):
         raise ValueError("expected draft_workflow_id must be a string")
-    return ExpectedReleaseIdentity(app_id, draft_digest, draft_workflow_id)
+    if draft_metadata_digest is not None and not isinstance(draft_metadata_digest, str):
+        raise ValueError("expected draft_metadata_digest must be a string")
+    return ExpectedReleaseIdentity(
+        app_id,
+        draft_digest,
+        draft_workflow_id,
+        draft_metadata_digest,
+    )
 
 
 def _normalize_release_mark(
