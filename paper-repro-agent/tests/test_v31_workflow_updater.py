@@ -91,6 +91,9 @@ class FakeReleaseService:
         backup_id: object = BACKUP_ID,
         draft_metadata: updater.WorkflowReleaseMetadata | None = None,
         published_metadata: updater.WorkflowReleaseMetadata | None = None,
+        post_publish_metadata: updater.WorkflowReleaseMetadata | None = None,
+        backup_metadata: updater.WorkflowReleaseMetadata | None = None,
+        rollback_metadata: updater.WorkflowReleaseMetadata | None = None,
     ) -> None:
         current = draft_graph or graph_fixture()
         published = published_graph or current
@@ -105,7 +108,11 @@ class FakeReleaseService:
         self.fail_once_on = fail_once_on
         self.invalid_backup_graph = invalid_backup_graph
         self.backup_id = backup_id
+        self.post_publish_metadata = post_publish_metadata
+        self.backup_metadata_override = backup_metadata
+        self.rollback_metadata = rollback_metadata
         self.backup_graph: dict[str, object] | None = None
+        self.backup_metadata: updater.WorkflowReleaseMetadata | None = None
         self.calls: list[str] = []
         self.write_calls: list[str] = []
         self.rollback_targets: list[str] = []
@@ -125,8 +132,12 @@ class FakeReleaseService:
         self.calls.append("create_backup")
         self.write_calls.append("create_backup")
         self.backup_graph = deepcopy(self.draft.graph_dict)
+        self.backup_metadata = updater.WorkflowReleaseMetadata.from_workflow(
+            self.draft
+        )
+        result_metadata = self.backup_metadata_override or self.backup_metadata
         result_graph = {"nodes": []} if self.invalid_backup_graph else self.backup_graph
-        return SimpleNamespace(id=self.backup_id, graph_dict=deepcopy(result_graph))
+        return workflow(self.backup_id, result_graph, result_metadata)
 
     def save_draft(
         self,
@@ -134,11 +145,15 @@ class FakeReleaseService:
         app_model: object,
         session: object,
         graph: dict[str, object],
+        metadata: updater.WorkflowReleaseMetadata | None = None,
     ) -> SimpleNamespace:
         self.calls.append("save_draft")
         self.write_calls.append("save_draft")
         self._maybe_fail("save_draft")
-        self.draft = workflow(DRAFT_ID, graph)
+        effective_metadata = metadata or updater.WorkflowReleaseMetadata.from_workflow(
+            self.draft
+        )
+        self.draft = workflow(DRAFT_ID, graph, effective_metadata)
         return self.draft
 
     def publish(
@@ -148,8 +163,10 @@ class FakeReleaseService:
         self.write_calls.append("publish")
         self._maybe_fail("publish")
         graph = self.post_publish_graph or self.draft.graph_dict
-        result = workflow(CANDIDATE_ID, self.draft.graph_dict)
-        self.published = workflow(self.post_publish_id, graph)
+        draft_metadata = updater.WorkflowReleaseMetadata.from_workflow(self.draft)
+        published_metadata = self.post_publish_metadata or draft_metadata
+        result = workflow(CANDIDATE_ID, self.draft.graph_dict, draft_metadata)
+        self.published = workflow(self.post_publish_id, graph, published_metadata)
         return result
 
     def rollback(
@@ -165,7 +182,9 @@ class FakeReleaseService:
         self.rollback_targets.append(workflow_id)
         assert workflow_id == BACKUP_ID
         assert self.backup_graph is not None
-        self.published = workflow(ROLLBACK_ID, self.backup_graph)
+        assert self.backup_metadata is not None
+        restored_metadata = self.rollback_metadata or self.backup_metadata
+        self.published = workflow(ROLLBACK_ID, self.backup_graph, restored_metadata)
         return self.published
 
     def _maybe_fail(self, operation: str) -> None:
@@ -310,6 +329,166 @@ def test_publish_verified_graph_orders_backup_publish_and_post_verify() -> None:
     ]
     assert fake.draft.graph_dict == candidate_before
     assert candidate == candidate_before
+
+
+def test_publish_verified_graph_publishes_candidate_metadata() -> None:
+    current = graph_fixture()
+    candidate = graph_fixture("return {'status': 'candidate'}")
+    current_metadata = metadata_fixture("current")
+    candidate_metadata = metadata_fixture("candidate")
+    fake = FakeReleaseService(
+        draft_metadata=current_metadata,
+        published_metadata=current_metadata,
+    )
+    identity = updater.ExpectedReleaseIdentity(
+        APP_ID,
+        graph_digest(current),
+        DRAFT_ID,
+        updater.workflow_metadata_digest(current_metadata),
+    )
+
+    result = updater.publish_verified_graph(
+        fake,
+        SimpleNamespace(id=APP_ID),
+        object(),
+        candidate,
+        identity,
+        release_mark(),
+        candidate_metadata=candidate_metadata,
+    )
+
+    assert result["status"] == "published"
+    assert result["candidate_metadata_digest"] == updater.workflow_metadata_digest(
+        candidate_metadata
+    )
+    assert result["published_metadata_digest"] == result["candidate_metadata_digest"]
+    assert updater.WorkflowReleaseMetadata.from_workflow(fake.draft) == candidate_metadata
+
+
+def test_stale_metadata_identity_stops_before_backup() -> None:
+    current = graph_fixture()
+    live_metadata = metadata_fixture("live")
+    fake = FakeReleaseService(draft_metadata=live_metadata)
+    identity = updater.ExpectedReleaseIdentity(
+        APP_ID,
+        graph_digest(current),
+        DRAFT_ID,
+        updater.workflow_metadata_digest(metadata_fixture("stale")),
+    )
+
+    with pytest.raises(ValueError, match="Dify draft metadata digest mismatch"):
+        updater.publish_verified_graph(
+            fake,
+            SimpleNamespace(id=APP_ID),
+            object(),
+            graph_fixture("return {'status': 'candidate'}"),
+            identity,
+            release_mark(),
+            candidate_metadata=metadata_fixture("candidate"),
+        )
+
+    assert fake.write_calls == []
+
+
+def test_post_publish_metadata_mismatch_rolls_back_explicit_backup() -> None:
+    current = graph_fixture()
+    current_metadata = metadata_fixture("current")
+    candidate_metadata = metadata_fixture("candidate")
+    fake = FakeReleaseService(
+        draft_metadata=current_metadata,
+        published_metadata=current_metadata,
+        post_publish_metadata=metadata_fixture("unexpected"),
+    )
+    identity = updater.ExpectedReleaseIdentity(
+        APP_ID,
+        graph_digest(current),
+        DRAFT_ID,
+        updater.workflow_metadata_digest(current_metadata),
+    )
+
+    result = updater.publish_verified_graph(
+        fake,
+        SimpleNamespace(id=APP_ID),
+        object(),
+        graph_fixture("return {'status': 'candidate'}"),
+        identity,
+        release_mark(),
+        candidate_metadata=candidate_metadata,
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["failure_operation"] == "verify_published"
+    assert result["backup_workflow_id"] == BACKUP_ID
+    assert result["restored_metadata_digest"] == updater.workflow_metadata_digest(
+        current_metadata
+    )
+    assert fake.rollback_targets == [BACKUP_ID]
+    assert "unexpected" not in json.dumps(result)
+
+
+def test_backup_metadata_mismatch_rolls_back_before_save() -> None:
+    current = graph_fixture()
+    current_metadata = metadata_fixture("current")
+    fake = FakeReleaseService(
+        draft_metadata=current_metadata,
+        backup_metadata=metadata_fixture("invalid-backup"),
+    )
+    identity = updater.ExpectedReleaseIdentity(
+        APP_ID,
+        graph_digest(current),
+        DRAFT_ID,
+        updater.workflow_metadata_digest(current_metadata),
+    )
+
+    result = updater.publish_verified_graph(
+        fake,
+        SimpleNamespace(id=APP_ID),
+        object(),
+        graph_fixture("return {'status': 'candidate'}"),
+        identity,
+        release_mark(),
+        candidate_metadata=metadata_fixture("candidate"),
+    )
+
+    assert result["status"] == "rolled_back"
+    assert result["failure_code"] == "backup_validation_failed"
+    assert result["restored_metadata_digest"] == updater.workflow_metadata_digest(
+        current_metadata
+    )
+    assert "save_draft" not in fake.calls
+    assert "invalid-backup" not in json.dumps(result)
+
+
+def test_rollback_metadata_mismatch_is_rejected() -> None:
+    current = graph_fixture()
+    current_metadata = metadata_fixture("current")
+    fake = FakeReleaseService(
+        draft_metadata=current_metadata,
+        post_publish_metadata=metadata_fixture("unexpected"),
+        rollback_metadata=metadata_fixture("incomplete-restore"),
+    )
+    identity = updater.ExpectedReleaseIdentity(
+        APP_ID,
+        graph_digest(current),
+        DRAFT_ID,
+        updater.workflow_metadata_digest(current_metadata),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Dify rollback metadata verification failed",
+    ) as error:
+        updater.publish_verified_graph(
+            fake,
+            SimpleNamespace(id=APP_ID),
+            object(),
+            graph_fixture("return {'status': 'candidate'}"),
+            identity,
+            release_mark(),
+            candidate_metadata=metadata_fixture("candidate"),
+        )
+
+    assert "incomplete-restore" not in str(error.value)
 
 
 def test_publish_verified_graph_validates_and_propagates_task5_manifest() -> None:

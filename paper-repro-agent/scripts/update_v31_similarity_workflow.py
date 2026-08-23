@@ -186,6 +186,7 @@ class ReleaseService(Protocol):
         app_model: object,
         session: object,
         graph: dict[str, object],
+        metadata: WorkflowReleaseMetadata | None = None,
     ) -> object: ...
 
     def publish(
@@ -353,12 +354,14 @@ def publish_verified_graph(
     mark: ReleaseMark | Mapping[str, object] | str,
     *,
     release_manifest: Mapping[str, object] | None = None,
+    candidate_metadata: WorkflowReleaseMetadata | None = None,
 ) -> dict[str, object]:
     """Back up, publish, verify, and explicitly roll back a candidate graph."""
     identity = _normalize_expected_identity(expected_identity)
     release_mark = _normalize_release_mark(mark)
     candidate = copy.deepcopy(candidate_graph)
     candidate_digest = graph_digest(candidate)
+    metadata_aware = candidate_metadata is not None
     validated_manifest = _validate_release_manifest(
         release_manifest,
         expected_identity=identity,
@@ -398,6 +401,24 @@ def publish_verified_graph(
             "Dify draft workflow identity mismatch: "
             f"expected {identity.draft_workflow_id}, got {state.draft_workflow_id}"
         )
+    if metadata_aware and identity.draft_metadata_digest is None:
+        raise ValueError(
+            "metadata-aware release identity requires draft_metadata_digest"
+        )
+    if (
+        identity.draft_metadata_digest is not None
+        and state.draft_metadata_digest != identity.draft_metadata_digest
+    ):
+        raise ValueError(
+            "Dify draft metadata digest mismatch: "
+            f"expected {identity.draft_metadata_digest}, "
+            f"got {state.draft_metadata_digest}"
+        )
+
+    effective_candidate_metadata = candidate_metadata or state.draft_metadata
+    candidate_metadata_digest = workflow_metadata_digest(
+        effective_candidate_metadata
+    )
 
     preexisting_drift = compare_release_layers(
         expected_source_digest=state.draft_digest,
@@ -430,6 +451,15 @@ def publish_verified_graph(
                 f"Dify backup digest mismatch: expected {state.draft_digest}, "
                 f"got {backup_digest}"
             )
+        backup_metadata_digest = workflow_metadata_digest(
+            WorkflowReleaseMetadata.from_workflow(backup)
+        )
+        if backup_metadata_digest != state.draft_metadata_digest:
+            raise RuntimeError(
+                "Dify backup metadata digest mismatch: "
+                f"expected {state.draft_metadata_digest}, "
+                f"got {backup_metadata_digest}"
+            )
     except Exception as exc:
         return _rollback_verified(
             service=service,
@@ -439,9 +469,12 @@ def publish_verified_graph(
             release_mark=release_mark,
             backup_id=backup_id,
             candidate_digest=candidate_digest,
+            candidate_metadata_digest=candidate_metadata_digest,
             requested_published_id=None,
             failed_published_id=None,
             failed_published_digest=None,
+            failed_published_metadata_digest=None,
+            metadata_aware=metadata_aware,
             preexisting_drift=preexisting_drift,
             failure_code="backup_validation_failed",
             failure_operation="validate_backup",
@@ -452,12 +485,14 @@ def publish_verified_graph(
     published_id: str | None = None
     active_id: str | None = None
     active_digest: str | None = None
+    active_metadata_digest: str | None = None
     operation = "save_draft"
     try:
         service.save_draft(
             app_model=app_model,
             session=session,
             graph=candidate,
+            metadata=effective_candidate_metadata,
         )
         operation = "publish"
         published = service.publish(
@@ -472,6 +507,9 @@ def publish_verified_graph(
         if active is not None:
             active_id = _workflow_id(active, "published")
             active_digest = graph_digest(getattr(active, "graph_dict"))
+            active_metadata_digest = workflow_metadata_digest(
+                WorkflowReleaseMetadata.from_workflow(active)
+            )
     except Exception as exc:
         return _rollback_verified(
             service=service,
@@ -481,9 +519,12 @@ def publish_verified_graph(
             release_mark=release_mark,
             backup_id=backup_id,
             candidate_digest=candidate_digest,
+            candidate_metadata_digest=candidate_metadata_digest,
             requested_published_id=published_id,
             failed_published_id=active_id,
             failed_published_digest=active_digest,
+            failed_published_metadata_digest=active_metadata_digest,
+            metadata_aware=metadata_aware,
             preexisting_drift=preexisting_drift,
             failure_code="release_operation_failed",
             failure_operation=operation,
@@ -491,8 +532,12 @@ def publish_verified_graph(
             release_manifest=validated_manifest,
         )
 
-    if active_digest == candidate_digest and active_id == published_id:
-        return {
+    if (
+        active_digest == candidate_digest
+        and active_id == published_id
+        and active_metadata_digest == candidate_metadata_digest
+    ):
+        result: dict[str, object] = {
             "status": "published",
             "app_id": state.app_id,
             "draft_workflow_id": state.draft_workflow_id,
@@ -505,6 +550,14 @@ def publish_verified_graph(
             "preexisting_drift": preexisting_drift,
             "release_manifest": copy.deepcopy(validated_manifest),
         }
+        if metadata_aware:
+            result.update(
+                {
+                    "candidate_metadata_digest": candidate_metadata_digest,
+                    "published_metadata_digest": active_metadata_digest,
+                }
+            )
+        return result
 
     return _rollback_verified(
         service=service,
@@ -514,9 +567,12 @@ def publish_verified_graph(
         release_mark=release_mark,
         backup_id=backup_id,
         candidate_digest=candidate_digest,
+        candidate_metadata_digest=candidate_metadata_digest,
         requested_published_id=published_id,
         failed_published_id=active_id,
         failed_published_digest=active_digest,
+        failed_published_metadata_digest=active_metadata_digest,
+        metadata_aware=metadata_aware,
         preexisting_drift=preexisting_drift,
         failure_code="post_publish_verification_failed",
         failure_operation="verify_published",
@@ -533,9 +589,12 @@ def _rollback_verified(
     release_mark: ReleaseMark,
     backup_id: str,
     candidate_digest: str,
+    candidate_metadata_digest: str,
     requested_published_id: str | None,
     failed_published_id: str | None,
     failed_published_digest: str | None,
+    failed_published_metadata_digest: str | None,
+    metadata_aware: bool,
     preexisting_drift: list[dict[str, str]],
     failure_code: str,
     failure_operation: str,
@@ -565,8 +624,17 @@ def _rollback_verified(
             f"Dify rollback verification failed for explicit backup {backup_id}: "
             f"expected digest {state.draft_digest}, got {restored_digest}"
         )
+    restored_metadata_digest = workflow_metadata_digest(
+        WorkflowReleaseMetadata.from_workflow(restored)
+    )
+    if restored_metadata_digest != state.draft_metadata_digest:
+        raise RuntimeError(
+            "Dify rollback metadata verification failed for explicit backup "
+            f"{backup_id}: expected digest {state.draft_metadata_digest}, "
+            f"got {restored_metadata_digest}"
+        )
 
-    return {
+    result: dict[str, object] = {
         "status": "rolled_back",
         "failure_code": failure_code,
         "failure_operation": failure_operation,
@@ -584,6 +652,15 @@ def _rollback_verified(
         "preexisting_drift": preexisting_drift,
         "release_manifest": copy.deepcopy(release_manifest),
     }
+    if metadata_aware:
+        result.update(
+            {
+                "candidate_metadata_digest": candidate_metadata_digest,
+                "failed_published_metadata_digest": failed_published_metadata_digest,
+                "restored_metadata_digest": restored_metadata_digest,
+            }
+        )
+    return result
 
 
 def _validate_release_manifest(
