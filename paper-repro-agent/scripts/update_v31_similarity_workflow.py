@@ -808,14 +808,18 @@ class DifyReleaseService:
         app_model: object,
         session: object,
         graph: dict[str, object],
+        metadata: WorkflowReleaseMetadata | None = None,
     ) -> object:
         current = self._cached_draft(app_model)
+        effective_metadata = metadata or WorkflowReleaseMetadata.from_workflow(
+            current
+        )
         draft = self._sync_draft(
             app_model=app_model,
             session=session,
             graph=graph,
             current=current,
-            metadata_source=current,
+            metadata=effective_metadata,
         )
         self._drafts[str(getattr(app_model, "id"))] = draft
         session.flush()  # type: ignore[attr-defined]
@@ -867,7 +871,7 @@ class DifyReleaseService:
                 session=session,
                 graph=copy.deepcopy(getattr(source, "graph_dict")),
                 current=current,
-                metadata_source=source,
+                metadata=WorkflowReleaseMetadata.from_workflow(source),
             )
         self._drafts[str(getattr(app_model, "id"))] = draft
         session.flush()  # type: ignore[attr-defined]
@@ -894,16 +898,16 @@ class DifyReleaseService:
         session: object,
         graph: dict[str, object],
         current: object,
-        metadata_source: object,
+        metadata: WorkflowReleaseMetadata,
     ) -> object:
         return self._service.sync_draft_workflow(  # type: ignore[attr-defined]
             app_model=app_model,
             graph=copy.deepcopy(graph),
-            features=getattr(metadata_source, "normalized_features_dict"),
+            features=metadata.features,
             unique_hash=getattr(current, "unique_hash", None),
             account=self._account,
-            environment_variables=getattr(metadata_source, "environment_variables"),
-            conversation_variables=getattr(metadata_source, "conversation_variables"),
+            environment_variables=metadata.environment_variables,
+            conversation_variables=metadata.conversation_variables,
             session=session,
             commit=False,
         )

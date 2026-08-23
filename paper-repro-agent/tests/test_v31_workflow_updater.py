@@ -832,6 +832,33 @@ def test_dify_release_service_preserves_existing_service_contracts() -> None:
     assert f"get_published_workflow_by_id:{BACKUP_ID}" in workflow_service.calls
 
 
+def test_dify_release_service_saves_explicit_candidate_metadata() -> None:
+    workflow_service = FakeDifyWorkflowService()
+    adapter = updater.DifyReleaseService(
+        workflow_service,
+        SimpleNamespace(id="account-id"),
+        now_factory=lambda: "release-time",
+    )
+    app = SimpleNamespace(
+        id=APP_ID,
+        workflow_id=PUBLISHED_ID,
+        updated_by=None,
+        updated_at=None,
+    )
+    session = FakeSession()
+    adapter.read_draft(app_model=app, session=session)
+    candidate_metadata = metadata_fixture("candidate")
+
+    draft = adapter.save_draft(
+        app_model=app,
+        session=session,
+        graph=graph_fixture("return {'status': 'candidate'}"),
+        metadata=candidate_metadata,
+    )
+
+    assert updater.WorkflowReleaseMetadata.from_workflow(draft) == candidate_metadata
+
+
 def test_dify_release_service_uses_complete_restore_api_when_available() -> None:
     workflow_service = CompleteRestoreDifyWorkflowService()
     account = SimpleNamespace(id="account-id")
