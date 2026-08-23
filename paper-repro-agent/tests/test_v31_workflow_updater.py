@@ -216,6 +216,43 @@ def test_workflow_metadata_digest_is_deterministic_and_value_is_immutable() -> N
     assert "secret-value" not in repr(metadata)
 
 
+def test_workflow_metadata_accepts_dify_pydantic_variables() -> None:
+    class DifySecretVariable:
+        def model_dump(self, *, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {
+                "value_type": "secret",
+                "value": "secret-value",
+                "id": "variable-id",
+                "name": "API_KEY",
+                "description": "",
+                "selector": ["env", "API_KEY"],
+            }
+
+    metadata = updater.WorkflowReleaseMetadata.from_values(
+        features={"file_upload": {"enabled": True}},
+        environment_variables=[DifySecretVariable()],
+        conversation_variables=[],
+    )
+    expected = updater.WorkflowReleaseMetadata.from_values(
+        features={"file_upload": {"enabled": True}},
+        environment_variables=[
+            {
+                "description": "",
+                "id": "variable-id",
+                "name": "API_KEY",
+                "selector": ["env", "API_KEY"],
+                "value": "secret-value",
+                "value_type": "secret",
+            }
+        ],
+        conversation_variables=[],
+    )
+
+    assert metadata == expected
+    assert "secret-value" not in repr(metadata)
+
+
 def test_inspect_release_state_returns_metadata_identities_without_writes() -> None:
     fake = FakeReleaseService(
         draft_metadata=metadata_fixture("draft"),
@@ -757,6 +794,27 @@ class FakeSession:
         self.flush_count += 1
 
 
+class FakeDifyVariable:
+    def __init__(self, mapping: dict[str, object]) -> None:
+        self.mapping = deepcopy(mapping)
+
+    def model_dump(self, *, mode: str) -> dict[str, object]:
+        assert mode == "json"
+        return deepcopy(self.mapping)
+
+
+class FakeDifyVariableFactory:
+    def build_environment_variable_from_mapping(
+        self, mapping: dict[str, object]
+    ) -> FakeDifyVariable:
+        return FakeDifyVariable(mapping)
+
+    def build_conversation_variable_from_mapping(
+        self, mapping: dict[str, object]
+    ) -> FakeDifyVariable:
+        return FakeDifyVariable(mapping)
+
+
 class CompleteRestoreDifyWorkflowService(FakeDifyWorkflowService):
     def __init__(self) -> None:
         super().__init__()
@@ -838,6 +896,7 @@ def test_dify_release_service_saves_explicit_candidate_metadata() -> None:
         workflow_service,
         SimpleNamespace(id="account-id"),
         now_factory=lambda: "release-time",
+        variable_factory=FakeDifyVariableFactory(),
     )
     app = SimpleNamespace(
         id=APP_ID,
@@ -856,6 +915,7 @@ def test_dify_release_service_saves_explicit_candidate_metadata() -> None:
         metadata=candidate_metadata,
     )
 
+    assert isinstance(draft.environment_variables[0], FakeDifyVariable)
     assert updater.WorkflowReleaseMetadata.from_workflow(draft) == candidate_metadata
 
 

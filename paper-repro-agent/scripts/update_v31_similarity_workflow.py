@@ -213,6 +213,13 @@ class ReleaseMark:
     backup_comment: str = ""
 
 
+def _json_model_dump(value: object) -> object:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 @dataclass(frozen=True, repr=False)
 class WorkflowReleaseMetadata:
     """Canonical workflow metadata without value-bearing repr output."""
@@ -238,6 +245,7 @@ class WorkflowReleaseMetadata:
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
+            default=_json_model_dump,
         )
         return cls(encoded)
 
@@ -774,10 +782,18 @@ def _workflow_id(workflow: object, label: str) -> str:
 class DifyReleaseService:
     """Adapt Dify's WorkflowService to the small release protocol above."""
 
-    def __init__(self, workflow_service: object, account: object, *, now_factory: Any) -> None:
+    def __init__(
+        self,
+        workflow_service: object,
+        account: object,
+        *,
+        now_factory: Any,
+        variable_factory: object | None = None,
+    ) -> None:
         self._service = workflow_service
         self._account = account
         self._now_factory = now_factory
+        self._variable_factory = variable_factory
         self._drafts: dict[str, object] = {}
 
     def read_draft(self, *, app_model: object, session: object) -> object:
@@ -900,17 +916,47 @@ class DifyReleaseService:
         current: object,
         metadata: WorkflowReleaseMetadata,
     ) -> object:
+        environment_variables = self._hydrate_variables(
+            metadata.environment_variables,
+            builder_name="build_environment_variable_from_mapping",
+        )
+        conversation_variables = self._hydrate_variables(
+            metadata.conversation_variables,
+            builder_name="build_conversation_variable_from_mapping",
+        )
         return self._service.sync_draft_workflow(  # type: ignore[attr-defined]
             app_model=app_model,
             graph=copy.deepcopy(graph),
             features=metadata.features,
             unique_hash=getattr(current, "unique_hash", None),
             account=self._account,
-            environment_variables=metadata.environment_variables,
-            conversation_variables=metadata.conversation_variables,
+            environment_variables=environment_variables,
+            conversation_variables=conversation_variables,
             session=session,
             commit=False,
         )
+
+    def _hydrate_variables(
+        self,
+        values: object,
+        *,
+        builder_name: str,
+    ) -> object:
+        if not isinstance(values, list) or not any(
+            isinstance(value, Mapping) for value in values
+        ):
+            return copy.deepcopy(values)
+        factory = self._variable_factory
+        if factory is None:
+            from factories import variable_factory as factory  # type: ignore[import-not-found]
+
+        builder = getattr(factory, builder_name)
+        return [
+            builder(copy.deepcopy(value))
+            if isinstance(value, Mapping)
+            else copy.deepcopy(value)
+            for value in values
+        ]
 
     def _publish_version(
         self, *, app_model: object, session: object, mark: ReleaseMark
