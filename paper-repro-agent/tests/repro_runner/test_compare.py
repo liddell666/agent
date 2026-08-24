@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 import time
-from threading import Barrier
+from threading import Barrier, Event
 from unittest.mock import patch
 
 import pytest
@@ -479,6 +479,45 @@ def test_windows_publish_stops_when_destination_appears_between_attempts(
     assert list(tmp_path.glob(".tmp-*")) == []
 
 
+def test_windows_publish_detects_destination_created_during_retry_delay(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    destination = tmp_path / result.experiment_id
+    real_replace = Path.replace
+    replace_attempts = 0
+    delays: list[float] = []
+
+    def first_lock_then_real_replace(source: Path, target: Path) -> Path:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts == 1:
+            raise PermissionError(5, "simulated transient directory lock")
+        return real_replace(source, target)
+
+    def competing_sleep(delay: float) -> None:
+        delays.append(delay)
+        destination.mkdir()
+        (destination / "result.json").write_bytes(b"winner-result")
+        (destination / "config.json").write_bytes(b"winner-config")
+        (destination / "dataset_profile.json").write_bytes(b"winner-profile")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", first_lock_then_real_replace)
+    monkeypatch.setattr(time, "sleep", competing_sleep)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        save_result(result, settings)
+
+    assert replace_attempts == 2
+    assert delays == [0.01]
+    assert (destination / "result.json").read_bytes() == b"winner-result"
+    assert (destination / "config.json").read_bytes() == b"winner-config"
+    assert (destination / "dataset_profile.json").read_bytes() == b"winner-profile"
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
 def test_windows_publish_does_not_retry_non_permission_errors(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -577,6 +616,59 @@ def test_concurrent_duplicate_saves_publish_exactly_one_complete_result(
 
     assert sum(value == result.experiment_id for value in outcomes) == 1
     assert sum(isinstance(value, OSError) for value in outcomes) == 1
+    assert load_result(result.experiment_id, settings) == result
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_same_token_staging_collision_cannot_clean_owner_directory(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    owner_started = Event()
+    loser_failed = Event()
+    real_write = storage._write_json
+    token = "a" * 16
+
+    def fixed_token_hex(length: int) -> str:
+        assert length == 8
+        return token
+
+    def owner_writes_then_waits(path: Path, payload: object) -> None:
+        if path.name == "result.json":
+            owner_started.set()
+            assert loser_failed.wait(timeout=5)
+        real_write(path, payload)
+
+    monkeypatch.setattr(storage.secrets, "token_hex", fixed_token_hex)
+    monkeypatch.setattr(storage, "_write_json", owner_writes_then_waits)
+    outcomes: list[object] = []
+
+    def run_owner() -> None:
+        try:
+            outcomes.append(save_result(result, settings))
+        except BaseException as exc:
+            outcomes.append(exc)
+
+    def run_loser() -> None:
+        assert owner_started.wait(timeout=5)
+        try:
+            save_result(result, settings)
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            loser_failed.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        owner = executor.submit(run_owner)
+        assert owner_started.wait(timeout=5)
+        loser = executor.submit(run_loser)
+        owner.result(timeout=10)
+        loser.result(timeout=10)
+
+    assert outcomes.count(result.experiment_id) == 1
+    collisions = [value for value in outcomes if isinstance(value, FileExistsError)]
+    assert len(collisions) == 1
     assert load_result(result.experiment_id, settings) == result
     assert list(tmp_path.glob(".tmp-*")) == []
 
