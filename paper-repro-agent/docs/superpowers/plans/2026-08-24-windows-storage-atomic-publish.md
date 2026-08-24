@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remove Windows path-length failures from result persistence while preserving same-filesystem atomic publication and strict duplicate-ID rejection.
+**Goal:** Remove deterministic Windows path-length failures and tolerate verified transient directory-publication access denials while preserving same-filesystem atomic publication and strict duplicate-ID rejection.
 
-**Architecture:** Published experiment directories keep their existing experiment-ID names and JSON contracts. New results are assembled in a short random sibling directory and published with one directory rename; updates to an existing `result.json` use a short random sibling file and one file replacement.
+**Architecture:** Published experiment directories keep their existing experiment-ID names and JSON contracts. New results are assembled in a short random sibling directory and published with one atomic directory rename; on Windows only, transient `PermissionError` failures at that boundary receive five bounded retries over 310 milliseconds. Updates to an existing `result.json` use a short random sibling file and one file replacement without retry.
 
 **Tech Stack:** Python 3.12, `pathlib`, `secrets`, `shutil`, `concurrent.futures`, pytest 9, Pydantic models.
 
@@ -13,7 +13,11 @@
 - Do not change public storage function signatures, final experiment directory names, JSON filenames, or payload schemas.
 - A duplicate experiment ID must still fail and must never overwrite the existing result.
 - Temporary paths must remain on the same filesystem as their publication target.
-- Do not retry permission, disk-space, or path errors.
+- Retry only Windows `PermissionError` raised by final directory publication,
+  using delays of exactly 10, 20, 40, 80, and 160 milliseconds.
+- Never retry duplicate destinations, disk-space errors, path errors,
+  non-permission `OSError` values, non-Windows errors, or published-file
+  updates.
 - Cleanup must never remove another writer's staging path or a published result.
 - Do not store raw CSV bytes, paper text, credentials, or arbitrary model attributes.
 - Run the final repository suite with the default pytest `basetemp`; do not shorten it through a command-line override.
@@ -25,6 +29,14 @@
 
 - `src/repro_runner/storage.py`: short temporary path construction, direct writes inside unpublished staging directories, atomic directory publication, and atomic published-file update.
 - `tests/repro_runner/test_compare.py`: storage regression fixtures and behavioral tests for long paths, failed writes, failed updates, and concurrent duplicate saves.
+
+## Current State
+
+- Task 1 is complete in `2457b12` and cleanup hardening `a5801ee`.
+- Task 2 is complete in `120cc31` with boundary correction `11e99ca`.
+- Complete-suite investigation disproved `Path.rename` as an alternative to
+  `Path.replace`; that experiment was reverted without a commit.
+- Task 3 below is the only remaining implementation task.
 
 ### Task 1: Shorten Atomic File-Update Paths
 
@@ -370,3 +382,273 @@ Then commit:
 git add -- src/repro_runner/storage.py tests/repro_runner/test_compare.py
 git commit -m "fix: shorten atomic result staging paths"
 ```
+
+### Task 3: Bound Windows Directory-Publication Retries
+
+**Files:**
+- Modify: `src/repro_runner/storage.py:5-10,60-85`
+- Test: `tests/repro_runner/test_compare.py`
+
+**Interfaces:**
+- Preserves: `_save_payloads(*, experiment_id: str, settings: Settings, result_payload: object, config_payload: object, dataset_profile_payload: object) -> str`.
+- Produces: `_publish_staged_directory(temporary: Path, directory: Path) -> None`.
+- Preserves: `_write_json_atomic(path: Path, payload: object) -> None` without retries.
+- Uses `_IS_WINDOWS = os.name == "nt"` and the fixed private delay tuple
+  `_WINDOWS_PUBLISH_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16)`.
+
+- [ ] **Step 1: Add failing bounded-success and payload-write regressions**
+
+Import `time` in `tests/repro_runner/test_compare.py`. First add this test
+beside the existing staging and concurrency regressions. `raising=False` lets
+the test establish the wished-for platform seam before production defines it:
+
+```python
+def test_windows_publish_retries_transient_permission_errors_without_rewriting(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    real_replace = Path.replace
+    replace_attempts = 0
+    writes: list[str] = []
+    delays: list[float] = []
+    real_write = storage._write_json
+
+    def transient_replace(source: Path, target: Path) -> Path:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts < 3:
+            raise PermissionError(5, "simulated transient directory lock")
+        return real_replace(source, target)
+
+    def counted_write(path: Path, payload: object) -> None:
+        writes.append(path.name)
+        real_write(path, payload)
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", transient_replace)
+    monkeypatch.setattr(storage, "_write_json", counted_write)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    assert save_result(result, settings) == result.experiment_id
+    assert replace_attempts == 3
+    assert delays == [0.01, 0.02]
+    assert writes == ["result.json", "config.json", "dataset_profile.json"]
+    assert load_result(result.experiment_id, settings) == result
+```
+
+- [ ] **Step 2: Run the bounded-success test and verify RED**
+
+Run:
+
+```powershell
+python -m pytest tests/repro_runner/test_compare.py::test_windows_publish_retries_transient_permission_errors_without_rewriting -q
+```
+
+Expected: FAIL on the first simulated `PermissionError` because directory
+publication currently has no retry boundary.
+
+- [ ] **Step 3: Add stop-condition regressions**
+
+Add four tests:
+
+```python
+def test_windows_publish_stops_when_destination_appears_between_attempts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    destination = tmp_path / result.experiment_id
+    attempts = 0
+    delays: list[float] = []
+
+    def competing_publish(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        target.mkdir()
+        (target / "winner.txt").write_text("winner", encoding="utf-8")
+        raise PermissionError(5, "simulated race")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", competing_publish)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        save_result(result, settings)
+
+    assert attempts == 1
+    assert delays == []
+    assert (destination / "winner.txt").read_text(encoding="utf-8") == "winner"
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_windows_publish_does_not_retry_non_permission_errors(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    attempts = 0
+    delays: list[float] = []
+
+    def disk_failure(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", disk_failure)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(OSError, match="disk failure"):
+        save_result(result, settings)
+
+    assert attempts == 1
+    assert delays == []
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_non_windows_publish_does_not_retry_permission_errors(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    attempts = 0
+    delays: list[float] = []
+
+    def locked(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(5, "simulated non-Windows lock")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", False, raising=False)
+    monkeypatch.setattr(Path, "replace", locked)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(PermissionError, match="non-Windows lock"):
+        save_result(result, settings)
+
+    assert attempts == 1
+    assert delays == []
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_windows_publish_preserves_sixth_permission_error(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    errors = [PermissionError(5, f"locked-{index}") for index in range(6)]
+    delays: list[float] = []
+
+    def always_locked(source: Path, target: Path) -> Path:
+        raise errors.pop(0)
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", always_locked)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(PermissionError, match="locked-5"):
+        save_result(result, settings)
+
+    assert errors == []
+    assert delays == [0.01, 0.02, 0.04, 0.08, 0.16]
+    assert list(tmp_path.glob(".tmp-*")) == []
+```
+
+- [ ] **Step 4: Run the stop-condition tests and verify RED**
+
+Run:
+
+```powershell
+python -m pytest tests/repro_runner/test_compare.py -k "windows_publish" -q
+```
+
+Expected: the transient-success, destination-race, and sixth-error tests FAIL
+before the retry helper exists. The non-permission and non-Windows tests PASS
+as characterization evidence that their current immediate-propagation behavior
+must remain unchanged.
+
+- [ ] **Step 5: Implement the bounded Windows publication helper**
+
+Add `import os` and `import time`, then add the platform flag and fixed delay
+tuple near
+`_EXPERIMENT_ID`:
+
+```python
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_PUBLISH_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16)
+```
+
+Add this helper immediately before `_save_payloads(...)`:
+
+```python
+def _publish_staged_directory(temporary: Path, directory: Path) -> None:
+    for attempt in range(len(_WINDOWS_PUBLISH_RETRY_DELAYS) + 1):
+        try:
+            temporary.replace(directory)
+            return
+        except PermissionError as exc:
+            if not _IS_WINDOWS:
+                raise
+            if directory.exists():
+                raise FileExistsError("experiment result already exists") from exc
+            if attempt == len(_WINDOWS_PUBLISH_RETRY_DELAYS):
+                raise
+            time.sleep(_WINDOWS_PUBLISH_RETRY_DELAYS[attempt])
+```
+
+Replace only the final directory publication statement in `_save_payloads`:
+
+```python
+        _publish_staged_directory(temporary, directory)
+```
+
+Do not modify `_write_json_atomic`; published-file replacement is outside the
+approved retry boundary.
+
+- [ ] **Step 6: Run new regressions and focused compatibility suites**
+
+Run:
+
+```powershell
+python -m pytest tests/repro_runner/test_compare.py -k "windows_publish or storage or concurrent_duplicate or suite_update" -q
+python -m pytest tests/repro_runner/test_compare.py tests/repro_runner/test_api.py tests/repro_runner/test_suite_api.py tests/repro_runner/test_suite_compare.py tests/repro_runner/test_job_runner.py tests/repro_runner/test_job_api.py -q
+```
+
+Expected: all selected tests pass; only the existing Starlette/httpx warning is
+allowed in suites importing `TestClient`.
+
+- [ ] **Step 7: Run two fresh complete suites with default basetemp**
+
+Run exactly, cleaning no repository files between runs:
+
+```powershell
+python -m pytest -q
+python -m pytest -q
+```
+
+Expected: both runs pass with the default `.pytest-tmp`; only the existing
+Starlette/httpx deprecation warning is allowed. Two runs are required because
+the original `WinError 5` was intermittent and reproduced across repeated full
+suites.
+
+- [ ] **Step 8: Review scope and commit**
+
+Run:
+
+```powershell
+git diff --check
+git status --short
+git diff -- src/repro_runner/storage.py tests/repro_runner/test_compare.py
+```
+
+Stage only the two implementation files and commit:
+
+```powershell
+git add -- src/repro_runner/storage.py tests/repro_runner/test_compare.py
+git commit -m "fix: retry transient Windows result publication"
+```
+
+Require a fresh independent spec and code-quality review before branch
+completion. Preserve `.superpowers/sdd/task-1-report.md`, `.tb/`, `.tr/`, and
+all user-owned main-checkout DSL changes unstaged and untouched.
