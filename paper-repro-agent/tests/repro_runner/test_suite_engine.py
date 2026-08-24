@@ -9,7 +9,9 @@ from repro_runner.model_registry import ModelSpec, get_model_spec as real_get_mo
 from repro_runner.schemas import (
     DatasetOptions,
     ExperimentMetrics,
+    ModelRunResult,
     ModelSuiteConfig,
+    RegressionMetrics,
 )
 from repro_runner.split import ExperimentError, make_stratified_split
 
@@ -19,6 +21,27 @@ TEST_DIGEST = "sha256:21d827456c211be096b22e4364e63ce8c05e3167d91ebd8a22846747ed
 
 def _bundle(frame: pd.DataFrame):
     return load_dataset(frame.to_csv(index=False).encode(), DatasetOptions(), Settings())
+
+
+def _regression_bundle():
+    values = np.arange(40, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "x1": values,
+            "x2": values % 5,
+            "region": ["a", "b", "c", "d"] * 10,
+            "target": 3.0 * values + (values % 3),
+        }
+    )
+    return load_dataset(
+        frame.to_csv(index=False).encode(),
+        DatasetOptions(
+            task_type="regression",
+            target_column="target",
+            target_column_confirmed=True,
+        ),
+        Settings(),
+    )
 
 
 def _dataset(rows_per_class: int = 60) -> pd.DataFrame:
@@ -32,6 +55,50 @@ def _dataset(rows_per_class: int = 60) -> pd.DataFrame:
             "Y_cls": labels,
         }
     )
+
+
+def test_regression_suite_trains_core_models_with_shared_provenance():
+    config = ModelSuiteConfig(
+        task_type="regression",
+        models=["linear_regression", "random_forest", "gradient_boosting"],
+        optimization_metric="rmse",
+        cv_folds=3,
+        n_iter=1,
+        n_jobs=1,
+        random_state=13,
+    )
+
+    result = suite_engine.run_model_suite(_regression_bundle(), config)
+
+    assert result.status == "succeeded"
+    assert result.performance_ranking
+    assert all(item.metrics.rmse >= 0 for item in result.results)
+    assert len({item.split_provenance.test_digest for item in result.results}) == 1
+    assert all(set(item.cv_fold_scores) == {"mae", "rmse", "r2"} for item in result.results)
+
+
+def test_performance_ranking_minimizes_regression_errors_and_maximizes_r2():
+    results = [
+        ModelRunResult(
+            model="linear_regression",
+            status="succeeded",
+            metrics=RegressionMetrics(mae=3.0, rmse=4.0, r2=0.8),
+        ),
+        ModelRunResult(
+            model="random_forest",
+            status="succeeded",
+            metrics=RegressionMetrics(mae=1.0, rmse=2.0, r2=0.5),
+        ),
+    ]
+
+    assert suite_engine._performance_ranking(results, "rmse") == [
+        "random_forest",
+        "linear_regression",
+    ]
+    assert suite_engine._performance_ranking(results, "r2") == [
+        "linear_regression",
+        "random_forest",
+    ]
 
 
 def test_run_model_suite_reports_repeated_cv_aggregation_and_json_safe_params(

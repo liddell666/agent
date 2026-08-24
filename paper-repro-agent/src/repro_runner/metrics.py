@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import math
 
 import numpy as np
 from sklearn.metrics import (
@@ -11,9 +12,12 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
 )
 
-from repro_runner.schemas import ExperimentMetrics, FeatureImportance
+from repro_runner.schemas import ExperimentMetrics, FeatureImportance, RegressionMetrics
 
 
 NUMERIC_METRIC_NAMES: tuple[str, ...] = (
@@ -27,18 +31,29 @@ NUMERIC_METRIC_NAMES: tuple[str, ...] = (
 
 
 def mean_std_over_metrics(
-    metrics_list: Sequence[ExperimentMetrics],
+    metrics_list: Sequence[ExperimentMetrics | RegressionMetrics],
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Return per-metric mean and population std across a list of fold scores."""
     means: dict[str, float] = {}
     stds: dict[str, float] = {}
     if not metrics_list:
         return means, stds
-    for name in NUMERIC_METRIC_NAMES:
+    for name in _numeric_metric_names(metrics_list[0]):
         values = [float(getattr(item, name)) for item in metrics_list]
         means[name] = _round_metric(float(np.mean(values)))
         stds[name] = _round_metric(float(np.std(values)))
     return means, stds
+
+
+def evaluate_regressor(regressor, x_test, y_test) -> RegressionMetrics:
+    predicted = np.asarray(regressor.predict(x_test), dtype=float)
+    if not np.isfinite(predicted).all():
+        raise ValueError("regression predictions must be finite")
+    return RegressionMetrics(
+        mae=_round_metric(mean_absolute_error(y_test, predicted)),
+        rmse=_round_metric(math.sqrt(mean_squared_error(y_test, predicted))),
+        r2=_round_metric(r2_score(y_test, predicted)),
+    )
 
 
 def evaluate_classifier(
@@ -144,3 +159,11 @@ def _classification_outputs(
 
 def _round_metric(value: float) -> float:
     return round(float(value), 6)
+
+
+def _numeric_metric_names(metrics: ExperimentMetrics | RegressionMetrics) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in type(metrics).model_fields
+        if isinstance(getattr(metrics, name), float)
+    )

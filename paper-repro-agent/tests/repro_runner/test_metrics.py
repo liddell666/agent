@@ -1,6 +1,14 @@
 import numpy as np
+import pytest
+from sklearn.linear_model import LinearRegression
 
-from repro_runner.metrics import evaluate_classifier, feature_importances
+import repro_runner.metrics as metrics_module
+from repro_runner.metrics import (
+    evaluate_classifier,
+    feature_importances,
+    mean_std_over_metrics,
+)
+from repro_runner.schemas import RegressionMetrics
 
 
 class ProbabilityClassifier:
@@ -72,6 +80,33 @@ def test_evaluate_classifier_threshold_changes_predictions():
     assert high_threshold.accuracy == 0.75
     assert high_threshold.recall == 0.5
     assert high_threshold.f1 == 0.666667
+
+
+def test_evaluate_regressor_returns_natural_public_metrics():
+    estimator = LinearRegression().fit([[0], [1], [2], [3]], [0, 2, 4, 6])
+
+    metrics = metrics_module.evaluate_regressor(
+        estimator, [[4], [5]], np.array([8.0, 11.0])
+    )
+
+    assert metrics.mae == pytest.approx(0.5)
+    assert metrics.rmse == pytest.approx(np.sqrt(0.5))
+    assert metrics.r2 == pytest.approx(7 / 9)
+    assert metrics.mae >= 0
+    assert metrics.rmse >= 0
+
+
+def test_regression_metric_summary_never_exposes_negative_error_scores():
+    rows = [
+        RegressionMetrics(mae=1.0, rmse=2.0, r2=0.5),
+        RegressionMetrics(mae=3.0, rmse=4.0, r2=-0.5),
+    ]
+
+    mean, std = mean_std_over_metrics(rows)
+
+    assert mean == {"mae": 2.0, "rmse": 3.0, "r2": 0.0}
+    assert std == {"mae": 1.0, "rmse": 1.0, "r2": 0.5}
+    assert all(value >= 0 for key, value in mean.items() if key != "r2")
 
 
 def test_feature_importances_preserve_rounding_sorting_and_total_for_trees():

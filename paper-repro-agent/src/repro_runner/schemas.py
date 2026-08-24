@@ -392,7 +392,7 @@ class ModelRunResult(BaseModel):
     status: Literal["succeeded", "unavailable", "failed"]
     cv_best_score: float | None = None
     best_params: dict[str, Any] = Field(default_factory=dict)
-    metrics: ExperimentMetrics | None = None
+    metrics: ExperimentMetrics | RegressionMetrics | None = None
     feature_importance: list[FeatureImportance] = Field(default_factory=list)
     fit_seconds: float | None = None
     error: ValidationErrorItem | None = None
