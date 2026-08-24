@@ -232,6 +232,28 @@ def test_diagnose_dataset_accepts_explicit_target_column():
     assert response.errors == []
 
 
+def test_diagnose_dataset_recommendation_preserves_explicit_regression_task():
+    content = (
+        "x1,label\n"
+        + "".join(f"{index},0\n" for index in range(17))
+        + "".join(f"{index},1\n" for index in range(17, 20))
+    ).encode()
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(
+            task_type="regression",
+            target_column="label",
+            target_column_confirmed=True,
+        ),
+        Settings(),
+    )
+
+    assert response.recommended_options is not None
+    assert response.recommended_options.task_type == "regression"
+    assert response.recommended_options.sampling_strategy == "original"
+
+
 def test_diagnose_dataset_rejects_unknown_exclude_column_safely():
     content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
 

@@ -586,12 +586,16 @@ def _recommended_options(
     feature_columns = [] if plan is None else list(plan.feature_columns)
     sampling_strategy = (
         "class_weight"
-        if any(flag.startswith("severe_class_imbalance:") for flag in flags)
+        if (
+            options.task_type == "binary_classification"
+            and any(flag.startswith("severe_class_imbalance:") for flag in flags)
+        )
         else options.sampling_strategy
     )
     return DatasetOptions(
         target_column=recommended_target,
         target_column_confirmed=confirmed_target is not None,
+        task_type=options.task_type,
         drop_duplicates=options.drop_duplicates,
         missing_policy=options.missing_policy,
         sampling_strategy=sampling_strategy,

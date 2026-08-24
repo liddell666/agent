@@ -6,9 +6,11 @@ from repro_runner.schemas import (
     ExperimentConfig,
     ExperimentMetrics,
     ExperimentResult,
+    ExperimentSuiteResult,
     FeatureImportance,
     ModelSuiteConfig,
     RegressionMetrics,
+    SplitProvenance,
 )
 
 
@@ -98,3 +100,53 @@ def test_regression_metrics_reject_invalid_public_values():
         RegressionMetrics(mae=0.1, rmse=float("nan"), r2=0.3)
 
     assert RegressionMetrics(mae=1.0, rmse=2.0, r2=-4.0).r2 == -4.0
+
+
+def _suite_result_payload(config: ModelSuiteConfig) -> dict[str, object]:
+    return {
+        "experiment_id": "exp-20260824T010203Z-suite",
+        "status": "succeeded",
+        "config": config.model_dump(mode="json"),
+        "dataset": {
+            "rows": 10,
+            "effective_rows": 10,
+            "features": 1,
+            "target": "Y_cls",
+            "missing_values": 0,
+            "duplicate_rows": 0,
+            "dataset_id": "sha256:" + "a" * 64,
+        },
+        "split_provenance": SplitProvenance(
+            test_size=0.2,
+            random_state=42,
+            train_rows=8,
+            test_rows=2,
+            test_digest="sha256:" + "b" * 64,
+        ).model_dump(mode="json"),
+    }
+
+
+def test_suite_result_derives_omitted_task_type_from_regression_config():
+    payload = _suite_result_payload(ModelSuiteConfig(task_type="regression"))
+
+    result = ExperimentSuiteResult.model_validate(payload)
+
+    assert result.task_type == "regression"
+
+
+def test_suite_result_rejects_task_type_mismatch_with_config():
+    payload = _suite_result_payload(ModelSuiteConfig(task_type="regression"))
+    payload["task_type"] = "binary_classification"
+
+    with pytest.raises(ValueError, match="task_type"):
+        ExperimentSuiteResult.model_validate(payload)
+
+
+def test_legacy_suite_result_omitting_config_and_suite_task_types_is_binary():
+    payload = _suite_result_payload(ModelSuiteConfig())
+    payload["config"].pop("task_type")
+
+    result = ExperimentSuiteResult.model_validate(payload)
+
+    assert result.config.task_type == "binary_classification"
+    assert result.task_type == "binary_classification"

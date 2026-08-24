@@ -407,6 +407,28 @@ class ExperimentSuiteResult(BaseModel):
     preprocessing: PreprocessingSummary | None = None
     runtime: RuntimeProvenance | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def derive_task_type_from_config(cls, value: Any) -> Any:
+        data = dict(value or {})
+        if "task_type" not in data:
+            config = data.get("config")
+            if isinstance(config, dict):
+                data["task_type"] = config.get(
+                    "task_type", "binary_classification"
+                )
+            else:
+                data["task_type"] = getattr(
+                    config, "task_type", "binary_classification"
+                )
+        return data
+
+    @model_validator(mode="after")
+    def require_matching_config_task_type(self) -> "ExperimentSuiteResult":
+        if self.task_type != self.config.task_type:
+            raise ValueError("task_type must match config.task_type")
+        return self
+
 
 JobStatus = Literal[
     "queued",
