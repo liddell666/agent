@@ -340,18 +340,19 @@ def main(
 def _suite_parse_code() -> str:
     models = repr(REGRESSION_MODELS)
     metrics = repr(REGRESSION_METRICS)
+    workflow_version = repr(WORKFLOW_VERSION)
     return f'''import json
 import math
 import re
 
 KNOWN_MODELS = {models}
 KNOWN_METRICS = {metrics}
+WORKFLOW_VERSION = {workflow_version}
 SAFE_RESULT_STATUSES = {{"succeeded", "unavailable", "failed"}}
 SAFE_MODEL_ERROR_CODES = {{"missing_dependency", "model_training_failed"}}
 SAFE_ERROR = {{"code": "invalid_regression_suite_response", "message": "Regression suite response is invalid."}}
 EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{{0,127}}$")
 JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9-]{{0,127}}$")
-SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{{0,127}}$")
 SHA_RE = re.compile(r"^sha256:[0-9a-f]{{64}}$")
 
 def number(value):
@@ -419,9 +420,8 @@ def safe_config(value):
     for key in ("use_gpu", "drop_duplicates"):
         if isinstance(raw.get(key), bool):
             safe[key] = raw[key]
-    version = raw.get("workflow_version")
-    if isinstance(version, str) and SAFE_TEXT_RE.fullmatch(version):
-        safe["workflow_version"] = version
+    if raw.get("workflow_version") == WORKFLOW_VERSION:
+        safe["workflow_version"] = WORKFLOW_VERSION
     return safe
 
 def safe_dataset(value):

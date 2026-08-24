@@ -303,6 +303,7 @@ def test_successful_regression_suite_parser_allowlists_fields_and_redacts_backen
             "optimization_metric": "rmse",
             "cv_folds": 5,
             "n_iter": 8,
+            "workflow_version": "SECRET_TOKEN_ABC123",
             "cookie": SENTINELS[2],
         },
         "dataset": {
@@ -351,6 +352,7 @@ def test_successful_regression_suite_parser_allowlists_fields_and_redacts_backen
     assert safe["task_type"] == "regression"
     assert safe["experiment_id"] == "exp-safe-suite"
     assert safe["job_id"] == "job-safe-suite"
+    assert "workflow_version" not in safe["config"]
     assert safe["performance_ranking"] == ["random_forest", "linear_regression"]
     assert safe["split_provenance"] == {
         "test_size": 0.2,
