@@ -135,6 +135,17 @@ def make_suite_result() -> ExperimentSuiteResult:
     )
 
 
+def test_legacy_suite_payload_defaults_to_binary_classification():
+    payload = make_suite_result().model_dump(mode="json")
+    payload["config"].pop("task_type", None)
+    payload.pop("task_type", None)
+
+    loaded = ExperimentSuiteResult.model_validate(payload)
+
+    assert loaded.config.task_type == "binary_classification"
+    assert loaded.task_type == "binary_classification"
+
+
 def test_comparison_reports_absolute_and_relative_difference():
     result = make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test")
 

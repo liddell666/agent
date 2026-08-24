@@ -10,6 +10,7 @@ MissingPolicy = Literal["reject", "drop_rows", "impute"]
 SamplingStrategy = Literal["original", "class_weight", "balanced_undersample"]
 ComparisonMode = Literal["paper_comparable", "real_world"]
 InferredColumnType = Literal["numeric", "categorical", "text", "datetime", "constant"]
+TaskType = Literal["binary_classification", "regression"]
 
 
 class DatasetOptions(BaseModel):
@@ -17,6 +18,7 @@ class DatasetOptions(BaseModel):
 
     target_column: str = "Y_cls"
     target_column_confirmed: bool = False
+    task_type: TaskType = "binary_classification"
     drop_duplicates: bool = False
     missing_policy: MissingPolicy = "reject"
     sampling_strategy: SamplingStrategy = "original"
@@ -26,6 +28,8 @@ class DatasetOptions(BaseModel):
 
     @model_validator(mode="after")
     def reject_duplicate_column_lists(self) -> "DatasetOptions":
+        if self.task_type == "regression" and self.sampling_strategy != "original":
+            raise ValueError("sampling_strategy must be original for regression")
         if len(self.feature_columns) != len(set(self.feature_columns)):
             raise ValueError("feature_columns must not contain duplicates")
         if len(self.exclude_columns) != len(set(self.exclude_columns)):
@@ -134,6 +138,20 @@ class ExperimentMetrics(BaseModel):
     confusion_matrix: list[list[int]]
 
 
+class RegressionMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mae: float = Field(ge=0.0)
+    rmse: float = Field(ge=0.0)
+    r2: float
+
+    @model_validator(mode="after")
+    def require_finite_values(self) -> "RegressionMetrics":
+        if not all(math.isfinite(value) for value in (self.mae, self.rmse, self.r2)):
+            raise ValueError("regression metrics must be finite")
+        return self
+
+
 class FeatureImportance(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -177,7 +195,9 @@ class ExperimentResult(BaseModel):
 
 ModelName = Literal[
     "logistic_regression",
+    "linear_regression",
     "random_forest",
+    "gradient_boosting",
     "xgboost",
     "lightgbm",
     "svm",
@@ -195,27 +215,64 @@ DEFAULT_MODEL_NAMES: tuple[ModelName, ...] = (
     "mlp",
 )
 
+RegressionModelName = Literal[
+    "linear_regression",
+    "random_forest",
+    "gradient_boosting",
+    "xgboost",
+]
+
+REGRESSION_MODEL_NAMES: tuple[RegressionModelName, ...] = (
+    "linear_regression",
+    "random_forest",
+    "gradient_boosting",
+    "xgboost",
+)
+REGRESSION_METRIC_NAMES = ("mae", "rmse", "r2")
+
+OptimizationMetric = Literal[
+    "roc_auc",
+    "f1",
+    "recall",
+    "balanced_accuracy",
+    "mae",
+    "rmse",
+    "r2",
+]
+_CLASSIFICATION_METRIC_NAMES = ("roc_auc", "f1", "recall", "balanced_accuracy")
+
 
 class ModelSuiteConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    task_type: TaskType = "binary_classification"
     models: list[ModelName] = Field(default_factory=lambda: list(DEFAULT_MODEL_NAMES), min_length=1)
     test_size: float = Field(default=0.2, ge=0.1, le=0.5)
     random_state: int = Field(default=42, ge=0)
     drop_duplicates: bool = False
     cv_folds: int = Field(default=5, ge=3, le=10)
     n_seeds: int = Field(default=1, ge=1, le=10)
-    optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"] = "roc_auc"
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    optimization_metric: OptimizationMetric = "roc_auc"
+    threshold: float | None = Field(default=0.5, ge=0.0, le=1.0)
     n_iter: int = Field(default=8, ge=1, le=32)
     use_gpu: bool = False
     n_jobs: int = Field(default=4, ge=1, le=16)
     workflow_version: str = Field(default="unknown", min_length=1, max_length=128)
 
+    @model_validator(mode="before")
+    @classmethod
+    def apply_task_defaults(cls, value: Any) -> Any:
+        data = dict(value or {})
+        if data.get("task_type") == "regression":
+            data.setdefault("models", list(REGRESSION_MODEL_NAMES))
+            data.setdefault("optimization_metric", "rmse")
+            data.setdefault("threshold", None)
+        return data
+
     @field_validator("threshold")
     @classmethod
-    def reject_non_finite_threshold(cls, value: float) -> float:
-        if not math.isfinite(value):
+    def reject_non_finite_threshold(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
             raise ValueError("threshold must be finite")
         return value
 
@@ -230,6 +287,20 @@ class ModelSuiteConfig(BaseModel):
     def reject_duplicate_models(self) -> "ModelSuiteConfig":
         if len(self.models) != len(set(self.models)):
             raise ValueError("models must not contain duplicates")
+        if self.task_type == "regression":
+            if any(model not in REGRESSION_MODEL_NAMES for model in self.models):
+                raise ValueError("model is not supported for regression")
+            if self.optimization_metric not in REGRESSION_METRIC_NAMES:
+                raise ValueError("metric is not supported for regression")
+            if self.threshold is not None:
+                raise ValueError("threshold must be null for regression")
+        else:
+            if any(model not in DEFAULT_MODEL_NAMES for model in self.models):
+                raise ValueError("model is not supported for binary classification")
+            if self.optimization_metric not in _CLASSIFICATION_METRIC_NAMES:
+                raise ValueError("metric is not supported for binary classification")
+            if self.threshold is None:
+                raise ValueError("threshold is required for binary classification")
         return self
 
 
@@ -238,6 +309,7 @@ class ExperimentManifest(BaseModel):
 
     manifest_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     dataset_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    task_type: TaskType = "binary_classification"
     target_column: str
     feature_columns: list[str] = Field(min_length=1)
     missing_policy: MissingPolicy
@@ -247,16 +319,16 @@ class ExperimentManifest(BaseModel):
     random_state: int = Field(ge=0)
     cv_folds: int = Field(ge=3, le=10)
     n_seeds: int = Field(default=1, ge=1, le=10)
-    optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"]
-    threshold: float = Field(ge=0.0, le=1.0)
+    optimization_metric: OptimizationMetric
+    threshold: float | None = Field(ge=0.0, le=1.0)
     models: list[ModelName] = Field(min_length=1)
     dossier_id: str | None = None
     workflow_version: str = Field(default="unknown", min_length=1, max_length=128)
 
     @field_validator("threshold")
     @classmethod
-    def manifest_threshold_must_be_finite(cls, value: float) -> float:
-        if not math.isfinite(value):
+    def manifest_threshold_must_be_finite(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
             raise ValueError("threshold must be finite")
         return value
 
@@ -273,6 +345,22 @@ class ExperimentManifest(BaseModel):
             raise ValueError("feature_columns must not contain duplicates")
         if len(self.models) != len(set(self.models)):
             raise ValueError("models must not contain duplicates")
+        if self.task_type == "regression":
+            if any(model not in REGRESSION_MODEL_NAMES for model in self.models):
+                raise ValueError("model is not supported for regression")
+            if self.optimization_metric not in REGRESSION_METRIC_NAMES:
+                raise ValueError("metric is not supported for regression")
+            if self.threshold is not None:
+                raise ValueError("threshold must be null for regression")
+            if self.sampling_strategy != "original":
+                raise ValueError("sampling_strategy must be original for regression")
+        else:
+            if any(model not in DEFAULT_MODEL_NAMES for model in self.models):
+                raise ValueError("model is not supported for binary classification")
+            if self.optimization_metric not in _CLASSIFICATION_METRIC_NAMES:
+                raise ValueError("metric is not supported for binary classification")
+            if self.threshold is None:
+                raise ValueError("threshold is required for binary classification")
         return self
 
 
@@ -309,6 +397,7 @@ class ExperimentSuiteResult(BaseModel):
     experiment_id: str
     status: Literal["succeeded", "partial", "failed"]
     config: ModelSuiteConfig
+    task_type: TaskType = "binary_classification"
     dataset: DatasetProfile
     split_provenance: SplitProvenance
     results: list[ModelRunResult] = Field(default_factory=list)

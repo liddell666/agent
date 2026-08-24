@@ -140,3 +140,42 @@ def test_create_manifest_requires_confirmed_target_column():
             DatasetOptions(target_column="Y_cls", target_column_confirmed=False),
             ModelSuiteConfig(models=["random_forest"]),
         )
+
+
+def test_manifest_identity_binds_task_type():
+    diagnostic = _diagnostic()
+    confirmed_options = DatasetOptions(target_column_confirmed=True)
+
+    binary = create_manifest(diagnostic, confirmed_options, ModelSuiteConfig())
+    regression_options = confirmed_options.model_copy(update={"task_type": "regression"})
+    regression = create_manifest(
+        diagnostic,
+        regression_options,
+        ModelSuiteConfig(task_type="regression"),
+    )
+
+    assert binary.task_type == "binary_classification"
+    assert regression.task_type == "regression"
+    assert binary.manifest_id != regression.manifest_id
+
+
+def test_create_manifest_rejects_mismatched_task_types():
+    with pytest.raises(ValueError, match="task_type"):
+        create_manifest(
+            _diagnostic(),
+            DatasetOptions(target_column_confirmed=True),
+            ModelSuiteConfig(task_type="regression"),
+        )
+
+
+def test_regression_manifest_cv_feasibility_uses_effective_rows():
+    diagnostic = _diagnostic()
+    diagnostic.dataset.class_counts = {"0": 1, "1": 9}
+
+    manifest = create_manifest(
+        diagnostic,
+        DatasetOptions(task_type="regression", target_column_confirmed=True),
+        ModelSuiteConfig(task_type="regression", cv_folds=3),
+    )
+
+    assert manifest.task_type == "regression"
