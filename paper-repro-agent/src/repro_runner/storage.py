@@ -162,7 +162,7 @@ def _experiment_directory(experiment_id: str, settings: Settings) -> Path:
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    temporary = path.with_name(f".tmp-{secrets.token_hex(8)}")
     try:
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),

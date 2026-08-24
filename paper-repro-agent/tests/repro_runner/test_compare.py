@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -22,7 +23,10 @@ from repro_runner.storage import (
     ResultNotFoundError,
     create_experiment_id,
     load_result,
+    load_suite_result,
     save_result,
+    save_suite_result,
+    update_suite_result,
 )
 
 
@@ -351,6 +355,36 @@ def test_storage_failure_does_not_publish_a_partial_experiment(tmp_path):
     assert not (tmp_path / result.experiment_id).exists()
     with pytest.raises(ResultNotFoundError):
         load_result(result.experiment_id, settings)
+
+
+def test_suite_update_uses_short_temp_and_preserves_published_result_on_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_suite_result()
+    settings = Settings(storage_dir=tmp_path)
+    save_suite_result(result, settings)
+    result_path = tmp_path / result.experiment_id / "result.json"
+    original = result_path.read_bytes()
+    replace_sources: list[str] = []
+    real_replace = Path.replace
+
+    def fail_result_replacement(source: Path, target: Path) -> Path:
+        if target == result_path:
+            replace_sources.append(source.name)
+            raise PermissionError("simulated locked destination")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_result_replacement)
+
+    with pytest.raises(PermissionError, match="locked destination"):
+        update_suite_result(result, settings)
+
+    assert len(replace_sources) == 1
+    assert replace_sources[0].startswith(".tmp-")
+    assert "result.json" not in replace_sources[0]
+    assert result_path.read_bytes() == original
+    assert load_suite_result(result.experiment_id, settings) == result
+    assert list(result_path.parent.glob(".tmp-*")) == []
 
 
 def test_old_result_without_split_provenance_loads_as_legacy_and_incomparable(tmp_path):
