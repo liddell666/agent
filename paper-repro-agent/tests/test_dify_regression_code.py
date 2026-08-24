@@ -5,7 +5,8 @@ import hashlib
 import hmac
 import importlib
 import json
-import time
+
+import pytest
 
 
 REGRESSION_MODELS = [
@@ -28,14 +29,22 @@ def _document() -> dict:
 
 
 def _exec_code_node(title: str):
+    return _exec_code_node_from(_document(), title)
+
+
+def _exec_code_node_from(document: dict, title: str):
     node = next(
         node
-        for node in _document()["workflow"]["graph"]["nodes"]
+        for node in document["workflow"]["graph"]["nodes"]
         if node["data"]["title"] == title
     )
     namespace: dict[str, object] = {}
     exec(compile(node["data"]["code"], f"<regression-dify:{title}>", "exec"), namespace)
     return namespace["main"]
+
+
+def _combined_output(result: dict) -> str:
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _resign_token(token: str, secret: str, mutation) -> str:
@@ -221,6 +230,199 @@ def test_regression_comparison_request_accepts_natural_values_and_aliases_only()
         ],
     }
     assert all(sentinel not in json.dumps(result, ensure_ascii=False) for sentinel in SENTINELS)
+
+
+def test_regression_validator_feeds_supported_natural_metrics_to_comparison_request() -> None:
+    validator = _exec_code_node("validate_paper_dossier")
+    dossier = {
+        "title": "Synthetic regression evidence",
+        "task_type": "regression",
+        "datasets": [],
+        "methods": [],
+        "gaps": [],
+        "metrics": [
+            {
+                "name": "Mean Absolute Error",
+                "reported_value": 1.5,
+                "dataset": "synthetic",
+                "split": "test",
+                "evidence": [{"page": 1, "source_text": "MAE=1.5"}],
+            },
+            {
+                "name": "Root Mean Squared Error",
+                "reported_value": 2.0,
+                "dataset": "synthetic",
+                "split": "test",
+                "evidence": [{"page": 1, "source_text": "RMSE=2.0"}],
+            },
+            {
+                "name": "R²",
+                "reported_value": 0.8,
+                "dataset": "synthetic",
+                "split": "test",
+                "evidence": [{"page": 1, "source_text": "R²=0.80"}],
+            },
+        ],
+    }
+
+    validated = validator(json.dumps(dossier, ensure_ascii=False), 1)
+    assert validated["can_continue"] is True
+    metrics = json.loads(validated["validated_json"])["metrics"]
+    assert [metric["normalized_name"] for metric in metrics] == ["mae", "rmse", "r2"]
+    assert all(metric["supported"] is True for metric in metrics)
+    assert all(metric["ambiguous"] is False for metric in metrics)
+
+    request = _exec_code_node("build_suite_comparison_request")(
+        validated["validated_json"],
+        json.dumps(
+            {
+                "experiment_id": "exp-validator-chain",
+                "task_type": "regression",
+            }
+        ),
+    )
+    assert request["suite_comparison_request_ok"] is True
+    assert json.loads(request["suite_comparison_request_json"])["reported_metrics"] == [
+        {"name": "mae", "reported_value": 1.5, "dataset": "synthetic", "split": "test"},
+        {"name": "rmse", "reported_value": 2.0, "dataset": "synthetic", "split": "test"},
+        {"name": "r2", "reported_value": 0.8, "dataset": "synthetic", "split": "test"},
+    ]
+
+
+def test_successful_regression_suite_parser_allowlists_fields_and_redacts_backend_data() -> None:
+    parser = _exec_code_node("parse_suite_response")
+    raw = {
+        "experiment_id": "exp-safe-suite",
+        "job_id": "job-safe-suite",
+        "job_status": "partial",
+        "status": "partial",
+        "task_type": "regression",
+        "config": {
+            "task_type": "regression",
+            "models": REGRESSION_MODELS,
+            "optimization_metric": "rmse",
+            "cv_folds": 5,
+            "n_iter": 8,
+            "cookie": SENTINELS[2],
+        },
+        "dataset": {
+            "dataset_id": "sha256:" + "b" * 64,
+            "rows": 20,
+            "target": SENTINELS[0],
+        },
+        "split_provenance": {
+            "test_size": 0.2,
+            "random_state": 42,
+            "train_rows": 16,
+            "test_rows": 4,
+            "test_digest": "sha256:" + "c" * 64,
+            "raw_test_rows": SENTINELS[0],
+        },
+        "performance_ranking": ["random_forest", "linear_regression", SENTINELS[1]],
+        "results": [
+            {
+                "model": "random_forest",
+                "status": "succeeded",
+                "metrics": {"mae": 0.8, "rmse": 1.1, "r2": -0.2, "cookie": SENTINELS[2]},
+                "raw_rows": SENTINELS[0],
+            },
+            {
+                "model": "xgboost",
+                "status": "failed",
+                "metrics": {},
+                "error": {"code": "cookie_secret", "message": SENTINELS[3]},
+            },
+            {
+                "model": "gradient_boosting",
+                "status": "unavailable",
+                "metrics": {},
+                "error": {"code": "missing_dependency", "message": SENTINELS[3]},
+            },
+        ],
+        "raw_csv": SENTINELS[0],
+        "pdf_body": SENTINELS[1],
+        "cookie": SENTINELS[2],
+    }
+
+    result = parser(json.dumps(raw, ensure_ascii=False))
+
+    assert result["experiment_ok"] is True
+    safe = json.loads(result["experiment_json"])
+    assert safe["task_type"] == "regression"
+    assert safe["experiment_id"] == "exp-safe-suite"
+    assert safe["job_id"] == "job-safe-suite"
+    assert safe["performance_ranking"] == ["random_forest", "linear_regression"]
+    assert safe["split_provenance"] == {
+        "test_size": 0.2,
+        "random_state": 42,
+        "train_rows": 16,
+        "test_rows": 4,
+        "test_digest": "sha256:" + "c" * 64,
+    }
+    assert safe["results"][0] == {
+        "model": "random_forest",
+        "status": "succeeded",
+        "metrics": {"mae": 0.8, "rmse": 1.1, "r2": -0.2},
+    }
+    assert safe["results"][1] == {
+        "model": "xgboost",
+        "status": "failed",
+        "metrics": {},
+        "error": {"code": "unavailable", "message": "details redacted for privacy."},
+    }
+    assert safe["results"][2] == {
+        "model": "gradient_boosting",
+        "status": "unavailable",
+        "metrics": {},
+        "error": {"code": "missing_dependency", "message": "details redacted for privacy."},
+    }
+    assert all(sentinel not in _combined_output(result) for sentinel in SENTINELS)
+
+
+@pytest.mark.parametrize(
+    "title,arguments,expected_code",
+    [
+        (
+            "protocol_confirmation_failure",
+            (json.dumps([{"code": "protocol_options_invalid", "message": SENTINELS[2]}]),),
+            "protocol_options_invalid",
+        ),
+        (
+            "protocol_draft_read_failure",
+            (json.dumps([{"code": "protocol_draft_read_failed", "message": SENTINELS[2]}]),),
+            "protocol_draft_read_failed",
+        ),
+        ("normalize_job_submission_http_failure", (SENTINELS[1], SENTINELS[0]), "job_submit_failed"),
+        ("normalize_validation_http_failure", (SENTINELS[1],), "validation_service_unavailable"),
+        ("validation_semantic_failure", (SENTINELS[1], SENTINELS[0]), "dataset_validation_failed"),
+        ("normalize_experiment_http_failure", (SENTINELS[1], SENTINELS[0]), "experiment_service_unavailable"),
+        ("experiment_semantic_failure", (SENTINELS[1], SENTINELS[0], SENTINELS[2]), "experiment_failed"),
+        ("request_failure", (SENTINELS[1], SENTINELS[0], SENTINELS[2]), "invalid_regression_comparison_request"),
+        ("normalize_comparison_http_failure", (SENTINELS[1], SENTINELS[0], SENTINELS[2]), "comparison_service_unavailable"),
+        (
+            "comparison_semantic_failure",
+            (SENTINELS[1], SENTINELS[0], SENTINELS[2], SENTINELS[3]),
+            "invalid_regression_comparison_response",
+        ),
+    ],
+)
+def test_terminal_failure_finalizers_never_reemit_upstream_bodies(
+    title: str, arguments: tuple[str, ...], expected_code: str
+) -> None:
+    result = _exec_code_node(title)(*arguments)
+
+    assert set(result) == {
+        "dossier_json",
+        "validation_json",
+        "experiment_json",
+        "comparison_json",
+        "assessment_json",
+        "markdown_report",
+    }
+    assert result["dossier_json"] == "{}"
+    assert json.loads(result["experiment_json"])["status"] == "failed"
+    assert json.loads(result["experiment_json"])["errors"][0]["code"] == expected_code
+    assert all(sentinel not in _combined_output(result) for sentinel in SENTINELS)
 
 
 def test_regression_suite_parser_rejects_missing_or_altered_task_without_echoing() -> None:

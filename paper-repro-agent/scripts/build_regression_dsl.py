@@ -338,31 +338,176 @@ def main(
 
 
 def _suite_parse_code() -> str:
-    return '''import json
+    models = repr(REGRESSION_MODELS)
+    metrics = repr(REGRESSION_METRICS)
+    return f'''import json
+import math
+import re
 
-SAFE_ERROR = {"code": "invalid_regression_suite_response", "message": "Regression suite response is invalid."}
+KNOWN_MODELS = {models}
+KNOWN_METRICS = {metrics}
+SAFE_RESULT_STATUSES = {{"succeeded", "unavailable", "failed"}}
+SAFE_MODEL_ERROR_CODES = {{"missing_dependency", "model_training_failed"}}
+SAFE_ERROR = {{"code": "invalid_regression_suite_response", "message": "Regression suite response is invalid."}}
+EXPERIMENT_ID_RE = re.compile(r"^exp-[A-Za-z0-9][A-Za-z0-9-]{{0,127}}$")
+JOB_ID_RE = re.compile(r"^job-[A-Za-z0-9][A-Za-z0-9-]{{0,127}}$")
+SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{{0,127}}$")
+SHA_RE = re.compile(r"^sha256:[0-9a-f]{{64}}$")
+
+def number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+def safe_nonnegative(value):
+    parsed = number(value)
+    return parsed if parsed is not None and parsed >= 0 else None
+
+def safe_integer(value, minimum=0):
+    parsed = number(value)
+    return int(parsed) if parsed is not None and parsed.is_integer() and parsed >= minimum else None
+
+def safe_metric_values(value):
+    safe = {{}}
+    if not isinstance(value, dict):
+        return safe
+    for name in KNOWN_METRICS:
+        parsed = number(value.get(name))
+        if parsed is None:
+            continue
+        if name in {{"mae", "rmse"}} and parsed < 0:
+            continue
+        if name == "r2" and parsed > 1:
+            continue
+        safe[name] = parsed
+    return safe
+
+def safe_error(value):
+    if not isinstance(value, dict):
+        return None
+    code = value.get("code")
+    safe_code = code if code in SAFE_MODEL_ERROR_CODES else "unavailable"
+    message = "bounded_failure" if value.get("message") == "bounded_failure" else "details redacted for privacy."
+    return {{"code": safe_code, "message": message}}
+
+def safe_ranking(value):
+    ranking = []
+    for model in value if isinstance(value, list) else []:
+        if model in KNOWN_MODELS and model not in ranking:
+            ranking.append(model)
+    return ranking
+
+def safe_config(value):
+    raw = value if isinstance(value, dict) else {{}}
+    safe = {{"task_type": "regression"}}
+    models = safe_ranking(raw.get("models"))
+    if models:
+        safe["models"] = models
+    if raw.get("optimization_metric") in KNOWN_METRICS:
+        safe["optimization_metric"] = raw["optimization_metric"]
+    for key, minimum in (("cv_folds", 3), ("n_iter", 1), ("n_seeds", 1), ("random_state", 0)):
+        parsed = safe_integer(raw.get(key), minimum)
+        if parsed is not None:
+            safe[key] = parsed
+    test_size = number(raw.get("test_size"))
+    if test_size is not None and 0 < test_size < 1:
+        safe["test_size"] = test_size
+    for key in ("use_gpu", "drop_duplicates"):
+        if isinstance(raw.get(key), bool):
+            safe[key] = raw[key]
+    version = raw.get("workflow_version")
+    if isinstance(version, str) and SAFE_TEXT_RE.fullmatch(version):
+        safe["workflow_version"] = version
+    return safe
+
+def safe_dataset(value):
+    raw = value if isinstance(value, dict) else {{}}
+    safe = {{}}
+    dataset_id = raw.get("dataset_id")
+    if isinstance(dataset_id, str) and SHA_RE.fullmatch(dataset_id):
+        safe["dataset_id"] = dataset_id
+    for key in ("rows", "effective_rows", "features", "missing_values", "duplicate_rows"):
+        parsed = safe_integer(raw.get(key), 0)
+        if parsed is not None:
+            safe[key] = parsed
+    return safe
+
+def safe_split(value):
+    raw = value if isinstance(value, dict) else {{}}
+    safe = {{}}
+    test_size = number(raw.get("test_size"))
+    if test_size is not None and 0 < test_size < 1:
+        safe["test_size"] = test_size
+    for key, minimum in (("random_state", 0), ("train_rows", 1), ("test_rows", 1)):
+        parsed = safe_integer(raw.get(key), minimum)
+        if parsed is not None:
+            safe[key] = parsed
+    digest = raw.get("test_digest")
+    if isinstance(digest, str) and SHA_RE.fullmatch(digest):
+        safe["test_digest"] = digest
+    return safe
+
+def safe_results(value):
+    results = []
+    for raw in value if isinstance(value, list) else []:
+        if not isinstance(raw, dict) or raw.get("model") not in KNOWN_MODELS:
+            continue
+        status = raw.get("status")
+        if status not in SAFE_RESULT_STATUSES:
+            continue
+        item = {{"model": raw["model"], "status": status, "metrics": safe_metric_values(raw.get("metrics"))}}
+        error = safe_error(raw.get("error"))
+        if error is not None:
+            item["error"] = error
+        results.append(item)
+    return results
 
 def main(body: str) -> dict:
     try:
         experiment = json.loads(body) if isinstance(body, str) else body
     except (TypeError, json.JSONDecodeError):
-        experiment = {}
-    config = experiment.get("config") if isinstance(experiment, dict) and isinstance(experiment.get("config"), dict) else {}
+        experiment = {{}}
+    config = experiment.get("config") if isinstance(experiment, dict) and isinstance(experiment.get("config"), dict) else {{}}
+    experiment_id = experiment.get("experiment_id") if isinstance(experiment, dict) else None
     ok = (
         isinstance(experiment, dict)
-        and isinstance(experiment.get("experiment_id"), str)
-        and bool(experiment.get("experiment_id", "").strip())
-        and experiment.get("status") in {"succeeded", "partial"}
+        and isinstance(experiment_id, str)
+        and EXPERIMENT_ID_RE.fullmatch(experiment_id) is not None
+        and experiment.get("status") in {{"succeeded", "partial"}}
         and experiment.get("task_type") == "regression"
         and config.get("task_type") == "regression"
         and isinstance(experiment.get("results"), list)
     )
-    normalized = experiment if ok else {"status": "failed", "task_type": "regression", "errors": [SAFE_ERROR]}
-    return {
+    if ok:
+        normalized = {{
+            "experiment_id": experiment_id,
+            "status": experiment["status"],
+            "task_type": "regression",
+            "config": safe_config(config),
+            "dataset": safe_dataset(experiment.get("dataset")),
+            "split_provenance": safe_split(experiment.get("split_provenance")),
+            "performance_ranking": safe_ranking(experiment.get("performance_ranking")),
+            "results": safe_results(experiment.get("results")),
+        }}
+        job_id = experiment.get("job_id")
+        if isinstance(job_id, str) and JOB_ID_RE.fullmatch(job_id):
+            normalized["job_id"] = job_id
+        job_status = experiment.get("job_status")
+        if job_status in {{"succeeded", "partial"}}:
+            normalized["job_status"] = job_status
+        errors = []
+    else:
+        normalized = {{"status": "failed", "task_type": "regression", "errors": [SAFE_ERROR]}}
+        errors = [SAFE_ERROR]
+    return {{
         "experiment_ok": ok,
         "experiment_json": json.dumps(normalized, ensure_ascii=False, separators=(",", ":")),
-        "experiment_errors": json.dumps([] if ok else [SAFE_ERROR], ensure_ascii=False, separators=(",", ":")),
-    }
+        "experiment_errors": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
+    }}
 '''
 
 
@@ -492,6 +637,50 @@ def main(dossier_json: str, experiment_json: str) -> dict:
 '''
 
 
+def _regression_dossier_validator_code(source: str) -> str:
+    classification_aliases = '''_METRIC_ALIASES = {
+    "auc": "roc_auc",
+    "roc_auc": "roc_auc",
+    "总精度": "accuracy",
+    "准确率": "accuracy",
+    "平衡准确率": "balanced_accuracy",
+    "精确率": "precision",
+    "查准率": "precision",
+    "召回率": "recall",
+    "查全率": "recall",
+    "f1值": "f1",
+}'''
+    regression_aliases = '''_METRIC_ALIASES = {
+    "mae": "mae",
+    "mean_absolute_error": "mae",
+    "mean_absolute_deviation": "mae",
+    "rmse": "rmse",
+    "root_mean_squared_error": "rmse",
+    "root_mean_square_error": "rmse",
+    "r2": "r2",
+    "r_squared": "r2",
+    "coefficient_of_determination": "r2",
+}'''
+    classification_supported = '''_SUPPORTED_METRICS = {
+    "roc_auc",
+    "accuracy",
+    "balanced_accuracy",
+    "precision",
+    "recall",
+    "f1",
+}'''
+    regression_supported = '''_SUPPORTED_METRICS = {
+    "mae",
+    "rmse",
+    "r2",
+}'''
+    if classification_aliases not in source or classification_supported not in source:
+        raise ValueError("classification dossier validator contract was not found")
+    return source.replace(classification_aliases, regression_aliases).replace(
+        classification_supported, regression_supported
+    )
+
+
 def _comparison_parse_code() -> str:
     models = repr(REGRESSION_MODELS)
     metrics = repr(REGRESSION_METRICS)
@@ -543,6 +732,141 @@ def main(comparison_response_json: str) -> dict:
         "comparison_errors": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
     }}
 '''
+
+
+def _terminal_failure_code(
+    parameters: str,
+    error_code: str,
+    markdown_report: str,
+    *,
+    error_input: str | None = None,
+) -> str:
+    protocol_codes = (
+        "protocol_not_confirmed",
+        "protocol_token_missing",
+        "protocol_token_malformed",
+        "protocol_token_expired",
+        "protocol_token_tampered",
+        "protocol_payload_invalid",
+        "protocol_dataset_missing",
+        "protocol_target_missing",
+        "protocol_target_mismatch",
+        "protocol_features_missing",
+        "protocol_options_invalid",
+        "protocol_draft_not_found",
+        "protocol_draft_expired",
+        "protocol_draft_token_mismatch",
+        "protocol_draft_read_failed",
+    )
+    select_code = f'''def selected_code(value):
+    try:
+        errors = json.loads(value) if isinstance(value, str) else []
+    except (TypeError, json.JSONDecodeError):
+        errors = []
+    if isinstance(errors, list):
+        for item in errors:
+            code = item.get("code") if isinstance(item, dict) else None
+            if code in SAFE_INPUT_CODES:
+                return code
+    return DEFAULT_CODE
+''' if error_input else '''def selected_code():
+    return DEFAULT_CODE
+'''
+    selected_call = f"selected_code({error_input})" if error_input else "selected_code()"
+    return f'''import json
+
+DEFAULT_CODE = {error_code!r}
+SAFE_INPUT_CODES = {protocol_codes!r}
+
+{select_code}
+def main({parameters}) -> dict:
+    code = {selected_call}
+    error = {{"code": code, "message": "Failure details redacted for privacy."}}
+    validation = {{"valid": False, "task_type": "regression", "errors": [error]}}
+    experiment = {{"status": "failed", "task_type": "regression", "errors": [error]}}
+    comparison = {{"items": [], "errors": [{{"code": "comparison_not_run", "message": "Comparison did not run."}}]}}
+    assessment = {{"strict_status": "not_comparable", "approximate_status": "insufficient_metrics", "items": []}}
+    return {{
+        "dossier_json": "{{}}",
+        "validation_json": json.dumps(validation, ensure_ascii=False, separators=(",", ":")),
+        "experiment_json": json.dumps(experiment, ensure_ascii=False, separators=(",", ":")),
+        "comparison_json": json.dumps(comparison, ensure_ascii=False, separators=(",", ":")),
+        "assessment_json": json.dumps(assessment, ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": {markdown_report!r},
+    }}
+'''
+
+
+def _replace_terminal_failure_nodes(nodes: dict[str, dict]) -> None:
+    specs = {
+        "protocol_confirmation_failure": (
+            "protocol_errors: str",
+            "protocol_not_confirmed",
+            "Protocol confirmation failed; details were redacted.",
+            "protocol_errors",
+        ),
+        "protocol_draft_read_failure": (
+            "draft_errors: str",
+            "protocol_draft_read_failed",
+            "Protocol draft reading failed; details were redacted.",
+            "draft_errors",
+        ),
+        "normalize_job_submission_http_failure": (
+            "dossier_json: str, validation_json: str",
+            "job_submit_failed",
+            "The asynchronous regression job could not be submitted.",
+            None,
+        ),
+        "normalize_validation_http_failure": (
+            "dossier_json: str",
+            "validation_service_unavailable",
+            "Dataset validation service is unavailable.",
+            None,
+        ),
+        "validation_semantic_failure": (
+            "dossier_json: str, validation_json: str",
+            "dataset_validation_failed",
+            "Dataset validation did not pass.",
+            None,
+        ),
+        "normalize_experiment_http_failure": (
+            "dossier_json: str, validation_json: str",
+            "experiment_service_unavailable",
+            "Regression experiment service is unavailable.",
+            None,
+        ),
+        "experiment_semantic_failure": (
+            "dossier_json: str, validation_json: str, experiment_json: str",
+            "experiment_failed",
+            "Regression experiment did not return a successful result.",
+            None,
+        ),
+        "request_failure": (
+            "dossier_json: str, validation_json: str, experiment_json: str",
+            "invalid_regression_comparison_request",
+            "Regression comparison request could not be built.",
+            None,
+        ),
+        "normalize_comparison_http_failure": (
+            "dossier_json: str, validation_json: str, experiment_json: str",
+            "comparison_service_unavailable",
+            "Regression comparison service is unavailable.",
+            None,
+        ),
+        "comparison_semantic_failure": (
+            "dossier_json: str, validation_json: str, experiment_json: str, comparison_json: str",
+            "invalid_regression_comparison_response",
+            "Regression comparison response did not pass validation.",
+            None,
+        ),
+    }
+    for title, (parameters, code, report, error_input) in specs.items():
+        nodes[title]["data"]["code"] = _terminal_failure_code(
+            parameters,
+            code,
+            report,
+            error_input=error_input,
+        )
 
 
 def _report_code() -> str:
@@ -757,10 +1081,14 @@ def _replace_regression_code_nodes(document: dict) -> None:
     normalize["data"]["outputs"]["task_type_text"] = {"children": None, "type": "string"}
     nodes["prepare_protocol_artifacts"]["data"]["code"] = _prepare_protocol_code()
     nodes["normalize_protocol_confirmation"]["data"]["code"] = _confirmation_code()
+    nodes["validate_paper_dossier"]["data"]["code"] = _regression_dossier_validator_code(
+        nodes["validate_paper_dossier"]["data"]["code"]
+    )
     nodes["parse_suite_response"]["data"]["code"] = _suite_parse_code()
     nodes["build_suite_comparison_request"]["data"]["code"] = _comparison_request_code()
     nodes["parse_suite_comparison_response"]["data"]["code"] = _comparison_parse_code()
     nodes["format_suite_comparison_report"]["data"]["code"] = _report_code()
+    _replace_terminal_failure_nodes(nodes)
     for node in _nodes(document):
         data = node.get("data", {})
         if data.get("type") == "code" and "logistic_regression" in data.get("code", ""):
@@ -783,6 +1111,75 @@ def _set_regression_metadata(document: dict, profile: str) -> None:
     }
 
 
+def _embedded_main(node: dict):
+    namespace: dict[str, object] = {}
+    data = node.get("data", {})
+    exec(
+        compile(data["code"], f"<regression-dify:{data.get('title')}>", "exec"),
+        namespace,
+    )
+    return namespace["main"]
+
+
+def _validate_regression_metric_chain(nodes: dict[str, dict]) -> None:
+    try:
+        validator = _embedded_main(nodes["validate_paper_dossier"])
+        request_builder = _embedded_main(nodes["build_suite_comparison_request"])
+        dossier = {
+            "title": "Regression contract probe",
+            "task_type": "regression",
+            "datasets": [],
+            "methods": [],
+            "gaps": [],
+            "metrics": [
+                {
+                    "name": name,
+                    "reported_value": value,
+                    "dataset": "probe",
+                    "split": "test",
+                    "evidence": [{"page": 1, "source_text": evidence}],
+                }
+                for name, value, evidence in (
+                    ("Mean Absolute Error", 1.5, "MAE=1.5"),
+                    ("Root Mean Squared Error", 2.0, "RMSE=2.0"),
+                    ("R²", -0.25, "R²=-0.25"),
+                    ("AUC", 0.9, "AUC=0.9"),
+                )
+            ],
+        }
+        validated = validator(json.dumps(dossier, ensure_ascii=False), 1)
+        normalized = json.loads(validated["validated_json"])
+        metrics = normalized["metrics"]
+        if validated.get("can_continue") is not True:
+            raise ValueError
+        if [item.get("normalized_name") for item in metrics[:3]] != list(
+            REGRESSION_METRICS
+        ):
+            raise ValueError
+        if any(item.get("supported") is not True for item in metrics[:3]):
+            raise ValueError
+        if metrics[3].get("supported") is not False:
+            raise ValueError
+        request = request_builder(
+            validated["validated_json"],
+            json.dumps(
+                {
+                    "experiment_id": "exp-regression-contract-probe",
+                    "task_type": "regression",
+                }
+            ),
+        )
+        payload = json.loads(request["suite_comparison_request_json"])
+        if request.get("suite_comparison_request_ok") is not True:
+            raise ValueError
+        if [item.get("name") for item in payload.get("reported_metrics", [])] != list(
+            REGRESSION_METRICS
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError("regression validator/comparison chain is invalid") from None
+
+
 def _validate_regression_graph(document: dict) -> None:
     serialized = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
     if "logistic_regression" in serialized:
@@ -798,6 +1195,7 @@ def _validate_regression_graph(document: dict) -> None:
         fields = {item.get("key"): item for item in nodes[title]["data"]["body"]["data"]}
         if fields.get("task_type", {}).get("value") != "regression":
             raise ValueError(f"{title} does not force regression")
+    _validate_regression_metric_chain(nodes)
     for node in _nodes(document):
         data = node.get("data", {})
         if data.get("type") == "code":

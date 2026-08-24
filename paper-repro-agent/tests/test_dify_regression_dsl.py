@@ -9,6 +9,8 @@ import sys
 from pypdf import PdfReader
 import yaml
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).parents[1]
 BUILDER_PATH = PROJECT_ROOT / "scripts" / "build_regression_dsl.py"
@@ -107,6 +109,28 @@ def test_regression_builder_outputs_compile_and_keep_secret_environment_blank() 
     assert secret["value_type"] == "secret"
     serialized = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
     assert "local-only-fallback-not-for-production" not in serialized
+
+
+@pytest.mark.parametrize("mutation", ["classification_validator", "missing_request_node"])
+def test_regression_graph_validation_rejects_broken_validator_comparison_chain(
+    mutation: str,
+) -> None:
+    builder = _builder()
+    document = builder.build_regression_dsl("deepseek")
+    nodes = _node_map(document)
+    if mutation == "classification_validator":
+        nodes["validate_paper_dossier"]["data"]["code"] = (
+            PROJECT_ROOT / "dify" / "code" / "validate_evidence.py"
+        ).read_text(encoding="utf-8")
+    else:
+        document["workflow"]["graph"]["nodes"] = [
+            node
+            for node in _nodes(document)
+            if node["data"]["title"] != "build_suite_comparison_request"
+        ]
+
+    with pytest.raises(ValueError, match="regression validator/comparison chain"):
+        builder._validate_regression_graph(document)
 
 
 def test_regression_cli_writes_only_two_profile_artifacts_and_matches_builder(tmp_path: Path) -> None:
