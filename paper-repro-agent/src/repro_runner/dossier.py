@@ -28,6 +28,9 @@ SUPPORTED_METRICS = frozenset(
         "precision",
         "recall",
         "f1",
+        "mae",
+        "rmse",
+        "r2",
     }
 )
 
@@ -48,6 +51,16 @@ _METRIC_ALIASES = {
     "f1": "f1",
     "f1值": "f1",
     "f1_score": "f1",
+    "mae": "mae",
+    "mean_absolute_error": "mae",
+    "\u5e73\u5747\u7edd\u5bf9\u8bef\u5dee": "mae",
+    "rmse": "rmse",
+    "root_mean_squared_error": "rmse",
+    "\u5747\u65b9\u6839\u8bef\u5dee": "rmse",
+    "r2": "r2",
+    "r²": "r2",
+    "coefficient_of_determination": "r2",
+    "\u51b3\u5b9a\u7cfb\u6570": "r2",
 }
 _PERCENT_SUFFIXES = ("%", "％", "锛卄")
 _MODEL_ALIASES = {

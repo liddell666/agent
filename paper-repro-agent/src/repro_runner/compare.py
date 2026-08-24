@@ -26,6 +26,9 @@ _SUPPORTED_METRICS = {
     "precision",
     "recall",
     "f1",
+    "mae",
+    "rmse",
+    "r2",
 }
 
 

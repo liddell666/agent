@@ -38,7 +38,6 @@ from repro_runner.protocol_drafts import ProtocolDraftError, ProtocolDraftStore
 from repro_runner.runtime import runtime_provenance
 from repro_runner.schemas import (
     ComparisonResponse,
-    DEFAULT_MODEL_NAMES,
     DatasetDiagnosticResponse,
     DatasetOptions,
     DossierParseResponse,
@@ -265,6 +264,7 @@ async def validate_dataset(
 async def diagnose_dataset_route(
     file: Annotated[UploadFile, File()],
     target_column: Annotated[str | None, Form()] = None,
+    task_type: Annotated[Literal["binary_classification", "regression"], Form()] = "binary_classification",
     exclude_columns: Annotated[str | None, Form()] = None,
     exclude_columns_json: Annotated[str | None, Form()] = None,
     settings: Settings = Depends(get_settings),
@@ -277,6 +277,7 @@ async def diagnose_dataset_route(
     options = DatasetOptions(
         target_column=target_column or settings.default_target_column,
         target_column_confirmed=target_column is not None,
+        task_type=task_type,
         exclude_columns=parsed_exclude_columns,
     )
     try:
@@ -360,16 +361,18 @@ async def run_experiment(
 async def run_model_suite_route(
     file: Annotated[UploadFile, File()],
     target_column: Annotated[str | None, Form()] = None,
-    models_json: Annotated[str, Form()] = json.dumps(list(DEFAULT_MODEL_NAMES)),
+    task_type: Annotated[Literal["binary_classification", "regression"], Form()] = "binary_classification",
+    models_json: Annotated[str | None, Form()] = None,
     test_size: Annotated[float, Form(ge=0.1, le=0.5)] = 0.2,
     random_state: Annotated[int, Form(ge=0)] = 42,
     drop_duplicates: Annotated[bool, Form()] = False,
     cv_folds: Annotated[int, Form(ge=3, le=10)] = 5,
     n_seeds: Annotated[int, Form(ge=1, le=10)] = 1,
     optimization_metric: Annotated[
-        Literal["roc_auc", "f1", "recall", "balanced_accuracy"], Form()
-    ] = "roc_auc",
-    threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.5,
+        Literal["roc_auc", "f1", "recall", "balanced_accuracy", "mae", "rmse", "r2"] | None,
+        Form(),
+    ] = None,
+    threshold: Annotated[float | None, Form(ge=0.0, le=1.0)] = None,
     n_iter: Annotated[int, Form(ge=1, le=32)] = 8,
     use_gpu: Annotated[bool, Form()] = False,
     n_jobs: Annotated[int, Form(ge=1, le=16)] = 4,
@@ -378,9 +381,11 @@ async def run_model_suite_route(
 ) -> ExperimentSuiteResult:
     options = DatasetOptions(
         target_column=target_column or settings.default_target_column,
+        task_type=task_type,
         drop_duplicates=drop_duplicates,
     )
     config = _parse_model_suite_config(
+        task_type=task_type,
         models_json=models_json,
         test_size=test_size,
         random_state=random_state,
@@ -454,6 +459,7 @@ async def create_job(
             DatasetOptions(
                 target_column=manifest.target_column,
                 target_column_confirmed=True,
+                task_type=manifest.task_type,
                 missing_policy=manifest.missing_policy,
                 sampling_strategy=manifest.sampling_strategy,
                 comparison_mode=manifest.comparison_mode,
@@ -1019,38 +1025,48 @@ def _run_model_suite_content(
 
 def _parse_model_suite_config(
     *,
-    models_json: str,
+    task_type: Literal["binary_classification", "regression"],
+    models_json: str | None,
     test_size: float,
     random_state: int,
     drop_duplicates: bool,
     cv_folds: int,
     n_seeds: int,
-    optimization_metric: Literal["roc_auc", "f1", "recall", "balanced_accuracy"],
-    threshold: float,
+    optimization_metric: Literal[
+        "roc_auc", "f1", "recall", "balanced_accuracy", "mae", "rmse", "r2"
+    ] | None,
+    threshold: float | None,
     n_iter: int,
     use_gpu: bool,
     n_jobs: int,
 ) -> ModelSuiteConfig:
+    config_payload: dict[str, object] = {
+        "task_type": task_type,
+        "test_size": test_size,
+        "random_state": random_state,
+        "drop_duplicates": drop_duplicates,
+        "cv_folds": cv_folds,
+        "n_seeds": n_seeds,
+        "n_iter": n_iter,
+        "use_gpu": use_gpu,
+        "n_jobs": n_jobs,
+    }
+    if models_json is not None:
+        try:
+            models = json.loads(models_json)
+        except json.JSONDecodeError:
+            raise _invalid_request_exception() from None
+        if not isinstance(models, list) or any(
+            not isinstance(model, str) for model in models
+        ):
+            raise _invalid_request_exception()
+        config_payload["models"] = models
+    if optimization_metric is not None:
+        config_payload["optimization_metric"] = optimization_metric
+    if threshold is not None:
+        config_payload["threshold"] = threshold
     try:
-        models = json.loads(models_json)
-    except json.JSONDecodeError:
-        raise _invalid_request_exception() from None
-    if not isinstance(models, list) or any(not isinstance(model, str) for model in models):
-        raise _invalid_request_exception()
-    try:
-        return ModelSuiteConfig(
-            models=models,
-            test_size=test_size,
-            random_state=random_state,
-            drop_duplicates=drop_duplicates,
-            cv_folds=cv_folds,
-            n_seeds=n_seeds,
-            optimization_metric=optimization_metric,
-            threshold=threshold,
-            n_iter=n_iter,
-            use_gpu=use_gpu,
-            n_jobs=n_jobs,
-        )
+        return ModelSuiteConfig.model_validate(config_payload)
     except Exception:
         raise _invalid_request_exception() from None
 
@@ -1209,6 +1225,7 @@ def _default_execute_job(
         DatasetOptions(
             target_column=manifest.target_column,
             target_column_confirmed=True,
+            task_type=manifest.task_type,
             missing_policy=manifest.missing_policy,
             sampling_strategy=manifest.sampling_strategy,
             comparison_mode=manifest.comparison_mode,
@@ -1222,6 +1239,7 @@ def _default_execute_job(
             "the uploaded dataset does not match the confirmed manifest",
         )
     config = ModelSuiteConfig(
+        task_type=manifest.task_type,
         models=list(manifest.models),
         test_size=manifest.test_size,
         random_state=manifest.random_state,
