@@ -369,7 +369,7 @@ def test_storage_operations_succeed_beyond_the_legacy_nested_temp_boundary(
     suite = make_suite_result()
     legacy_tail = (
         Path(f".{single.experiment_id}.{token}.tmp")
-        / f".dataset_profile.json.{token}.tmp"
+        / f".tmp-{token}"
     )
     fixed_length = len(str(tmp_path / "x" / legacy_tail)) - 1
     padding_length = 262 - fixed_length
