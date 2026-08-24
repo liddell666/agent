@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import shutil
+import time
 
 from pydantic import ValidationError
 
@@ -17,6 +19,8 @@ from repro_runner import __version__
 
 
 _EXPERIMENT_ID = re.compile(r"exp-[A-Za-z0-9-]+\Z")
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_PUBLISH_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16)
 
 
 class ResultNotFoundError(LookupError):
@@ -77,11 +81,26 @@ def _save_payloads(
         _write_json(temporary / "result.json", result_payload)
         _write_json(temporary / "config.json", config_payload)
         _write_json(temporary / "dataset_profile.json", dataset_profile_payload)
-        temporary.replace(directory)
+        _publish_staged_directory(temporary, directory)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return experiment_id
+
+
+def _publish_staged_directory(temporary: Path, directory: Path) -> None:
+    for attempt in range(len(_WINDOWS_PUBLISH_RETRY_DELAYS) + 1):
+        try:
+            temporary.replace(directory)
+            return
+        except PermissionError as exc:
+            if not _IS_WINDOWS:
+                raise
+            if directory.exists():
+                raise FileExistsError("experiment result already exists") from exc
+            if attempt == len(_WINDOWS_PUBLISH_RETRY_DELAYS):
+                raise
+            time.sleep(_WINDOWS_PUBLISH_RETRY_DELAYS[attempt])
 
 
 def update_suite_result(result: ExperimentSuiteResult, settings: Settings) -> str:

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import re
+import time
 from threading import Barrier
 from unittest.mock import patch
 
@@ -412,6 +413,142 @@ def test_staged_result_failure_cleans_only_its_short_directory(
         save_result(result, settings)
 
     assert not (tmp_path / result.experiment_id).exists()
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_windows_publish_retries_transient_permission_errors_without_rewriting(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    real_replace = Path.replace
+    replace_attempts = 0
+    writes: list[str] = []
+    delays: list[float] = []
+    real_write = storage._write_json
+
+    def transient_replace(source: Path, target: Path) -> Path:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts < 3:
+            raise PermissionError(5, "simulated transient directory lock")
+        return real_replace(source, target)
+
+    def counted_write(path: Path, payload: object) -> None:
+        writes.append(path.name)
+        real_write(path, payload)
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", transient_replace)
+    monkeypatch.setattr(storage, "_write_json", counted_write)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    assert save_result(result, settings) == result.experiment_id
+    assert replace_attempts == 3
+    assert delays == [0.01, 0.02]
+    assert writes == ["result.json", "config.json", "dataset_profile.json"]
+    assert load_result(result.experiment_id, settings) == result
+
+
+def test_windows_publish_stops_when_destination_appears_between_attempts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    destination = tmp_path / result.experiment_id
+    attempts = 0
+    delays: list[float] = []
+
+    def competing_publish(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        target.mkdir()
+        (target / "winner.txt").write_text("winner", encoding="utf-8")
+        raise PermissionError(5, "simulated race")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", competing_publish)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        save_result(result, settings)
+
+    assert attempts == 1
+    assert delays == []
+    assert (destination / "winner.txt").read_text(encoding="utf-8") == "winner"
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_windows_publish_does_not_retry_non_permission_errors(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    attempts = 0
+    delays: list[float] = []
+
+    def disk_failure(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", disk_failure)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(OSError, match="disk failure"):
+        save_result(result, settings)
+
+    assert attempts == 1
+    assert delays == []
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_non_windows_publish_does_not_retry_permission_errors(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    attempts = 0
+    delays: list[float] = []
+
+    def locked(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(5, "simulated non-Windows lock")
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", False, raising=False)
+    monkeypatch.setattr(Path, "replace", locked)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(PermissionError, match="non-Windows lock"):
+        save_result(result, settings)
+
+    assert attempts == 1
+    assert delays == []
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_windows_publish_preserves_sixth_permission_error(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    errors = [PermissionError(5, f"locked-{index}") for index in range(6)]
+    delays: list[float] = []
+
+    def always_locked(source: Path, target: Path) -> Path:
+        raise errors.pop(0)
+
+    monkeypatch.setattr(storage, "_IS_WINDOWS", True, raising=False)
+    monkeypatch.setattr(Path, "replace", always_locked)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    with pytest.raises(PermissionError, match="locked-5"):
+        save_result(result, settings)
+
+    assert errors == []
+    assert delays == [0.01, 0.02, 0.04, 0.08, 0.16]
     assert list(tmp_path.glob(".tmp-*")) == []
 
 
