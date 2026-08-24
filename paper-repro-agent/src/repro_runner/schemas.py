@@ -46,6 +46,16 @@ class ExperimentConfig(BaseModel):
     drop_duplicates: bool = False
 
 
+class RegressionTargetSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(ge=0)
+    minimum: float
+    maximum: float
+    mean: float
+    standard_deviation: float = Field(ge=0.0)
+
+
 class DatasetProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -57,6 +67,7 @@ class DatasetProfile(BaseModel):
     duplicate_rows: int = Field(ge=0)
     class_counts: dict[str, int] = Field(default_factory=dict)
     class_ratios: dict[str, float] = Field(default_factory=dict)
+    target_summary: RegressionTargetSummary | None = None
     column_names: list[str] = Field(default_factory=list)
     column_types: dict[str, str] = Field(default_factory=dict)
     numeric_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
@@ -94,6 +105,7 @@ class DatasetDiagnosticSummary(BaseModel):
     duplicate_rows: int = Field(ge=0)
     class_counts: dict[str, int] = Field(default_factory=dict)
     class_ratios: dict[str, float] = Field(default_factory=dict)
+    target_summary: RegressionTargetSummary | None = None
     column_names: list[str] = Field(default_factory=list)
     column_types: dict[str, str] = Field(default_factory=dict)
     numeric_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
