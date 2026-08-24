@@ -95,25 +95,29 @@ def load_dataset(
         allow_missing=options.missing_policy == "impute",
     )
     _validate_preprocessor_limits(prepared_frame, plan.feature_columns, settings)
+    if options.task_type == "binary_classification":
+        _validate_target_classes(prepared_frame[target_column])
+
+    profile_frame = prepared_frame.copy(deep=True)
+    if options.drop_duplicates:
+        prepared_frame = prepared_frame.drop_duplicates().reset_index(drop=True)
+
     if options.task_type == "regression":
         prepared_frame[target_column] = _prepare_regression_target(
             prepared_frame[target_column]
         )
-    else:
-        _validate_target_classes(prepared_frame[target_column])
 
     profile_warnings: list[str] = []
     profile = profile_dataset(
-        prepared_frame,
+        profile_frame,
         target_column,
         profile_warnings,
         task_type=options.task_type,
         effective_rows=len(prepared_frame),
         dataset_id=parsed.dataset_id,
+        regression_target=prepared_frame[target_column],
     )
 
-    if options.drop_duplicates:
-        prepared_frame = prepared_frame.drop_duplicates().reset_index(drop=True)
     profile.effective_rows = len(prepared_frame)
 
     return DatasetBundle(
@@ -200,6 +204,7 @@ def profile_dataset(
     task_type: TaskType = "binary_classification",
     effective_rows: int | None = None,
     dataset_id: str = "",
+    regression_target: pd.Series | None = None,
 ) -> DatasetProfile:
     """Return aggregate metadata only; never include source rows in the profile."""
     feature_columns = [column for column in frame.columns if column != target_column]
@@ -207,7 +212,9 @@ def profile_dataset(
         {} if task_type == "regression" else _class_counts(frame[target_column])
     )
     target_summary = (
-        _regression_target_summary(frame[target_column])
+        _regression_target_summary(
+            frame[target_column] if regression_target is None else regression_target
+        )
         if task_type == "regression"
         else None
     )

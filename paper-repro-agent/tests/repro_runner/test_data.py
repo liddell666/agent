@@ -315,6 +315,50 @@ def test_load_dataset_prepares_numeric_regression_target(settings):
     assert bundle.profile.target_summary.maximum == pytest.approx(42.5)
 
 
+def test_load_dataset_rejects_regression_below_minimum_after_deduplication(
+    settings,
+):
+    content = (
+        "x,target\n" + "".join(f"{index},{index + 0.5}\n" * 2 for index in range(10))
+    ).encode()
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(
+            content,
+            DatasetOptions(
+                task_type="regression",
+                target_column="target",
+                target_column_confirmed=True,
+                drop_duplicates=True,
+            ),
+            settings,
+        )
+
+    assert raised.value.code == "insufficient_regression_rows"
+
+
+def test_load_dataset_regression_summary_uses_effective_deduplicated_rows(
+    settings,
+):
+    content = (
+        "x,target\n" + "".join(f"{index},{index + 0.5}\n" * 2 for index in range(20))
+    ).encode()
+
+    bundle = load_dataset(
+        content,
+        DatasetOptions(
+            task_type="regression",
+            target_column="target",
+            target_column_confirmed=True,
+            drop_duplicates=True,
+        ),
+        settings,
+    )
+
+    assert bundle.profile.target_summary is not None
+    assert bundle.profile.target_summary.count == bundle.profile.effective_rows == 20
+
+
 def test_diagnose_dataset_rejects_unknown_exclude_column_safely():
     content = b"x1,label\n1,0\n2,0\n3,1\n4,1\n"
 
