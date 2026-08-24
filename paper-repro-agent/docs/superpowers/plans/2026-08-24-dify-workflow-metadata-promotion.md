@@ -1,5 +1,11 @@
 # Dify Workflow Metadata Promotion Implementation Plan
 
+> **Status:** Completed on 2026-08-24. Production workflow
+> `17ffb2a3-1034-4af5-9718-29be45f60b63` was independently verified against
+> the candidate graph and metadata identities. The final compatibility fix is
+> commit `7e70432`; exact release and rollback evidence is recorded in
+> `docs/release-workflow.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend the verified Dify release boundary to promote a workflow graph with its complete non-secret workflow metadata and then use it to publish the E2E-tested candidate to production safely.

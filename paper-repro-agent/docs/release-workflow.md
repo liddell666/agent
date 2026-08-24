@@ -190,11 +190,16 @@ for code running inside the Dify API container. Importing the module does not
 import Dify or open a database connection. `inspect_release_state(...)` accepts
 an injected service, validates the exact application ID before the first read,
 reads draft and published workflows once each, and returns canonical graph
-digests without saving, backing up, publishing, or rolling back anything.
+and workflow-metadata digests without saving, backing up, publishing, or
+rolling back anything. Metadata covers normalized features, environment
+variables, and conversation variables. Results and exceptions expose only
+digests, never variable values.
 
 All writes go through `publish_verified_graph(...)`. The caller must provide an
 `ExpectedReleaseIdentity` containing the application ID and the exact digest of
-the draft that was inspected. A caller may also pass the deterministic Task 5
+the draft that was inspected. Metadata-aware callers must also provide the
+exact inspected draft metadata digest and the candidate
+`WorkflowReleaseMetadata`. A caller may also pass the deterministic Task 5
 manifest as `release_manifest`. The adapter reconstructs it through
 `build_release_manifest(...)`, rejects non-canonical shapes, and requires its
 application ID and graph digest to match this release before the first service
@@ -204,21 +209,26 @@ returned unchanged in the release result. The operation then performs these
 calls in order:
 
 1. Read and validate the current draft and published workflow.
-2. Create a named, restorable backup of the current draft.
-3. Save the candidate graph and publish a named version.
-4. Read the active published workflow and compare its canonical digest with the
-   candidate digest.
+2. Create a named, restorable backup of the current draft and verify both its
+   graph and metadata identities.
+3. Save the candidate graph and complete workflow metadata, then publish a
+   named version. Dify/Pydantic variable models are serialized canonically for
+   identity and rehydrated through Dify's variable factory before saving.
+4. Read the active published workflow and compare its canonical graph and
+   metadata digests with the candidate identities.
 5. If saving, publishing, or post-publish verification fails, restore only the
-   recorded backup ID, publish that restored state, and verify its graph digest.
-   It never chooses a rollback target by version recency. On Dify versions that
-   expose the complete restore service, this also restores serialized RAG
-   variables and frozen agent-node bindings before the rollback is published.
+   recorded backup ID, publish that restored state, and verify its graph and
+   metadata digests. It never chooses a rollback target by version recency. On
+   Dify versions that expose the complete restore service, this also restores
+   serialized RAG variables and frozen agent-node bindings before the rollback
+   is published.
 
-The returned backup ID and graph digest are validated before the draft is
-saved. If graph validation fails but a usable backup ID was returned, the
-adapter immediately restores and verifies that exact ID. If no usable ID was
-returned, recovery cannot be targeted safely: the adapter raises an explicit
-unrecoverable backup-validation error and does not claim that rollback occurred.
+The returned backup ID, graph digest, and metadata digest are validated before
+the draft is saved. If backup validation fails but a usable backup ID was
+returned, the adapter immediately restores and verifies that exact ID. If no
+usable ID was returned, recovery cannot be targeted safely: the adapter raises
+an explicit unrecoverable backup-validation error and does not claim that
+rollback occurred.
 
 A successful result has `status: published` and records the backup and
 published workflow IDs. A recovered verification failure has
@@ -252,3 +262,28 @@ verification. A verification mismatch is reported as `rolled_back` with all
 three relevant workflow IDs. Never run `--apply` against an application ID
 other than the `APP_ID` declared in the updater, and do not copy service
 credentials, database contents, or exported graphs into the repository.
+
+## Production baseline 0.7.0 evidence
+
+The independently verified candidate was promoted on 2026-08-24 through the
+metadata-aware boundary above. The disposable promotion script and its exact
+container directory were deleted after verification.
+
+- Candidate app: `397fc669-c89b-4cfa-975d-2807495f7a5b`.
+- Candidate published workflow: `d94aec0e-7beb-41e6-8886-ee5e3da7e49b`.
+- Production app: `b9a766a0-0ad0-415b-8d42-60459c92bec7`.
+- Original production workflow: `94e00245-a1f8-48e3-aba6-41549ab75c6e`.
+- A first save attempt created backup
+  `250fe582-1765-44e6-8d9b-f303ad0ad0a9`, failed before candidate
+  publication, and restored the verified production state as
+  `e627cacb-dedf-490d-b13c-a6024e082cf6`.
+- The successful release created backup
+  `1d3a9781-7b72-4e5d-bdb4-a473006fccb0` and activated production workflow
+  `17ffb2a3-1034-4af5-9718-29be45f60b63` with no rollback workflow.
+- Verified graph digest:
+  `sha256:25834f464834cfd45ad6e9b9215416075a1850b576ba42e66decca88c0a9ed80`.
+- Verified metadata digest:
+  `sha256:97f0389ff657384392ff4c2ae8aa7ea94c2b9113fb8b4d6b83c0398d524b1d6a`.
+- Final independent readback found identical draft and published graph and
+  metadata digests. The repository suite passed with `546 passed` and the one
+  pre-existing Starlette/httpx deprecation warning.
