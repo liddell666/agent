@@ -36,7 +36,9 @@
 - Task 2 is complete in `120cc31` with boundary correction `11e99ca`.
 - Complete-suite investigation disproved `Path.rename` as an alternative to
   `Path.replace`; that experiment was reverted without a commit.
-- Task 3 below is the only remaining implementation task.
+- Task 3 is complete in `a2674d1`, with retry-race coverage in `440cfb9`.
+- Final review hardening exclusively claims file-update temporaries and tracks
+  cleanup ownership in `afc701a`.
 
 ### Task 1: Shorten Atomic File-Update Paths
 
@@ -396,7 +398,7 @@ git commit -m "fix: shorten atomic result staging paths"
 - Uses `_IS_WINDOWS = os.name == "nt"` and the fixed private delay tuple
   `_WINDOWS_PUBLISH_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16)`.
 
-- [ ] **Step 1: Add failing bounded-success and payload-write regressions**
+- [x] **Step 1: Add failing bounded-success and payload-write regressions**
 
 Import `time` in `tests/repro_runner/test_compare.py`. First add this test
 beside the existing staging and concurrency regressions. `raising=False` lets
@@ -437,7 +439,7 @@ def test_windows_publish_retries_transient_permission_errors_without_rewriting(
     assert load_result(result.experiment_id, settings) == result
 ```
 
-- [ ] **Step 2: Run the bounded-success test and verify RED**
+- [x] **Step 2: Run the bounded-success test and verify RED**
 
 Run:
 
@@ -448,7 +450,7 @@ python -m pytest tests/repro_runner/test_compare.py::test_windows_publish_retrie
 Expected: FAIL on the first simulated `PermissionError` because directory
 publication currently has no retry boundary.
 
-- [ ] **Step 3: Add stop-condition regressions**
+- [x] **Step 3: Add stop-condition regressions**
 
 Add four tests:
 
@@ -555,7 +557,7 @@ def test_windows_publish_preserves_sixth_permission_error(
     assert list(tmp_path.glob(".tmp-*")) == []
 ```
 
-- [ ] **Step 4: Run the stop-condition tests and verify RED**
+- [x] **Step 4: Run the stop-condition tests and verify RED**
 
 Run:
 
@@ -568,7 +570,7 @@ before the retry helper exists. The non-permission and non-Windows tests PASS
 as characterization evidence that their current immediate-propagation behavior
 must remain unchanged.
 
-- [ ] **Step 5: Implement the bounded Windows publication helper**
+- [x] **Step 5: Implement the bounded Windows publication helper**
 
 Add `import os` and `import time`, then add the platform flag and fixed delay
 tuple near
@@ -606,7 +608,7 @@ Replace only the final directory publication statement in `_save_payloads`:
 Do not modify `_write_json_atomic`; published-file replacement is outside the
 approved retry boundary.
 
-- [ ] **Step 6: Run new regressions and focused compatibility suites**
+- [x] **Step 6: Run new regressions and focused compatibility suites**
 
 Run:
 
@@ -618,7 +620,7 @@ python -m pytest tests/repro_runner/test_compare.py tests/repro_runner/test_api.
 Expected: all selected tests pass; only the existing Starlette/httpx warning is
 allowed in suites importing `TestClient`.
 
-- [ ] **Step 7: Run two fresh complete suites with default basetemp**
+- [x] **Step 7: Run two fresh complete suites with default basetemp**
 
 Run exactly, cleaning no repository files between runs:
 
@@ -632,7 +634,7 @@ Starlette/httpx deprecation warning is allowed. Two runs are required because
 the original `WinError 5` was intermittent and reproduced across repeated full
 suites.
 
-- [ ] **Step 8: Review scope and commit**
+- [x] **Step 8: Review scope and commit**
 
 Run:
 
