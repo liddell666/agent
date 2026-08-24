@@ -233,6 +233,34 @@ def test_regression_comparison_uses_natural_metric_values() -> None:
     assert item.absolute_difference == pytest.approx(abs(item.independent_value - 2.0))
 
 
+def test_regression_suite_keeps_classification_metric_as_uncompared_evidence() -> None:
+    result = make_regression_suite_result()
+
+    response = compare_suite_metrics(
+        result,
+        [
+            ReportedMetricInput(
+                name="roc_auc",
+                reported_value=0.9,
+                model="linear_regression",
+                dataset="test",
+                split="test",
+                dataset_id=DATASET_ID,
+                test_size=0.2,
+                random_state=42,
+                train_rows=32,
+                test_rows=8,
+                test_digest="sha256:" + "c" * 64,
+            )
+        ],
+    )
+
+    item = response.items[0]
+    assert item.independent_value is None
+    assert item.comparable is False
+    assert item.reason == "metric name is not supported"
+
+
 def test_comparison_reports_absolute_and_relative_difference():
     result = make_result(metric_name="roc_auc", value=0.90, dataset="test", split="test")
 
