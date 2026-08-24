@@ -2,6 +2,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import re
 from threading import Barrier
 from unittest.mock import patch
 
@@ -466,11 +467,29 @@ def test_suite_update_uses_short_temp_and_preserves_published_result_on_failure(
         update_suite_result(result, settings)
 
     assert len(replace_sources) == 1
-    assert replace_sources[0].startswith(".tmp-")
-    assert "result.json" not in replace_sources[0]
+    assert re.fullmatch(r"\.tmp-[0-9a-f]{16}", replace_sources[0])
     assert result_path.read_bytes() == original
     assert load_suite_result(result.experiment_id, settings) == result
     assert list(result_path.parent.glob(".tmp-*")) == []
+
+
+def test_atomic_json_write_preserves_replacement_error_when_cleanup_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "result.json"
+
+    def fail_replacement(source: Path, target: Path) -> Path:
+        raise PermissionError("simulated locked destination")
+
+    def fail_cleanup(path: Path, *, missing_ok: bool = False) -> None:
+        del missing_ok
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replacement)
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+
+    with pytest.raises(PermissionError, match="locked destination"):
+        storage._write_json_atomic(destination, {"status": "succeeded"})
 
 
 def test_old_result_without_split_provenance_loads_as_legacy_and_incomparable(tmp_path):

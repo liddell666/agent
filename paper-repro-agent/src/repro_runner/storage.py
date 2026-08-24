@@ -175,8 +175,10 @@ def _write_json_atomic(path: Path, payload: object) -> None:
         _write_json(temporary, payload)
         temporary.replace(path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _result_payload(result: ExperimentResult) -> dict[str, object]:
