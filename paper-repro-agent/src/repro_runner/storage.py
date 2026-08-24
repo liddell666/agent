@@ -36,46 +36,47 @@ def create_experiment_id() -> str:
 def save_result(result: ExperimentResult, settings: Settings) -> str:
     """Store only result metadata, configuration, and aggregate dataset profile."""
     experiment_id = _validate_experiment_id(result.experiment_id)
-    root = settings.storage_dir.resolve()
-    directory = _experiment_directory(experiment_id, settings)
-    temporary = root / f".{experiment_id}.{secrets.token_hex(8)}.tmp"
-    root.mkdir(parents=True, exist_ok=True)
-    if directory.exists():
-        raise FileExistsError("experiment result already exists")
-
-    temporary.mkdir()
-    try:
-        _write_json_atomic(temporary / "result.json", _result_payload(result))
-        _write_json_atomic(temporary / "config.json", _stored_config_payload(result))
-        _write_json_atomic(
-            temporary / "dataset_profile.json", _dataset_profile_payload(result)
-        )
-        temporary.replace(directory)
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    return experiment_id
+    return _save_payloads(
+        experiment_id=experiment_id,
+        settings=settings,
+        result_payload=_result_payload(result),
+        config_payload=_stored_config_payload(result),
+        dataset_profile_payload=_dataset_profile_payload(result),
+    )
 
 
 def save_suite_result(result: ExperimentSuiteResult, settings: Settings) -> str:
     """Store only the public suite result contract and aggregate metadata."""
     experiment_id = _validate_experiment_id(result.experiment_id)
+    return _save_payloads(
+        experiment_id=experiment_id,
+        settings=settings,
+        result_payload=_suite_result_payload(result),
+        config_payload=_stored_suite_config_payload(result),
+        dataset_profile_payload=_suite_dataset_profile_payload(result),
+    )
+
+
+def _save_payloads(
+    *,
+    experiment_id: str,
+    settings: Settings,
+    result_payload: object,
+    config_payload: object,
+    dataset_profile_payload: object,
+) -> str:
     root = settings.storage_dir.resolve()
     directory = _experiment_directory(experiment_id, settings)
-    temporary = root / f".{experiment_id}.{secrets.token_hex(8)}.tmp"
+    temporary = root / f".tmp-{secrets.token_hex(8)}"
     root.mkdir(parents=True, exist_ok=True)
     if directory.exists():
         raise FileExistsError("experiment result already exists")
 
     temporary.mkdir()
     try:
-        _write_json_atomic(temporary / "result.json", _suite_result_payload(result))
-        _write_json_atomic(
-            temporary / "config.json", _stored_suite_config_payload(result)
-        )
-        _write_json_atomic(
-            temporary / "dataset_profile.json", _suite_dataset_profile_payload(result)
-        )
+        _write_json(temporary / "result.json", result_payload)
+        _write_json(temporary / "config.json", config_payload)
+        _write_json(temporary / "dataset_profile.json", dataset_profile_payload)
         temporary.replace(directory)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -161,13 +162,17 @@ def _experiment_directory(experiment_id: str, settings: Settings) -> Path:
     return candidate
 
 
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
+
+
 def _write_json_atomic(path: Path, payload: object) -> None:
     temporary = path.with_name(f".tmp-{secrets.token_hex(8)}")
     try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
+        _write_json(temporary, payload)
         temporary.replace(path)
     finally:
         if temporary.exists():

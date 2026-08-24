@@ -1,5 +1,8 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
@@ -346,15 +349,98 @@ def test_storage_round_trip_writes_only_safe_result_artifacts(tmp_path):
 def test_storage_failure_does_not_publish_a_partial_experiment(tmp_path):
     result = make_result()
     settings = Settings(storage_dir=tmp_path)
-    real_write = storage._write_json_atomic
+    real_write = storage._write_json
 
-    with patch.object(storage, "_write_json_atomic", side_effect=[real_write, OSError("disk full")]):
+    with patch.object(storage, "_write_json", side_effect=[real_write, OSError("disk full")]):
         with pytest.raises(OSError, match="disk full"):
             save_result(result, settings)
 
     assert not (tmp_path / result.experiment_id).exists()
     with pytest.raises(ResultNotFoundError):
         load_result(result.experiment_id, settings)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path-boundary regression")
+def test_storage_operations_succeed_beyond_the_legacy_nested_temp_boundary(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = "a" * 16
+    single = make_result()
+    suite = make_suite_result()
+    legacy_tail = (
+        Path(f".{single.experiment_id}.{token}.tmp")
+        / f".dataset_profile.json.{token}.tmp"
+    )
+    fixed_length = len(str(tmp_path / "x" / legacy_tail)) - 1
+    padding_length = 262 - fixed_length
+    assert 1 <= padding_length <= 255
+    storage_root = tmp_path / ("x" * padding_length)
+    short_tail = Path(f".tmp-{token}") / "dataset_profile.json"
+
+    assert len(str(storage_root / legacy_tail)) == 262
+    assert len(str(storage_root / short_tail)) < 260
+    monkeypatch.setattr(storage.secrets, "token_hex", lambda _length: token)
+    settings = Settings(storage_dir=storage_root)
+
+    assert save_result(single, settings) == single.experiment_id
+    assert load_result(single.experiment_id, settings) == single
+    assert save_suite_result(suite, settings) == suite.experiment_id
+    assert load_suite_result(suite.experiment_id, settings) == suite
+    assert update_suite_result(suite, settings) == suite.experiment_id
+    assert list(storage_root.glob(".tmp-*")) == []
+
+
+def test_staged_result_failure_cleans_only_its_short_directory(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    real_write = storage._write_json
+    write_count = 0
+
+    def fail_second_write(path: Path, payload: object) -> None:
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise OSError("simulated disk full")
+        real_write(path, payload)
+
+    monkeypatch.setattr(storage, "_write_json", fail_second_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        save_result(result, settings)
+
+    assert not (tmp_path / result.experiment_id).exists()
+    assert list(tmp_path.glob(".tmp-*")) == []
+
+
+def test_concurrent_duplicate_saves_publish_exactly_one_complete_result(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_result()
+    settings = Settings(storage_dir=tmp_path)
+    first_write = Barrier(2)
+    real_write = storage._write_json
+
+    def synchronize_first_write(path: Path, payload: object) -> None:
+        if path.name == "result.json":
+            first_write.wait(timeout=5)
+        real_write(path, payload)
+
+    monkeypatch.setattr(storage, "_write_json", synchronize_first_write)
+    outcomes: list[object] = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(save_result, result, settings) for _ in range(2)]
+        for future in futures:
+            try:
+                outcomes.append(future.result(timeout=10))
+            except OSError as exc:
+                outcomes.append(exc)
+
+    assert sum(value == result.experiment_id for value in outcomes) == 1
+    assert sum(isinstance(value, OSError) for value in outcomes) == 1
+    assert load_result(result.experiment_id, settings) == result
+    assert list(tmp_path.glob(".tmp-*")) == []
 
 
 def test_suite_update_uses_short_temp_and_preserves_published_result_on_failure(
