@@ -190,14 +190,20 @@ def _write_json(path: Path, payload: object) -> None:
 
 def _write_json_atomic(path: Path, payload: object) -> None:
     temporary = path.with_name(f".tmp-{secrets.token_hex(8)}")
+    owns_temporary = False
     try:
-        _write_json(temporary, payload)
+        with temporary.open("x", encoding="utf-8") as handle:
+            owns_temporary = True
+            json.dump(payload, handle, ensure_ascii=False, indent=2, allow_nan=False)
         temporary.replace(path)
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+        owns_temporary = False
+    except Exception:
+        if owns_temporary:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 def _result_payload(result: ExperimentResult) -> dict[str, object]:

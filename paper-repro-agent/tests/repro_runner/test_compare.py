@@ -702,6 +702,57 @@ def test_suite_update_uses_short_temp_and_preserves_published_result_on_failure(
     assert list(result_path.parent.glob(".tmp-*")) == []
 
 
+def test_suite_update_rejects_preexisting_same_token_temp_without_touching_files(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_suite_result()
+    settings = Settings(storage_dir=tmp_path)
+    save_suite_result(result, settings)
+    result_path = tmp_path / result.experiment_id / "result.json"
+    original = result_path.read_bytes()
+    temporary = result_path.with_name(".tmp-" + "b" * 16)
+    sentinel = b"another writer owns this temporary file"
+    temporary.write_bytes(sentinel)
+    monkeypatch.setattr(storage.secrets, "token_hex", lambda _length: "b" * 16)
+
+    with pytest.raises(FileExistsError):
+        update_suite_result(result, settings)
+
+    assert temporary.read_bytes() == sentinel
+    assert result_path.read_bytes() == original
+
+
+def test_suite_update_does_not_delete_recreated_temp_after_successful_replace(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = make_suite_result()
+    updated = result.model_copy(
+        update={"paper_closeness_ranking": ["mlp", "random_forest"]}
+    )
+    settings = Settings(storage_dir=tmp_path)
+    save_suite_result(result, settings)
+    result_path = tmp_path / result.experiment_id / "result.json"
+    temporary = result_path.with_name(".tmp-" + "c" * 16)
+    recreated_by_second_writer = b"second writer owns this recreated path"
+    real_replace = Path.replace
+
+    def replace_then_recreate(source: Path, target: Path) -> Path:
+        replaced = real_replace(source, target)
+        if target == result_path:
+            source.write_bytes(recreated_by_second_writer)
+        return replaced
+
+    monkeypatch.setattr(storage.secrets, "token_hex", lambda _length: "c" * 16)
+    monkeypatch.setattr(Path, "replace", replace_then_recreate)
+
+    assert update_suite_result(updated, settings) == updated.experiment_id
+
+    assert temporary.read_bytes() == recreated_by_second_writer
+    assert json.loads(result_path.read_text(encoding="utf-8")) == storage._suite_result_payload(
+        updated
+    )
+
+
 def test_atomic_json_write_preserves_replacement_error_when_cleanup_fails(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
