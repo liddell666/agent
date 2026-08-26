@@ -439,6 +439,20 @@ class ExperimentSuiteResult(BaseModel):
     def require_matching_config_task_type(self) -> "ExperimentSuiteResult":
         if self.task_type != self.config.task_type:
             raise ValueError("task_type must match config.task_type")
+        expected_metrics_type = (
+            ExperimentMetrics
+            if self.task_type == "binary_classification"
+            else RegressionMetrics
+        )
+        for result in self.results:
+            if result.metrics is None:
+                if result.status == "succeeded":
+                    raise ValueError("succeeded results must include metrics")
+            elif not isinstance(result.metrics, expected_metrics_type):
+                raise ValueError(
+                    f"{self.task_type} results must use "
+                    f"{expected_metrics_type.__name__} metrics"
+                )
         return self
 
 

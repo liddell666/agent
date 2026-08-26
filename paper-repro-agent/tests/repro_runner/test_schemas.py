@@ -142,11 +142,84 @@ def test_suite_result_rejects_task_type_mismatch_with_config():
         ExperimentSuiteResult.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("config", "metrics", "message"),
+    [
+        (
+            ModelSuiteConfig(),
+            RegressionMetrics(mae=1.0, rmse=2.0, r2=0.3).model_dump(mode="json"),
+            "ExperimentMetrics",
+        ),
+        (
+            ModelSuiteConfig(task_type="regression"),
+            ExperimentMetrics(
+                roc_auc=0.8,
+                accuracy=0.8,
+                balanced_accuracy=0.8,
+                precision=0.8,
+                recall=0.8,
+                f1=0.8,
+                confusion_matrix=[[2, 0], [0, 2]],
+            ).model_dump(mode="json"),
+            "RegressionMetrics",
+        ),
+    ],
+)
+def test_suite_result_rejects_metrics_from_the_other_task(config, metrics, message):
+    payload = _suite_result_payload(config)
+    payload["results"] = [
+        {"model": "random_forest", "status": "succeeded", "metrics": metrics}
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        ExperimentSuiteResult.model_validate(payload)
+
+
+@pytest.mark.parametrize("config", [ModelSuiteConfig(), ModelSuiteConfig(task_type="regression")])
+def test_suite_result_rejects_succeeded_result_without_metrics(config):
+    payload = _suite_result_payload(config)
+    payload["results"] = [{"model": "random_forest", "status": "succeeded"}]
+
+    with pytest.raises(ValueError, match="succeeded.*metrics"):
+        ExperimentSuiteResult.model_validate(payload)
+
+
+def test_suite_result_accepts_task_appropriate_regression_metrics():
+    payload = _suite_result_payload(ModelSuiteConfig(task_type="regression"))
+    payload["results"] = [
+        {
+            "model": "random_forest",
+            "status": "succeeded",
+            "metrics": RegressionMetrics(mae=1.0, rmse=2.0, r2=0.3).model_dump(mode="json"),
+        }
+    ]
+
+    result = ExperimentSuiteResult.model_validate(payload)
+
+    assert isinstance(result.results[0].metrics, RegressionMetrics)
+
+
 def test_legacy_suite_result_omitting_config_and_suite_task_types_is_binary():
     payload = _suite_result_payload(ModelSuiteConfig())
     payload["config"].pop("task_type")
+    payload["results"] = [
+        {
+            "model": "random_forest",
+            "status": "succeeded",
+            "metrics": ExperimentMetrics(
+                roc_auc=0.8,
+                accuracy=0.8,
+                balanced_accuracy=0.8,
+                precision=0.8,
+                recall=0.8,
+                f1=0.8,
+                confusion_matrix=[[2, 0], [0, 2]],
+            ).model_dump(mode="json"),
+        }
+    ]
 
     result = ExperimentSuiteResult.model_validate(payload)
 
     assert result.config.task_type == "binary_classification"
     assert result.task_type == "binary_classification"
+    assert isinstance(result.results[0].metrics, ExperimentMetrics)
