@@ -324,6 +324,30 @@ Candidate release identity:
   The exact backup graph and metadata identities are stored in the ignored,
   privacy-safe `.live-artifacts/regression-candidate-verification.json` record.
 
+The recorded source digest is reproducible from the final candidate code state
+using the source files that directly generate or are read into the regression
+DSL: `scripts/build_regression_dsl.py`, `scripts/build_multimodel_dsl.py`,
+`dify/paper-comparison-workflow.yml`, `dify/paper-dossier-workflow.yml`,
+`dify/code/validate_evidence.py`, `dify/code/comparison_workflow.py`,
+`dify/code/experiment_workflow.py`, and `dify/code/validate_parser.py`.
+`workflow_release_integrity.source_digest` sorts their repository-relative
+POSIX paths, then feeds SHA-256 a length-prefixed path field followed by a
+length-prefixed raw-byte field for each file. The read-only final verification
+command is:
+
+```powershell
+python scripts/check_workflow_release.py `
+  --dsl dify/paper-comparison-regression-workflow.yml `
+  --source scripts/build_regression_dsl.py scripts/build_multimodel_dsl.py dify/paper-comparison-workflow.yml dify/paper-dossier-workflow.yml dify/code/validate_evidence.py dify/code/comparison_workflow.py dify/code/experiment_workflow.py dify/code/validate_parser.py `
+  --json
+```
+
+It returned `{"drift":[]}` with exit code `0`. The checker accepts optional
+draft and published graph snapshots, but none was retained locally for this
+repair. No snapshot was recreated from Dify because this documentation-only
+repair must not read or mutate the candidate service; the previously recorded
+candidate IDs and verified publication digests remain unchanged.
+
 Before safe use, require runner and Dify health, zero queued/running jobs, a
 configured DeepSeek provider, and a runner contract that exposes explicit
 regression `task_type`. Keep both candidate environment values in Dify secret
