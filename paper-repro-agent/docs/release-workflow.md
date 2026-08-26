@@ -343,10 +343,12 @@ python scripts/check_workflow_release.py `
 ```
 
 It returned `{"drift":[]}` with exit code `0`. The checker accepts optional
-draft and published graph snapshots, but none was retained locally for this
-repair. No snapshot was recreated from Dify because this documentation-only
-repair must not read or mutate the candidate service; the previously recorded
-candidate IDs and verified publication digests remain unchanged.
+draft and published graph snapshots. During the 2026-08-26 read-only evidence
+repair, the local Dify container engine was unavailable, so neither candidate
+snapshot could be fetched or retained and the snapshot-enabled checker was not
+run. That source-only clean result does not substantiate equality with the
+live draft or published graph; the previously recorded candidate IDs and
+publication digests remain unchanged.
 
 Before safe use, require runner and Dify health, zero queued/running jobs, a
 configured DeepSeek provider, and a runner contract that exposes explicit
