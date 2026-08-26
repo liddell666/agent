@@ -23,6 +23,12 @@ def _csv() -> bytes:
     return ("\n".join(rows) + "\n").encode()
 
 
+def _regression_csv() -> bytes:
+    rows = ["x1,x2,target"]
+    rows.extend(f"{index},{index / 10},{index + 2.5}" for index in range(1, 41))
+    return ("\n".join(rows) + "\n").encode()
+
+
 def _legacy_result(experiment_id: str) -> ExperimentResult:
     return ExperimentResult(
         experiment_id=experiment_id,
@@ -106,6 +112,51 @@ def test_run_model_suite_returns_result_and_persists_privacy_safe_artifacts(
     assert loaded.model_dump(mode="json") == body
     with pytest.raises(ResultFormatError):
         load_result(body["experiment_id"], Settings(storage_dir=tmp_path))
+
+
+def test_run_model_suite_accepts_explicit_regression(client: TestClient) -> None:
+    response = client.post(
+        "/v1/run-model-suite",
+        data={
+            "task_type": "regression",
+            "target_column": "target",
+            "models_json": '["linear_regression", "random_forest"]',
+            "optimization_metric": "rmse",
+            "cv_folds": "3",
+            "n_iter": "1",
+            "n_jobs": "1",
+        },
+        files={"file": ("regression.csv", _regression_csv(), "text/csv")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_type"] == "regression"
+    assert body["config"]["task_type"] == "regression"
+    assert set(body["results"][0]["metrics"]) == {"mae", "rmse", "r2"}
+
+
+def test_idempotency_does_not_replay_across_task_types(client: TestClient) -> None:
+    regression_request = {
+        "target_column": "target",
+        "cv_folds": "3",
+        "n_iter": "1",
+        "n_jobs": "1",
+        "idempotency_key": "same",
+    }
+    regression = client.post(
+        "/v1/run-model-suite",
+        data={**regression_request, "task_type": "regression"},
+        files={"file": ("regression.csv", _regression_csv(), "text/csv")},
+    )
+    binary = client.post(
+        "/v1/run-model-suite",
+        data={**regression_request, "task_type": "binary_classification"},
+        files={"file": ("regression.csv", _regression_csv(), "text/csv")},
+    )
+
+    assert regression.status_code == 200
+    assert binary.status_code == 409
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,8 @@ from repro_runner.schemas import (
     ExperimentSuiteResult,
     ModelRunResult,
     ModelSuiteConfig,
+    RegressionMetrics,
+    ReportedMetricInput,
     SuiteComparisonItem,
     SplitProvenance,
 )
@@ -133,6 +135,130 @@ def make_suite_result() -> ExperimentSuiteResult:
         ],
         performance_ranking=["random_forest", "mlp"],
     )
+
+
+def make_regression_suite_result() -> ExperimentSuiteResult:
+    return ExperimentSuiteResult(
+        experiment_id="exp-20260814T010203Z-regression",
+        status="succeeded",
+        task_type="regression",
+        config=ModelSuiteConfig(
+            task_type="regression",
+            models=["linear_regression", "random_forest"],
+            cv_folds=3,
+            n_iter=1,
+            n_jobs=1,
+        ),
+        dataset=DatasetProfile(
+            rows=40,
+            effective_rows=40,
+            features=2,
+            target="target",
+            missing_values=0,
+            duplicate_rows=0,
+            dataset_id=DATASET_ID,
+        ),
+        split_provenance=SplitProvenance(
+            test_size=0.2,
+            random_state=42,
+            train_rows=32,
+            test_rows=8,
+            test_digest="sha256:" + "c" * 64,
+        ),
+        results=[
+            ModelRunResult(
+                model="linear_regression",
+                status="succeeded",
+                metrics=RegressionMetrics(mae=1.0, rmse=1.5, r2=0.7),
+            ),
+            ModelRunResult(
+                model="random_forest",
+                status="succeeded",
+                metrics=RegressionMetrics(mae=1.2, rmse=2.5, r2=0.6),
+            ),
+        ],
+        performance_ranking=["linear_regression", "random_forest"],
+    )
+
+
+def test_legacy_suite_payload_defaults_to_binary_classification():
+    payload = make_suite_result().model_dump(mode="json")
+    payload["config"].pop("task_type", None)
+    payload.pop("task_type", None)
+
+    loaded = ExperimentSuiteResult.model_validate(payload)
+
+    assert loaded.config.task_type == "binary_classification"
+    assert loaded.task_type == "binary_classification"
+
+
+def test_regression_suite_storage_round_trip_is_privacy_safe(tmp_path) -> None:
+    result = make_regression_suite_result()
+    settings = Settings(storage_dir=tmp_path)
+
+    save_suite_result(result, settings)
+    loaded = load_suite_result(result.experiment_id, settings)
+    payload = json.loads((tmp_path / result.experiment_id / "result.json").read_text())
+
+    assert loaded == result
+    assert payload["task_type"] == "regression"
+    assert set(payload["results"][0]["metrics"]) == {"mae", "rmse", "r2"}
+    assert "raw_rows" not in json.dumps(payload)
+
+
+def test_legacy_classification_result_without_task_type_still_loads(tmp_path) -> None:
+    result = make_suite_result()
+    payload = storage._suite_result_payload(result)
+    payload.pop("task_type", None)
+    payload["config"].pop("task_type", None)
+    directory = tmp_path / result.experiment_id
+    directory.mkdir()
+    (directory / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_suite_result(result.experiment_id, Settings(storage_dir=tmp_path))
+
+    assert loaded.task_type == "binary_classification"
+
+
+def test_regression_comparison_uses_natural_metric_values() -> None:
+    result = make_regression_suite_result()
+
+    response = compare_suite_metrics(
+        result,
+        [ReportedMetricInput(name="RMSE", reported_value=2.0, model="random_forest")],
+    )
+
+    item = next(item for item in response.items if item.model == "random_forest")
+    assert item.independent_value >= 0
+    assert item.absolute_difference == pytest.approx(abs(item.independent_value - 2.0))
+
+
+def test_regression_suite_keeps_classification_metric_as_uncompared_evidence() -> None:
+    result = make_regression_suite_result()
+
+    response = compare_suite_metrics(
+        result,
+        [
+            ReportedMetricInput(
+                name="roc_auc",
+                reported_value=0.9,
+                model="linear_regression",
+                dataset="test",
+                split="test",
+                dataset_id=DATASET_ID,
+                test_size=0.2,
+                random_state=42,
+                train_rows=32,
+                test_rows=8,
+                test_digest="sha256:" + "c" * 64,
+            )
+        ],
+    )
+
+    item = response.items[0]
+    assert item.independent_value is None
+    assert item.comparable is False
+    assert item.reason == "metric name is not supported"
 
 
 def test_comparison_reports_absolute_and_relative_difference():

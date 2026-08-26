@@ -22,6 +22,8 @@ def create_manifest(
         raise ValueError("diagnostic dataset summary is required")
     if not diagnostic.valid:
         raise ValueError("diagnostic must be valid before creating a manifest")
+    if options.task_type != suite_config.task_type:
+        raise ValueError("options.task_type must match suite_config.task_type")
 
     available_columns = [column.name for column in diagnostic.columns]
     if not available_columns:
@@ -37,7 +39,9 @@ def create_manifest(
     if not plan.feature_columns:
         raise ValueError("manifest requires at least one feature column")
 
-    _validate_cv_feasibility(diagnostic, suite_config.cv_folds)
+    _validate_cv_feasibility(
+        diagnostic, suite_config.cv_folds, suite_config.task_type
+    )
     payload = {
         "comparison_mode": options.comparison_mode,
         "cv_folds": suite_config.cv_folds,
@@ -50,6 +54,7 @@ def create_manifest(
         "optimization_metric": suite_config.optimization_metric,
         "random_state": suite_config.random_state,
         "sampling_strategy": options.sampling_strategy,
+        "task_type": suite_config.task_type,
         "target_column": target_column,
         "test_size": suite_config.test_size,
         "threshold": suite_config.threshold,
@@ -76,11 +81,16 @@ def _resolve_target_column(
 
 
 def _validate_cv_feasibility(
-    diagnostic: DatasetDiagnosticResponse, cv_folds: int
+    diagnostic: DatasetDiagnosticResponse,
+    cv_folds: int,
+    task_type: str,
 ) -> None:
     if diagnostic.dataset is None:
         raise ValueError("diagnostic dataset summary is required")
-    if diagnostic.dataset.class_counts:
+    if task_type == "regression":
+        if diagnostic.dataset.effective_rows < cv_folds:
+            raise ValueError("cv_folds exceed the available effective rows")
+    elif diagnostic.dataset.class_counts:
         minority_class_size = min(diagnostic.dataset.class_counts.values())
         if minority_class_size < cv_folds:
             raise ValueError("cv_folds exceed the available minority-class rows")

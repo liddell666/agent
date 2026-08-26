@@ -287,3 +287,85 @@ container directory were deleted after verification.
 - Final independent readback found identical draft and published graph and
   metadata digests. The repository suite passed with `546 passed` and the one
   pre-existing Starlette/httpx deprecation warning.
+
+## Regression candidate 1.0.0 (candidate only)
+
+`Paper comparison Regression Candidate` is an isolated Dify workflow candidate.
+It is not production, has not been promoted, and is not fully accepted. The
+candidate was created and imported independently; no existing Dify application
+or one of the six user-owned DSL files was edited or published.
+
+The input contract is a two-step prepare/confirm flow. Prepare receives the
+synthetic paper PDF and a UTF-8 training CSV, forces `task_type=regression`, and
+builds a short-lived protocol token without returning raw document text or CSV
+rows. Run receives that token with `confirm_protocol=true`, target column
+`target`, and the confirmed bounded configuration. The acceptance configuration
+is `cv_folds=3`, `n_iter=1`, and the asynchronous runner's fixed `n_jobs=1`.
+Supported models are `linear_regression`, `random_forest`,
+`gradient_boosting`, and `xgboost`; reported metrics are MAE, RMSE, and R², with
+separate performance and paper-closeness rankings plus distinct strict-
+comparability and approximate-similarity conclusions.
+
+Candidate release identity:
+
+- App UUID: `17fe51d4-091f-4729-87ee-3c0a2e920918`.
+- Draft workflow UUID: `912d4e05-494c-4302-a189-788a59c6c0c2`.
+- Published workflow UUID: `6129249f-0ba5-46f9-9039-b7b5000dfbc4`.
+- Explicit rollback backup UUID: `0c9dcebc-ae9f-4963-bc67-5f25bedd8897`.
+- Graph digest:
+  `sha256:3a65b0a72c4f095c2c4ea8728d5abf844a14eb9640126ca210fad32fae1ac997`.
+- Metadata digest:
+  `sha256:97f0389ff657384392ff4c2ae8aa7ea94c2b9113fb8b4d6b83c0398d524b1d6a`.
+- Source digest:
+  `sha256:d809237d41cd183ba3f3711ff45a0de5d8a112851a01674b660969edcbbc6d6d`.
+- DSL digest:
+  `sha256:98354a1c21b7b613fa328500d266d5cfac90f681723d77b452bfa089302cee44`.
+- No rollback workflow was created after the successful verified publication.
+  The exact backup graph and metadata identities are stored in the ignored,
+  privacy-safe `.live-artifacts/regression-candidate-verification.json` record.
+
+The recorded source digest is reproducible from the final candidate code state
+using the source files that directly generate or are read into the regression
+DSL: `scripts/build_regression_dsl.py`, `scripts/build_multimodel_dsl.py`,
+`dify/paper-comparison-workflow.yml`, `dify/paper-dossier-workflow.yml`,
+`dify/code/validate_evidence.py`, `dify/code/comparison_workflow.py`,
+`dify/code/experiment_workflow.py`, and `dify/code/validate_parser.py`.
+`workflow_release_integrity.source_digest` sorts their repository-relative
+POSIX paths, then feeds SHA-256 a length-prefixed path field followed by a
+length-prefixed raw-byte field for each file. The read-only final verification
+command is:
+
+```powershell
+python scripts/check_workflow_release.py `
+  --dsl dify/paper-comparison-regression-workflow.yml `
+  --source scripts/build_regression_dsl.py scripts/build_multimodel_dsl.py dify/paper-comparison-workflow.yml dify/paper-dossier-workflow.yml dify/code/validate_evidence.py dify/code/comparison_workflow.py dify/code/experiment_workflow.py dify/code/validate_parser.py `
+  --json
+```
+
+It returned `{"drift":[]}` with exit code `0`. The checker accepts optional
+draft and published graph snapshots. During the 2026-08-26 read-only evidence
+repair, the local Dify container engine was unavailable, so neither candidate
+snapshot could be fetched or retained and the snapshot-enabled checker was not
+run. That source-only clean result does not substantiate equality with the
+live draft or published graph; the previously recorded candidate IDs and
+publication digests remain unchanged.
+
+Before safe use, require runner and Dify health, zero queued/running jobs, a
+configured DeepSeek provider, and a runner contract that exposes explicit
+regression `task_type`. Keep both candidate environment values in Dify secret
+fields, run only bounded inputs, inspect aggregate results, and never persist
+tokens, cookies, document text, CSV rows, or full request payloads as evidence.
+Rollback must target the exact backup UUID above; never select a version by
+recency.
+
+The controlled acceptance was not executed on 2026-08-24. Although the active
+runner was healthy, it was mounted from the older main checkout at commit
+`58fcd7b8c03f7e08410869133e94abafe533ac72`, whose installed
+`ExperimentManifest` has no `task_type` field. Submitting the synthetic fixtures
+could not exercise regression correctly. The shared runner was not switched,
+restarted, replaced, or otherwise mutated. Acceptance remains blocked until a
+separately authorized task-aware runner is deployed; after that gate passes,
+rerun the synthetic PDF/CSV acceptance and verify paper evidence values 1.5,
+2.0, and 0.80. Because the paper is synthetic, even a future successful run is
+a controlled regression-path check, not evidence that results generalize to
+real research papers or datasets.

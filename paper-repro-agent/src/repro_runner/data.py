@@ -8,6 +8,7 @@ import io
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from repro_runner.config import Settings
@@ -23,6 +24,8 @@ from repro_runner.schemas import (
     DatasetDiagnosticSummary,
     DatasetOptions,
     DatasetProfile,
+    RegressionTargetSummary,
+    TaskType,
     ValidationErrorItem,
 )
 
@@ -56,6 +59,7 @@ class DatasetBundle:
     target_column: str
     feature_columns: list[str]
     profile: DatasetProfile
+    task_type: TaskType = "binary_classification"
     warnings: list[str] = field(default_factory=list)
     sampling_strategy: str = "original"
     max_category_cardinality: int = 5000
@@ -65,7 +69,7 @@ class DatasetBundle:
 def load_dataset(
     content: bytes, options: DatasetOptions, settings: Settings
 ) -> DatasetBundle:
-    """Read a CSV, validate binary features, and return its profile."""
+    """Read a CSV, validate task-aware data, and return its profile."""
     parsed = _parse_csv(content, settings)
     frame = parsed.frame
     target_column = options.target_column or settings.default_target_column
@@ -83,15 +87,6 @@ def load_dataset(
     if not plan.feature_columns:
         raise DatasetError("missing_feature_columns", "at least one feature is required")
 
-    profile_warnings: list[str] = []
-    profile = profile_dataset(
-        frame,
-        target_column,
-        profile_warnings,
-        effective_rows=len(frame),
-        dataset_id=parsed.dataset_id,
-    )
-
     prepared_frame = frame.copy(deep=True)
     prepared_frame = _apply_missing_policy(prepared_frame, target_column, options)
     _validate_and_prepare_features(
@@ -100,10 +95,29 @@ def load_dataset(
         allow_missing=options.missing_policy == "impute",
     )
     _validate_preprocessor_limits(prepared_frame, plan.feature_columns, settings)
-    _validate_target_classes(prepared_frame[target_column])
+    if options.task_type == "binary_classification":
+        _validate_target_classes(prepared_frame[target_column])
 
+    profile_frame = prepared_frame.copy(deep=True)
     if options.drop_duplicates:
         prepared_frame = prepared_frame.drop_duplicates().reset_index(drop=True)
+
+    if options.task_type == "regression":
+        prepared_frame[target_column] = _prepare_regression_target(
+            prepared_frame[target_column]
+        )
+
+    profile_warnings: list[str] = []
+    profile = profile_dataset(
+        profile_frame,
+        target_column,
+        profile_warnings,
+        task_type=options.task_type,
+        effective_rows=len(prepared_frame),
+        dataset_id=parsed.dataset_id,
+        regression_target=prepared_frame[target_column],
+    )
+
     profile.effective_rows = len(prepared_frame)
 
     return DatasetBundle(
@@ -111,6 +125,7 @@ def load_dataset(
         target_column=target_column,
         feature_columns=plan.feature_columns,
         profile=profile,
+        task_type=options.task_type,
         warnings=profile_warnings,
         sampling_strategy=options.sampling_strategy,
         max_category_cardinality=min(
@@ -170,6 +185,7 @@ def diagnose_dataset(
             columns,
             dataset_id=parsed.dataset_id,
             target_column=confirmed_target,
+            task_type=options.task_type,
         ),
         columns=columns,
         target_candidates=candidates,
@@ -185,12 +201,23 @@ def profile_dataset(
     target_column: str,
     warnings: list[str],
     *,
+    task_type: TaskType = "binary_classification",
     effective_rows: int | None = None,
     dataset_id: str = "",
+    regression_target: pd.Series | None = None,
 ) -> DatasetProfile:
     """Return aggregate metadata only; never include source rows in the profile."""
     feature_columns = [column for column in frame.columns if column != target_column]
-    class_counts = _class_counts(frame[target_column])
+    class_counts = (
+        {} if task_type == "regression" else _class_counts(frame[target_column])
+    )
+    target_summary = (
+        _regression_target_summary(
+            frame[target_column] if regression_target is None else regression_target
+        )
+        if task_type == "regression"
+        else None
+    )
     rows = len(frame)
     duplicate_rows = int(frame.duplicated().sum())
     if duplicate_rows and "dataset contains duplicate rows" not in warnings:
@@ -213,6 +240,7 @@ def profile_dataset(
         duplicate_rows=duplicate_rows,
         class_counts=class_counts,
         class_ratios={label: count / rows for label, count in class_counts.items()},
+        target_summary=target_summary,
         column_names=[str(column) for column in frame.columns],
         column_types={str(column): str(frame[column].dtype) for column in frame.columns},
         numeric_ranges=numeric_ranges,
@@ -480,18 +508,64 @@ def _validate_target_classes(target: pd.Series) -> None:
         )
 
 
+def _prepare_regression_target(series: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.isna().any():
+        raise DatasetError(
+            "non_numeric_regression_target", "regression target must be numeric"
+        )
+    values = numeric.to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise DatasetError(
+            "non_finite_regression_target", "regression target must be finite"
+        )
+    if len(values) < 20:
+        raise DatasetError(
+            "insufficient_regression_rows", "regression requires at least 20 rows"
+        )
+    if np.unique(values).size < 2:
+        raise DatasetError(
+            "constant_regression_target", "regression target must vary"
+        )
+    return pd.Series(values, index=series.index, name=series.name)
+
+
+def _regression_target_summary(target: pd.Series) -> RegressionTargetSummary:
+    values = target.to_numpy(dtype=float)
+    return RegressionTargetSummary(
+        count=len(values),
+        minimum=float(np.min(values)),
+        maximum=float(np.max(values)),
+        mean=float(np.mean(values)),
+        standard_deviation=float(np.std(values, ddof=0)),
+    )
+
+
 def _diagnostic_summary(
     frame: pd.DataFrame,
     columns: list[ColumnProfile],
     *,
     dataset_id: str,
     target_column: str | None,
+    task_type: TaskType,
 ) -> DatasetDiagnosticSummary:
     rows = len(frame)
     duplicate_rows = int(frame.duplicated().sum())
     class_counts: dict[str, int] = {}
     class_ratios: dict[str, float] = {}
-    if target_column is not None and target_column in frame.columns:
+    target_summary: RegressionTargetSummary | None = None
+    if (
+        task_type == "regression"
+        and target_column is not None
+        and target_column in frame.columns
+    ):
+        try:
+            target_summary = _regression_target_summary(
+                _prepare_regression_target(frame[target_column])
+            )
+        except DatasetError:
+            pass
+    elif target_column is not None and target_column in frame.columns:
         class_counts = _class_counts(frame[target_column])
         if rows:
             class_ratios = {
@@ -516,6 +590,7 @@ def _diagnostic_summary(
         duplicate_rows=duplicate_rows,
         class_counts=class_counts,
         class_ratios=class_ratios,
+        target_summary=target_summary,
         column_names=[column.name for column in columns],
         column_types={column.name: column.inferred_type for column in columns},
         numeric_ranges=numeric_ranges,
@@ -566,7 +641,10 @@ def _diagnostic_errors(
             )
         )
     try:
-        _validate_target_classes(frame[confirmed_target])
+        if options.task_type == "regression":
+            _prepare_regression_target(frame[confirmed_target])
+        else:
+            _validate_target_classes(frame[confirmed_target])
     except DatasetError as exc:
         errors.append(ValidationErrorItem(code=exc.code, message=exc.message))
     return errors
@@ -586,12 +664,16 @@ def _recommended_options(
     feature_columns = [] if plan is None else list(plan.feature_columns)
     sampling_strategy = (
         "class_weight"
-        if any(flag.startswith("severe_class_imbalance:") for flag in flags)
+        if (
+            options.task_type == "binary_classification"
+            and any(flag.startswith("severe_class_imbalance:") for flag in flags)
+        )
         else options.sampling_strategy
     )
     return DatasetOptions(
         target_column=recommended_target,
         target_column_confirmed=confirmed_target is not None,
+        task_type=options.task_type,
         drop_duplicates=options.drop_duplicates,
         missing_policy=options.missing_policy,
         sampling_strategy=sampling_strategy,

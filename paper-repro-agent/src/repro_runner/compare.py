@@ -26,6 +26,9 @@ _SUPPORTED_METRICS = {
     "precision",
     "recall",
     "f1",
+    "mae",
+    "rmse",
+    "r2",
 }
 
 
@@ -87,6 +90,9 @@ def compare_suite_metrics(
     metric_values = {
         item.model: _metric_values_from_metrics(item.metrics) for item in successful_models
     }
+    available_metrics = {
+        metric_name for values in metric_values.values() for metric_name in values
+    }
     items = []
     items_by_reported_metric: list[tuple[ReportedMetricInput, list[SuiteComparisonItem]]] = []
     for metric in reported_metrics:
@@ -116,15 +122,21 @@ def compare_suite_metrics(
                 continue
         for model_result in selected_models:
             independent_value = metric_values[model_result.model].get(metric_key)
-            reason = _comparison_reason(
-                metric,
-                metric_key,
-                paper_value,
-                independent_value,
-                result.dataset.dataset_id,
-                result.split_provenance,
-                independent_threshold=result.config.threshold,
+            reason = (
+                None
+                if metric_key in available_metrics
+                else "metric name is not supported"
             )
+            if reason is None:
+                reason = _comparison_reason(
+                    metric,
+                    metric_key,
+                    paper_value,
+                    independent_value,
+                    result.dataset.dataset_id,
+                    result.split_provenance,
+                    independent_threshold=result.config.threshold,
+                )
             comparable = reason is None
             absolute_difference, relative_difference = _difference_fields(
                 paper_value, independent_value

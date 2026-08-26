@@ -5,12 +5,13 @@ from time import perf_counter
 from uuid import uuid4
 
 import numpy as np
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.model_selection import KFold, RandomizedSearchCV, StratifiedKFold
 
 from repro_runner.data import DatasetBundle
 from repro_runner.metrics import (
     NUMERIC_METRIC_NAMES,
     evaluate_classifier,
+    evaluate_regressor,
     feature_importances,
     mean_std_over_metrics,
 )
@@ -23,10 +24,12 @@ from repro_runner.schemas import (
     ModelRunResult,
     ModelSuiteConfig,
     PreprocessingSummary,
+    REGRESSION_METRIC_NAMES,
+    RegressionMetrics,
     SplitProvenance,
     ValidationErrorItem,
 )
-from repro_runner.split import ExperimentError, make_stratified_split, test_set_digest
+from repro_runner.split import ExperimentError, make_task_split, test_set_digest
 
 _SAFE_MISSING_DEPENDENCY_MESSAGES = frozenset(
     {
@@ -34,6 +37,16 @@ _SAFE_MISSING_DEPENDENCY_MESSAGES = frozenset(
         "lightgbm dependency is not installed",
     }
 )
+
+SCORERS = {
+    "roc_auc": "roc_auc",
+    "f1": "f1",
+    "recall": "recall",
+    "balanced_accuracy": "balanced_accuracy",
+    "mae": "neg_mean_absolute_error",
+    "rmse": "neg_root_mean_squared_error",
+    "r2": "r2",
+}
 
 
 def run_model_suite(
@@ -45,15 +58,20 @@ def run_model_suite(
 ) -> ExperimentSuiteResult:
     features = bundle.frame[bundle.feature_columns].copy(deep=True)
     target = bundle.frame[bundle.target_column].to_numpy()
-    classes = np.sort(np.unique(target))
+    classes = np.sort(np.unique(target)) if config.task_type == "binary_classification" else None
+    if config.task_type == "regression" and bundle.sampling_strategy != "original":
+        raise ExperimentError(
+            "invalid_sampling_strategy", "regression supports only original sampling"
+        )
     preprocessor = build_preprocessor(
         features,
         bundle.feature_columns,
         max_cardinality=bundle.max_category_cardinality,
         max_transformed_features=bundle.max_transformed_features,
     )
-    train_indices, test_indices = make_stratified_split(
+    train_indices, test_indices = make_task_split(
         target,
+        config.task_type,
         test_size=config.test_size,
         random_state=config.random_state,
     )
@@ -61,9 +79,13 @@ def run_model_suite(
     x_train = features.iloc[train_indices].reset_index(drop=True)
     x_test = features.iloc[test_indices].reset_index(drop=True)
     y_train, y_test = target[train_indices], target[test_indices]
-    training_class_counts = _training_class_counts(y_train)
-    _validate_cv_folds(training_class_counts, config.cv_folds)
-    _validate_nested_cv_folds(training_class_counts, config.cv_folds)
+    training_class_counts = (
+        _training_class_counts(y_train)
+        if config.task_type == "binary_classification"
+        else {}
+    )
+    _validate_cv_folds_for_task(y_train, config)
+    _validate_nested_cv_folds_for_task(y_train, config)
 
     split_provenance = SplitProvenance(
         test_size=config.test_size,
@@ -94,31 +116,22 @@ def run_model_suite(
                 training_class_counts,
                 random_state=config.random_state,
                 use_gpu=config.use_gpu,
+                task_type=config.task_type,
                 preprocessor=preprocessor,
                 sampling_strategy=bundle.sampling_strategy,
-            )
-            search = RandomizedSearchCV(
-                estimator=spec.estimator,
-                param_distributions=spec.search_space,
-                n_iter=config.n_iter,
-                scoring=config.optimization_metric,
-                cv=_make_inner_cv(config.cv_folds, config.random_state),
-                random_state=config.random_state,
-                n_jobs=config.n_jobs,
-                refit=True,
-                error_score="raise",
             )
             x_fit, y_fit = _resample_training_partition(
                 x_train, y_train, bundle.sampling_strategy, config.random_state
             )
-            search.fit(x_fit, y_fit)
-            best_estimator = search.best_estimator_
-            metrics = evaluate_classifier(
-                best_estimator,
-                x_test,
-                y_test,
-                classes,
-                config.threshold,
+            best_estimator, best_params, best_score = _fit_tuned_estimator(
+                spec,
+                x_fit,
+                y_fit,
+                config,
+                seed=config.random_state,
+            )
+            metrics = _evaluate_model(
+                best_estimator, x_test, y_test, classes, config
             )
             transformed_names = _transformed_names(
                 best_estimator, bundle.feature_columns
@@ -132,8 +145,11 @@ def run_model_suite(
                 ModelRunResult(
                     model=model_name,
                     status="succeeded",
-                    cv_best_score=round(float(search.best_score_), 6),
-                    best_params=_json_safe_value(search.best_params_),
+                    cv_best_score=_public_cv_score(
+                        best_score if best_score is not None else cv_mean[config.optimization_metric],
+                        config.optimization_metric,
+                    ),
+                    best_params=_json_safe_value(best_params),
                     metrics=metrics,
                     feature_importance=feature_importance,
                     fit_seconds=round(perf_counter() - started_at, 3),
@@ -184,7 +200,9 @@ def run_model_suite(
         dataset=bundle.profile,
         split_provenance=split_provenance,
         results=results,
-        performance_ranking=_performance_ranking(successful_results),
+        performance_ranking=_performance_ranking(
+            successful_results, config.optimization_metric
+        ),
         reproducibility_status="cv_evaluated",
         preprocessing=_preprocessing_summary(
             preprocessor,
@@ -205,26 +223,25 @@ def _cross_validate_model(
     model_name: str,
     x_train,
     y_train,
-    classes: np.ndarray,
+    classes: np.ndarray | None,
     config: ModelSuiteConfig,
     preprocessor,
     sampling_strategy: str,
     seeds: Sequence[int],
 ) -> tuple[dict[str, list[float]], dict[str, list[float]], dict[str, float], dict[str, float]]:
-    """Repeated stratified K-fold CV on the training partition.
+    """Repeated task-aware K-fold CV on the training partition.
 
     For every seed, stratify the training partition into ``cv_folds`` folds.
     Each fold tunes hyperparameters on its own training sub-fold and is scored
     on the held-out validation sub-fold.  Returns fold-level score lists,
     per-seed means, and pooled mean/std.
     """
-    all_fold_metrics: list[ExperimentMetrics] = []
-    seed_means: dict[str, list[float]] = {name: [] for name in NUMERIC_METRIC_NAMES}
+    metric_names = _metric_names(config.task_type)
+    all_fold_metrics: list[ExperimentMetrics | RegressionMetrics] = []
+    seed_means: dict[str, list[float]] = {name: [] for name in metric_names}
     for seed in seeds:
-        fold_metrics: list[ExperimentMetrics] = []
-        splitter = StratifiedKFold(
-            n_splits=config.cv_folds, shuffle=True, random_state=seed
-        )
+        fold_metrics: list[ExperimentMetrics | RegressionMetrics] = []
+        splitter = _make_cv(config.task_type, config.cv_folds, seed)
         for train_idx, val_idx in splitter.split(x_train, y_train):
             x_tr = x_train.iloc[train_idx]
             y_tr = y_train[train_idx]
@@ -233,35 +250,29 @@ def _cross_validate_model(
             )
             spec = get_model_spec(
                 model_name,
-                _training_class_counts(y_tr),
+                _training_class_counts(y_tr)
+                if config.task_type == "binary_classification"
+                else {},
                 random_state=seed,
                 use_gpu=config.use_gpu,
+                task_type=config.task_type,
                 preprocessor=preprocessor,
                 sampling_strategy=sampling_strategy,
             )
-            search = RandomizedSearchCV(
-                estimator=spec.estimator,
-                param_distributions=spec.search_space,
-                n_iter=config.n_iter,
-                scoring=config.optimization_metric,
-                cv=_make_inner_cv(config.cv_folds, seed),
-                random_state=seed,
-                n_jobs=config.n_jobs,
-                refit=True,
-                error_score="raise",
+            best_estimator, _, _ = _fit_tuned_estimator(
+                spec, x_tr, y_tr, config, seed=seed
             )
-            search.fit(x_tr, y_tr)
             fold_metrics.append(
-                evaluate_classifier(
-                    search.best_estimator_,
+                _evaluate_model(
+                    best_estimator,
                     x_train.iloc[val_idx],
                     y_train[val_idx],
                     classes,
-                    config.threshold,
+                    config,
                 )
             )
         seed_values = _collect_fold_scores(fold_metrics)
-        for name in NUMERIC_METRIC_NAMES:
+        for name in metric_names:
             seed_means[name].append(
                 _round_public(float(np.mean(seed_values[name])))
             )
@@ -272,12 +283,68 @@ def _cross_validate_model(
     return cv_fold_scores, seed_means, cv_mean, cv_std
 
 
+def _fit_tuned_estimator(spec, x_train, y_train, config: ModelSuiteConfig, *, seed: int):
+    if not spec.search_space:
+        return spec.estimator.fit(x_train, y_train), {}, None
+
+    search = RandomizedSearchCV(
+        estimator=spec.estimator,
+        param_distributions=spec.search_space,
+        n_iter=config.n_iter,
+        scoring=SCORERS[config.optimization_metric],
+        cv=_make_cv(config.task_type, config.cv_folds, seed),
+        random_state=seed,
+        n_jobs=config.n_jobs,
+        refit=True,
+        error_score="raise",
+    )
+    search.fit(x_train, y_train)
+    return search.best_estimator_, search.best_params_, float(search.best_score_)
+
+
+def _evaluate_model(
+    estimator,
+    x_test,
+    y_test,
+    classes: np.ndarray | None,
+    config: ModelSuiteConfig,
+) -> ExperimentMetrics | RegressionMetrics:
+    if config.task_type == "regression":
+        return evaluate_regressor(estimator, x_test, y_test)
+    assert classes is not None
+    assert config.threshold is not None
+    return evaluate_classifier(estimator, x_test, y_test, classes, config.threshold)
+
+
+def _metric_names(task_type: str) -> tuple[str, ...]:
+    if task_type == "regression":
+        return REGRESSION_METRIC_NAMES
+    return NUMERIC_METRIC_NAMES
+
+
+def _metric_names_for_metrics(
+    metrics: ExperimentMetrics | RegressionMetrics,
+) -> tuple[str, ...]:
+    if isinstance(metrics, RegressionMetrics):
+        return REGRESSION_METRIC_NAMES
+    return NUMERIC_METRIC_NAMES
+
+
+def _public_cv_score(score: float, optimization_metric: str) -> float:
+    if optimization_metric in {"mae", "rmse"}:
+        score = abs(score)
+    return _round_public(score)
+
+
 def _collect_fold_scores(
-    metrics_list: Sequence[ExperimentMetrics],
+    metrics_list: Sequence[ExperimentMetrics | RegressionMetrics],
 ) -> dict[str, list[float]]:
-    collected: dict[str, list[float]] = {name: [] for name in NUMERIC_METRIC_NAMES}
+    if not metrics_list:
+        return {}
+    names = _metric_names_for_metrics(metrics_list[0])
+    collected: dict[str, list[float]] = {name: [] for name in names}
     for metrics in metrics_list:
-        for name in NUMERIC_METRIC_NAMES:
+        for name in names:
             collected[name].append(float(getattr(metrics, name)))
     return collected
 
@@ -307,7 +374,9 @@ def _resample_training_partition(x, y, sampling_strategy: str, seed: int):
     return x.iloc[keep].reset_index(drop=True), y[keep]
 
 
-def _make_inner_cv(cv_folds: int, seed: int) -> StratifiedKFold:
+def _make_cv(task_type: str, cv_folds: int, seed: int) -> StratifiedKFold | KFold:
+    if task_type == "regression":
+        return KFold(n_splits=cv_folds, shuffle=True, random_state=seed)
     return StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=seed)
 
 
@@ -339,6 +408,31 @@ def _validate_nested_cv_folds(class_counts: Mapping[str, int], cv_folds: int) ->
             "invalid_nested_cv_folds",
             "the requested cross-validation folds cannot be represented by nested training partitions",
         )
+
+
+def _validate_cv_folds_for_task(target: np.ndarray, config: ModelSuiteConfig) -> None:
+    if config.task_type == "regression":
+        if len(target) < config.cv_folds:
+            raise ExperimentError(
+                "invalid_cv_folds",
+                "the requested cross-validation folds cannot be represented by the training partition",
+            )
+        return
+    _validate_cv_folds(_training_class_counts(target), config.cv_folds)
+
+
+def _validate_nested_cv_folds_for_task(
+    target: np.ndarray, config: ModelSuiteConfig
+) -> None:
+    if config.task_type == "regression":
+        outer = _make_cv(config.task_type, config.cv_folds, config.random_state)
+        if min(len(train_idx) for train_idx, _ in outer.split(target)) < config.cv_folds:
+            raise ExperimentError(
+                "invalid_nested_cv_folds",
+                "the requested cross-validation folds cannot be represented by nested training partitions",
+            )
+        return
+    _validate_nested_cv_folds(_training_class_counts(target), config.cv_folds)
 
 
 def _unwrap_feature_estimator(estimator):
@@ -377,14 +471,19 @@ def _preprocessing_summary(
     )
 
 
-def _performance_ranking(results: Sequence[ModelRunResult]) -> list[str]:
+def _performance_ranking(
+    results: Sequence[ModelRunResult], optimization_metric: str
+) -> list[str]:
+    reverse = optimization_metric == "r2" or optimization_metric in {
+        "roc_auc",
+        "f1",
+        "recall",
+        "balanced_accuracy",
+    }
     ranked = sorted(
         results,
-        key=lambda result: (
-            -float(result.metrics.roc_auc),
-            -float(result.metrics.f1),
-            -float(result.metrics.recall),
-        ),
+        key=lambda result: float(getattr(result.metrics, optimization_metric)),
+        reverse=reverse,
     )
     return [result.model for result in ranked]
 

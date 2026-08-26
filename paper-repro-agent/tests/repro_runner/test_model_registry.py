@@ -27,6 +27,60 @@ def test_registry_contains_all_requested_models():
     )
 
 
+@pytest.mark.parametrize(
+    ("name", "expected_class"),
+    [
+        ("linear_regression", "LinearRegression"),
+        ("random_forest", "RandomForestRegressor"),
+        ("gradient_boosting", "GradientBoostingRegressor"),
+    ],
+)
+def test_regression_registry_builds_task_specific_estimators(name, expected_class):
+    preprocessor = build_preprocessor(
+        pd.DataFrame({"feature": [1.0, 2.0]}), ["feature"]
+    )
+
+    spec = model_registry.get_model_spec(
+        name,
+        {},
+        task_type="regression",
+        random_state=11,
+        use_gpu=False,
+        preprocessor=preprocessor,
+        sampling_strategy="original",
+    )
+
+    assert spec.estimator.named_steps["model"].__class__.__name__ == expected_class
+
+
+def test_same_model_name_resolves_by_task():
+    preprocessor = build_preprocessor(
+        pd.DataFrame({"feature": [1.0, 2.0]}), ["feature"]
+    )
+
+    classifier = model_registry.get_model_spec(
+        "random_forest",
+        {"0": 20, "1": 20},
+        task_type="binary_classification",
+        random_state=1,
+        use_gpu=False,
+        preprocessor=preprocessor,
+        sampling_strategy="original",
+    )
+    regressor = model_registry.get_model_spec(
+        "random_forest",
+        {},
+        task_type="regression",
+        random_state=1,
+        use_gpu=False,
+        preprocessor=preprocessor,
+        sampling_strategy="original",
+    )
+
+    assert classifier.estimator.named_steps["model"].__class__.__name__ == "RandomForestClassifier"
+    assert regressor.estimator.named_steps["model"].__class__.__name__ == "RandomForestRegressor"
+
+
 @pytest.mark.parametrize("name", ("logistic_regression", "svm", "knn", "mlp"))
 def test_scaled_models_build_pipelines_with_non_empty_search_spaces(name):
     spec = model_registry.get_model_spec(

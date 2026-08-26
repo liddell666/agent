@@ -8,6 +8,16 @@ from repro_runner.schemas import DatasetOptions, ExperimentConfig
 
 
 CSV = Path(r"E:\论文复现\成果\2training_samples_15180.csv")
+FIXTURES = Path(__file__).parents[1] / "fixtures"
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings()
+
+
+def _fixture(name: str) -> bytes:
+    return (FIXTURES / name).read_bytes()
 
 
 def test_defaults_match_v2_contract():
@@ -230,6 +240,123 @@ def test_diagnose_dataset_accepts_explicit_target_column():
     assert response.dataset is not None
     assert response.dataset.target == "label"
     assert response.errors == []
+
+
+def test_diagnose_dataset_recommendation_preserves_explicit_regression_task():
+    content = (
+        "x1,label\n"
+        + "".join(f"{index},0\n" for index in range(17))
+        + "".join(f"{index},1\n" for index in range(17, 20))
+    ).encode()
+
+    response = diagnose_dataset(
+        content,
+        DatasetOptions(
+            task_type="regression",
+            target_column="label",
+            target_column_confirmed=True,
+        ),
+        Settings(),
+    )
+
+    assert response.recommended_options is not None
+    assert response.recommended_options.task_type == "regression"
+    assert response.recommended_options.sampling_strategy == "original"
+
+
+def test_regression_diagnosis_returns_only_aggregate_target_summary(settings):
+    options = DatasetOptions(
+        task_type="regression", target_column="target", target_column_confirmed=True
+    )
+    result = diagnose_dataset(_fixture("regression_mixed.csv"), options, settings)
+
+    assert result.valid is True
+    assert result.dataset is not None
+    assert result.dataset.class_counts == {}
+    assert result.dataset.target_summary is not None
+    assert result.dataset.target_summary.count == 40
+    assert result.dataset.target_summary.minimum == pytest.approx(3.5)
+    serialized = result.model_dump_json()
+    assert "region-a" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("content", "code"),
+    [
+        (_fixture("regression_invalid_target.csv"), "non_numeric_regression_target"),
+        (b"x,target\n" + b"1,5\n2,5\n" * 10, "constant_regression_target"),
+    ],
+)
+def test_regression_diagnosis_rejects_invalid_targets(content, code, settings):
+    options = DatasetOptions(
+        task_type="regression", target_column="target", target_column_confirmed=True
+    )
+    result = diagnose_dataset(content, options, settings)
+
+    assert result.valid is False
+    assert code in [item.code for item in result.errors]
+
+
+def test_load_dataset_prepares_numeric_regression_target(settings):
+    bundle = load_dataset(
+        _fixture("regression_mixed.csv"),
+        DatasetOptions(
+            task_type="regression",
+            target_column="target",
+            target_column_confirmed=True,
+        ),
+        settings,
+    )
+
+    assert bundle.task_type == "regression"
+    assert bundle.frame["target"].dtype.kind == "f"
+    assert bundle.profile.class_counts == {}
+    assert bundle.profile.target_summary is not None
+    assert bundle.profile.target_summary.maximum == pytest.approx(42.5)
+
+
+def test_load_dataset_rejects_regression_below_minimum_after_deduplication(
+    settings,
+):
+    content = (
+        "x,target\n" + "".join(f"{index},{index + 0.5}\n" * 2 for index in range(10))
+    ).encode()
+
+    with pytest.raises(DatasetError) as raised:
+        load_dataset(
+            content,
+            DatasetOptions(
+                task_type="regression",
+                target_column="target",
+                target_column_confirmed=True,
+                drop_duplicates=True,
+            ),
+            settings,
+        )
+
+    assert raised.value.code == "insufficient_regression_rows"
+
+
+def test_load_dataset_regression_summary_uses_effective_deduplicated_rows(
+    settings,
+):
+    content = (
+        "x,target\n" + "".join(f"{index},{index + 0.5}\n" * 2 for index in range(20))
+    ).encode()
+
+    bundle = load_dataset(
+        content,
+        DatasetOptions(
+            task_type="regression",
+            target_column="target",
+            target_column_confirmed=True,
+            drop_duplicates=True,
+        ),
+        settings,
+    )
+
+    assert bundle.profile.target_summary is not None
+    assert bundle.profile.target_summary.count == bundle.profile.effective_rows == 20
 
 
 def test_diagnose_dataset_rejects_unknown_exclude_column_safely():

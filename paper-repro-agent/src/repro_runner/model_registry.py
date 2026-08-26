@@ -5,8 +5,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from sklearn.base import clone
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import (
+    GradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
@@ -24,6 +28,26 @@ _MODEL_NAMES: tuple[str, ...] = (
     "knn",
     "mlp",
 )
+
+REGRESSION_SEARCH_SPACES: dict[str, dict[str, list[Any]]] = {
+    "linear_regression": {},
+    "random_forest": {
+        "model__n_estimators": [100, 200],
+        "model__max_depth": [None, 6, 12],
+        "model__min_samples_leaf": [1, 2, 4],
+    },
+    "gradient_boosting": {
+        "model__n_estimators": [100, 200],
+        "model__learning_rate": [0.03, 0.1],
+        "model__max_depth": [2, 3],
+    },
+    "xgboost": {
+        "model__n_estimators": [100, 200],
+        "model__learning_rate": [0.03, 0.1],
+        "model__max_depth": [3, 6],
+        "model__subsample": [0.8, 1.0],
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +69,17 @@ def get_model_spec(
     random_state: int,
     use_gpu: bool,
     *,
+    task_type: str = "binary_classification",
     preprocessor=None,
     sampling_strategy: str | None = None,
 ) -> ModelSpec:
     _validate_sampling_strategy(sampling_strategy)
+    if task_type not in {"binary_classification", "regression"}:
+        raise ValueError("unsupported_task_type")
+    if task_type == "regression" and sampling_strategy != "original":
+        raise ValueError("unsupported_sampling_strategy")
     try:
-        factory = _MODEL_FACTORIES[name]
+        factory = _MODEL_FACTORIES[task_type][name]
     except KeyError as exc:
         raise ValueError(f"unknown model name: {name}") from exc
     return factory(
@@ -290,6 +319,99 @@ def _mlp_spec(
     )
 
 
+def _linear_regression_spec(
+    class_counts: Mapping[str, int],
+    random_state: int,
+    use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
+) -> ModelSpec:
+    del class_counts, random_state, use_gpu, sampling_strategy
+    return ModelSpec(
+        name="linear_regression",
+        estimator=_model_pipeline(
+            LinearRegression(), preprocessor=preprocessor, scale=True
+        ),
+        search_space={},
+        optional_dependency=None,
+        feature_importance_kind="coef",
+    )
+
+
+def _random_forest_regressor_spec(
+    class_counts: Mapping[str, int],
+    random_state: int,
+    use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
+) -> ModelSpec:
+    del class_counts, use_gpu, sampling_strategy
+    return ModelSpec(
+        name="random_forest",
+        estimator=_model_pipeline(
+            RandomForestRegressor(
+                n_estimators=100, n_jobs=-1, random_state=random_state
+            ),
+            preprocessor=preprocessor,
+            scale=False,
+        ),
+        search_space=_regression_search_space("random_forest", preprocessor),
+        optional_dependency=None,
+        feature_importance_kind="tree",
+    )
+
+
+def _gradient_boosting_regressor_spec(
+    class_counts: Mapping[str, int],
+    random_state: int,
+    use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
+) -> ModelSpec:
+    del class_counts, use_gpu, sampling_strategy
+    return ModelSpec(
+        name="gradient_boosting",
+        estimator=_model_pipeline(
+            GradientBoostingRegressor(random_state=random_state),
+            preprocessor=preprocessor,
+            scale=False,
+        ),
+        search_space=_regression_search_space("gradient_boosting", preprocessor),
+        optional_dependency=None,
+        feature_importance_kind="tree",
+    )
+
+
+def _xgboost_regressor_spec(
+    class_counts: Mapping[str, int],
+    random_state: int,
+    use_gpu: bool,
+    preprocessor,
+    sampling_strategy: str | None,
+) -> ModelSpec:
+    del class_counts, sampling_strategy
+    try:
+        from xgboost import XGBRegressor
+    except ImportError as exc:
+        raise ImportError("xgboost dependency is not installed") from exc
+
+    return ModelSpec(
+        name="xgboost",
+        estimator=_model_pipeline(
+            XGBRegressor(
+                objective="reg:squarederror",
+                tree_method="hist",
+                random_state=random_state,
+                n_jobs=4,
+                device="cuda" if use_gpu else "cpu",
+            ),
+            preprocessor=preprocessor,
+            scale=False,
+        ),
+        search_space=_regression_search_space("xgboost", preprocessor),
+        optional_dependency="xgboost",
+        feature_importance_kind="tree",
+    )
 def _model_pipeline(estimator, *, preprocessor, scale: bool):
     steps = []
     if preprocessor is not None:
@@ -308,6 +430,13 @@ def _model_search_space(
     if preprocessor is None:
         return values
     return {f"model__{key}": options for key, options in values.items()}
+
+
+def _regression_search_space(name: str, preprocessor) -> dict[str, list[Any]]:
+    values = REGRESSION_SEARCH_SPACES[name]
+    if preprocessor is not None:
+        return values
+    return {key.removeprefix("model__"): options for key, options in values.items()}
 
 
 def _validate_sampling_strategy(sampling_strategy: str | None) -> None:
@@ -354,11 +483,19 @@ def _binary_label_counts(class_counts: Mapping[str, int]) -> tuple[int, int]:
 
 
 _MODEL_FACTORIES = {
-    "logistic_regression": _logistic_regression_spec,
-    "random_forest": _random_forest_spec,
-    "xgboost": _xgboost_spec,
-    "lightgbm": _lightgbm_spec,
-    "svm": _svm_spec,
-    "knn": _knn_spec,
-    "mlp": _mlp_spec,
+    "binary_classification": {
+        "logistic_regression": _logistic_regression_spec,
+        "random_forest": _random_forest_spec,
+        "xgboost": _xgboost_spec,
+        "lightgbm": _lightgbm_spec,
+        "svm": _svm_spec,
+        "knn": _knn_spec,
+        "mlp": _mlp_spec,
+    },
+    "regression": {
+        "linear_regression": _linear_regression_spec,
+        "random_forest": _random_forest_regressor_spec,
+        "gradient_boosting": _gradient_boosting_regressor_spec,
+        "xgboost": _xgboost_regressor_spec,
+    },
 }

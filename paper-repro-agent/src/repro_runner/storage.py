@@ -14,7 +14,11 @@ import time
 from pydantic import ValidationError
 
 from repro_runner.config import Settings
-from repro_runner.schemas import ExperimentResult, ExperimentSuiteResult
+from repro_runner.schemas import (
+    ExperimentResult,
+    ExperimentSuiteResult,
+    RegressionMetrics,
+)
 from repro_runner import __version__
 
 
@@ -273,6 +277,7 @@ def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
     payload: dict[str, object] = {
         "experiment_id": result.experiment_id,
         "status": result.status,
+        "task_type": result.task_type,
         "config": _suite_config_payload(result),
         "dataset": _suite_dataset_profile_payload(result),
         "split_provenance": _split_provenance_payload(result),
@@ -298,6 +303,7 @@ def _suite_result_payload(result: ExperimentSuiteResult) -> dict[str, object]:
 def _suite_config_payload(result: ExperimentSuiteResult) -> dict[str, object]:
     config = result.config
     return {
+        "task_type": config.task_type,
         "models": list(config.models),
         "test_size": config.test_size,
         "random_state": config.random_state,
@@ -349,15 +355,7 @@ def _split_provenance_payload(result: ExperimentSuiteResult) -> dict[str, object
 def _model_run_payload(item) -> dict[str, object]:
     metrics = None
     if item.metrics is not None:
-        metrics = {
-            "roc_auc": item.metrics.roc_auc,
-            "accuracy": item.metrics.accuracy,
-            "balanced_accuracy": item.metrics.balanced_accuracy,
-            "precision": item.metrics.precision,
-            "recall": item.metrics.recall,
-            "f1": item.metrics.f1,
-            "confusion_matrix": item.metrics.confusion_matrix,
-        }
+        metrics = _metrics_payload(item.metrics)
     error = None
     if item.error is not None:
         error = {"code": item.error.code, "message": item.error.message}
@@ -388,4 +386,18 @@ def _model_run_payload(item) -> dict[str, object]:
         "cv_std": item.cv_std,
         "cv_fold_scores": item.cv_fold_scores,
         "seed_means": item.seed_means,
+    }
+
+
+def _metrics_payload(metrics) -> dict[str, object]:
+    if isinstance(metrics, RegressionMetrics):
+        return {"mae": metrics.mae, "rmse": metrics.rmse, "r2": metrics.r2}
+    return {
+        "roc_auc": metrics.roc_auc,
+        "accuracy": metrics.accuracy,
+        "balanced_accuracy": metrics.balanced_accuracy,
+        "precision": metrics.precision,
+        "recall": metrics.recall,
+        "f1": metrics.f1,
+        "confusion_matrix": metrics.confusion_matrix,
     }

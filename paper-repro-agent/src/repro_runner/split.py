@@ -36,6 +36,21 @@ def make_stratified_split(
         ) from exc
 
 
+def make_task_split(
+    target: np.ndarray, task_type: str, test_size: float, random_state: int
+) -> tuple[np.ndarray, np.ndarray]:
+    if task_type == "binary_classification":
+        return make_stratified_split(target, test_size, random_state)
+    try:
+        return train_test_split(
+            np.arange(len(target)), test_size=test_size, random_state=random_state
+        )
+    except ValueError as exc:
+        raise ExperimentError(
+            "invalid_split", "the requested regression split is not feasible"
+        ) from exc
+
+
 def test_set_digest(bundle: DatasetBundle, test_indices: np.ndarray) -> str:
     """Hash held-out feature rows plus labels without retaining their contents."""
     columns = [*bundle.feature_columns, bundle.target_column]

@@ -62,6 +62,23 @@ def test_normalize_metric_name(name, expected):
 
 
 @pytest.mark.parametrize(
+    ("label", "normalized"),
+    [
+        ("MAE", "mae"),
+        ("mean absolute error", "mae"),
+        ("\u5e73\u5747\u7edd\u5bf9\u8bef\u5dee", "mae"),
+        ("RMSE", "rmse"),
+        ("\u5747\u65b9\u6839\u8bef\u5dee", "rmse"),
+        ("R²", "r2"),
+        ("coefficient of determination", "r2"),
+        ("\u51b3\u5b9a\u7cfb\u6570", "r2"),
+    ],
+)
+def test_regression_metric_aliases(label, normalized):
+    assert normalize_metric_name(label) == normalized
+
+
+@pytest.mark.parametrize(
     ("name", "expected_model"),
     [
         ("AUC (best performance)", None),

@@ -26,9 +26,11 @@ You extract a reproducibility dossier from one parsed research paper. Your outpu
 - `title`: paper title as printed; otherwise `"uncertain"` and a gap.
 - `research_problem`: concise statement supported by the paper.
 - `task_type`: concise task label supported by the paper; otherwise `"uncertain"`.
+- Regression task-type guard: emit `task_type="regression"` only when paper evidence explicitly identifies a continuous-target regression problem; emit `task_type="uncertain"` otherwise.
 - `datasets`: datasets actually used, not merely cited related work.
 - `methods`: the proposed method and material baselines/settings needed to understand reproduction.
 - `metrics`: paper-reported evaluation results. Keep separate objects when dataset or split differs.
+- Regression metric aliases: normalize MAE or Mean Absolute Error to `mae`, RMSE or Root Mean Squared Error to `rmse`, and R², R2, R-squared, or Coefficient of Determination to `r2`. Preserve the paper-reported numeric value exactly.
 - `gaps`: actionable missing or ambiguous reproduction information, including unavailable code, data splits, preprocessing, hyperparameters, seeds, hardware, or evaluation details.
 
 Write descriptions and gaps in `target_language`. Do not translate proper nouns, dataset names, model names, metric names, code identifiers, or reported values.
