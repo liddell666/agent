@@ -240,11 +240,13 @@ async def parse_dossier_upload(
 async def validate_dataset(
     file: Annotated[UploadFile, File()],
     target_column: Annotated[str | None, Form()] = None,
+    task_type: Annotated[Literal["binary_classification", "regression"], Form()] = "binary_classification",
     settings: Settings = Depends(get_settings),
 ) -> ValidationResponse:
     content = await _read_upload(file, settings)
     options = DatasetOptions(
         target_column=target_column or settings.default_target_column,
+        task_type=task_type,
     )
     try:
         bundle = await run_in_threadpool(load_dataset, content, options, settings)

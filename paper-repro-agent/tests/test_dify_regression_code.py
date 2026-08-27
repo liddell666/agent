@@ -449,6 +449,31 @@ def test_regression_suite_parser_rejects_missing_or_altered_task_without_echoing
         assert all(sentinel not in json.dumps(result) for sentinel in SENTINELS)
 
 
+def test_similarity_assessment_preserves_allowlisted_model_identity() -> None:
+    result = _exec_code_node("score_approximate_similarity")(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "model": "random_forest",
+                        "name": "rmse",
+                        "paper_value": 2.0,
+                        "independent_value": 1.8,
+                        "absolute_difference": 0.2,
+                        "relative_difference": -0.1,
+                        "comparable": False,
+                    }
+                ]
+            }
+        ),
+        0.05,
+        0.1,
+    )
+
+    assessment = json.loads(result["assessment_json"])
+    assert assessment["items"][0]["model"] == "random_forest"
+
+
 def test_regression_report_uses_natural_metrics_both_rankings_and_redacts_outputs() -> None:
     result = _exec_code_node("format_suite_comparison_report")(
         json.dumps(
@@ -472,6 +497,13 @@ def test_regression_report_uses_natural_metrics_both_rankings_and_redacts_output
                 "status": "partial",
                 "task_type": "regression",
                 "config": {"task_type": "regression", "optimization_metric": "rmse", "cv_folds": 5},
+                "split_provenance": {
+                    "test_size": 0.2,
+                    "random_state": 42,
+                    "train_rows": 16,
+                    "test_rows": 4,
+                    "test_digest": "sha256:" + "c" * 64,
+                },
                 "performance_ranking": ["random_forest", "linear_regression"],
                 "results": [
                     {
@@ -514,7 +546,7 @@ def test_regression_report_uses_natural_metrics_both_rankings_and_redacts_output
             {
                 "strict_status": "strictly_comparable",
                 "approximate_status": "highly_similar",
-                "items": [],
+                "items": [{"model": "linear_regression", "name": "rmse", "grade": "highly_similar"}],
                 "secret": SENTINELS[2],
             }
         ),
@@ -537,9 +569,18 @@ def test_regression_report_uses_natural_metrics_both_rankings_and_redacts_output
         "performance ranking: random_forest > linear_regression",
         "paper-closeness ranking: linear_regression > random_forest",
         "lower MAE/RMSE is better; higher R² is better",
+        "strict comparison: strictly_comparable",
+        "approximate comparison: highly_similar",
+        "test digest: sha256:" + "c" * 64,
         "details redacted for privacy",
     ):
         assert required in report
+    safe_experiment = json.loads(result["experiment_json"])
+    assert safe_experiment["split_provenance"]["test_digest"] == "sha256:" + "c" * 64
+    safe_assessment = json.loads(result["assessment_json"])
+    assert safe_assessment["items"] == [
+        {"model": "linear_regression", "name": "rmse", "grade": "highly_similar"}
+    ]
     assert "lower error is worse" not in report.casefold()
     combined = json.dumps(result, ensure_ascii=False)
     assert all(sentinel not in combined for sentinel in SENTINELS)

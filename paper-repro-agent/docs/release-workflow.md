@@ -291,7 +291,8 @@ container directory were deleted after verification.
 ## Regression candidate 1.0.0 (candidate only)
 
 `Paper comparison Regression Candidate` is an isolated Dify workflow candidate.
-It is not production, has not been promoted, and is not fully accepted. The
+It is not production and has not been promoted. Its controlled synthetic
+acceptance is complete. The
 candidate was created and imported independently; no existing Dify application
 or one of the six user-owned DSL files was edited or published.
 
@@ -310,18 +311,18 @@ Candidate release identity:
 
 - App UUID: `17fe51d4-091f-4729-87ee-3c0a2e920918`.
 - Draft workflow UUID: `912d4e05-494c-4302-a189-788a59c6c0c2`.
-- Published workflow UUID: `6129249f-0ba5-46f9-9039-b7b5000dfbc4`.
-- Explicit rollback backup UUID: `0c9dcebc-ae9f-4963-bc67-5f25bedd8897`.
+- Published workflow UUID: `8cc0de24-ed72-4026-9850-a9a4cccc0a23`.
+- Explicit rollback backup UUID: `ae8bef35-36fb-4500-97de-a4e054e01544`.
 - Graph digest:
-  `sha256:3a65b0a72c4f095c2c4ea8728d5abf844a14eb9640126ca210fad32fae1ac997`.
+  `sha256:d63e730b785fd20b31372fb853129d891b80b169b62eac4e78b01e222db4236a`.
 - Metadata digest:
   `sha256:97f0389ff657384392ff4c2ae8aa7ea94c2b9113fb8b4d6b83c0398d524b1d6a`.
 - Source digest:
-  `sha256:d809237d41cd183ba3f3711ff45a0de5d8a112851a01674b660969edcbbc6d6d`.
+  `sha256:9fed22327fc1772ce80b562aeff036e36ead841f1d95726d2b9bf71e0b13ca2e`.
 - DSL digest:
-  `sha256:98354a1c21b7b613fa328500d266d5cfac90f681723d77b452bfa089302cee44`.
-- No rollback workflow was created after the successful verified publication.
-  The exact backup graph and metadata identities are stored in the ignored,
+  `sha256:fffc16f68d24aa7b13b47b1038db3f2ee4b3497b97354c36c037478fcae85c18`.
+- The previously published graph was preserved as the explicit rollback backup
+  above. Its exact graph and metadata identities are stored in the ignored,
   privacy-safe `.live-artifacts/regression-candidate-verification.json` record.
 
 The recorded source digest is reproducible from the final candidate code state
@@ -358,14 +359,24 @@ tokens, cookies, document text, CSV rows, or full request payloads as evidence.
 Rollback must target the exact backup UUID above; never select a version by
 recency.
 
-The controlled acceptance was not executed on 2026-08-24. Although the active
-runner was healthy, it was mounted from the older main checkout at commit
-`58fcd7b8c03f7e08410869133e94abafe533ac72`, whose installed
-`ExperimentManifest` has no `task_type` field. Submitting the synthetic fixtures
-could not exercise regression correctly. The shared runner was not switched,
-restarted, replaced, or otherwise mutated. Acceptance remains blocked until a
-separately authorized task-aware runner is deployed; after that gate passes,
-rerun the synthetic PDF/CSV acceptance and verify paper evidence values 1.5,
-2.0, and 0.80. Because the paper is synthetic, even a future successful run is
-a controlled regression-path check, not evidence that results generalize to
-real research papers or datasets.
+The controlled acceptance completed on 2026-08-28 against the published
+candidate above. Prepare workflow run
+`80c9fa4f-2693-4142-8af3-52f15e5aba17` and confirmed run
+`16a241e7-9cf6-466b-8731-3a7cd2395180` both succeeded. Dataset validation
+explicitly reported regression. Linear regression, random forest, gradient
+boosting, and XGBoost all succeeded with finite MAE, RMSE, and R² values. The
+shared held-out split identity was
+`sha256:0da80821b5a09608fa8ed02b710824cbf4baaff4aab938f5f2d7f31bb1f9aac1`.
+The final safe output contained all four model statuses, both rankings, 12
+comparison items, 12 assessment items, `strict_status=not_comparable`, and
+`approximate_status=materially_different`. The strict result is expected because
+the synthetic paper does not identify the CSV dataset or its held-out digest;
+the approximate result still compares the paper values 1.5, 2.0, and 0.80.
+Evidence scans found no raw CSV row, PDF body, protocol token, cookie, or secret.
+
+The acceptance used a locally generated, explicitly qualified synthetic PDF so
+the extractor could associate each metric with the test set without weakening
+the ambiguity gate. This is a controlled regression-path check, not evidence
+that results generalize to real research papers or datasets. Two fresh complete
+repository suites each passed with `644 passed` and the one pre-existing
+Starlette/httpx deprecation warning.

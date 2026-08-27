@@ -1151,6 +1151,28 @@ def test_validate_dataset_returns_200_with_structured_errors(
     assert body["errors"][0]["message"]
 
 
+def test_validate_dataset_accepts_regression_task_type(client: TestClient):
+    content = "feature,target\n" + "\n".join(
+        f"{index},{1.5 + index * 0.75}" for index in range(40)
+    )
+    response = client.post(
+        "/v1/validate-dataset",
+        files={
+            "file": (
+                "regression.csv",
+                content.encode(),
+                "text/csv",
+            )
+        },
+        data={"target_column": "target", "task_type": "regression"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["dataset"]["target_summary"]["count"] == 40
+
+
 def test_run_experiment_keeps_dataset_failures_as_422(client: TestClient):
     response = client.post(
         "/v1/run-experiment",

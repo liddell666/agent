@@ -980,6 +980,17 @@ def safe_suite(raw):
         "performance_ranking": safe_ranking(raw.get("performance_ranking")),
         "results": results,
     }}
+    split = raw.get("split_provenance") if isinstance(raw.get("split_provenance"), dict) else {{}}
+    safe_split = {{}}
+    for key in ("test_size", "random_state", "train_rows", "test_rows"):
+        value = number(split.get(key))
+        if value is not None and value >= 0:
+            safe_split[key] = int(value) if value.is_integer() else value
+    digest = split.get("test_digest")
+    if isinstance(digest, str) and SHA_RE.fullmatch(digest):
+        safe_split["test_digest"] = digest
+    if safe_split:
+        safe["split_provenance"] = safe_split
     for key in ("experiment_id", "job_id"):
         value = safe_id(raw.get(key))
         if value is not None:
@@ -1040,6 +1051,9 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
         "job id: " + str(suite.get("job_id") or "unavailable"),
         "status: " + str(suite.get("status") or "unavailable"),
         "metric direction: lower MAE/RMSE is better; higher R² is better",
+        "strict comparison: " + str(assessment.get("strict_status") or "unavailable"),
+        "approximate comparison: " + str(assessment.get("approximate_status") or "unavailable"),
+        "test digest: " + str(suite.get("split_provenance", {{}}).get("test_digest") or "unavailable"),
     ]
     if performance:
         lines.append("performance ranking: " + " > ".join(performance))
@@ -1087,6 +1101,12 @@ def _replace_regression_code_nodes(document: dict) -> None:
     nodes["parse_suite_response"]["data"]["code"] = _suite_parse_code()
     nodes["build_suite_comparison_request"]["data"]["code"] = _comparison_request_code()
     nodes["parse_suite_comparison_response"]["data"]["code"] = _comparison_parse_code()
+    score = nodes["score_approximate_similarity"]["data"]
+    old = 'graded.append({"name": item.get("name"), "paper_value": paper,'
+    new = 'graded.append({"model": item.get("model"), "name": item.get("name"), "paper_value": paper,'
+    if score["code"].count(old) != 1:
+        raise ValueError("regression similarity scorer contract is invalid")
+    score["code"] = score["code"].replace(old, new)
     nodes["format_suite_comparison_report"]["data"]["code"] = _report_code()
     _replace_terminal_failure_nodes(nodes)
     for node in _nodes(document):
