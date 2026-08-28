@@ -18,6 +18,8 @@ class SourceSpec(BaseModel):
     sha256: str = Field(pattern=SHA256_PATTERN)
     media_type: Literal["application/pdf", "application/zip"]
     max_bytes: int = Field(ge=1, le=50_000_000)
+    attribution: str = Field(min_length=1, max_length=500)
+    rights: str = Field(min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def require_https(self) -> SourceSpec:

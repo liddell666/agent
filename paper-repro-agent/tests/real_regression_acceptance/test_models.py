@@ -26,12 +26,16 @@ def _case(case_id: str = "energy-efficiency") -> dict[str, object]:
             "sha256": DIGEST,
             "media_type": "application/pdf",
             "max_bytes": 20_000_000,
+            "attribution": "Example paper authors",
+            "rights": "Publisher open-access terms",
         },
         "dataset": {
             "url": f"https://datasets.example/{case_id}.zip",
             "sha256": DIGEST,
             "media_type": "application/zip",
             "max_bytes": 50_000_000,
+            "attribution": "Example institutional dataset",
+            "rights": "CC BY 4.0",
         },
         "transform": {
             "member": "dataset/data.csv",
@@ -67,6 +71,8 @@ def test_load_registry_returns_strict_typed_contract(tmp_path: Path) -> None:
     assert registry.candidate_app_id == APP_ID
     assert registry.cases[0].task_type == "regression"
     assert registry.cases[0].paper.sha256.startswith("sha256:")
+    assert registry.cases[0].paper.attribution == "Example paper authors"
+    assert registry.cases[0].dataset.rights == "CC BY 4.0"
     assert registry.cases[0].transform.drop_columns == ()
 
 
@@ -91,6 +97,8 @@ def test_registry_rejects_duplicate_case_ids(tmp_path: Path) -> None:
     [
         (lambda item: item["paper"].update(url="http://papers.example/paper.pdf"), "HTTPS"),
         (lambda item: item["paper"].update(sha256="sha256:" + "A" * 64), "sha256"),
+        (lambda item: item["paper"].update(attribution=""), "attribution"),
+        (lambda item: item["dataset"].update(rights=""), "rights"),
         (lambda item: item.update(target_column=""), "target_column"),
         (lambda item: item.update(task_type="binary_classification"), "task_type"),
         (lambda item: item["transform"].update(member="../secret.csv"), "unsafe"),
