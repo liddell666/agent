@@ -8,3 +8,5 @@ data/jobs/
 data/experiments/
 model-cache/
 *.egg-info/
+.real-world-cache/
+.live-artifacts/real-regression-acceptance.json
