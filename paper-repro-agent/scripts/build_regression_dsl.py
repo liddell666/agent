@@ -1088,6 +1088,17 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 '''
 
 
+def _wire_validated_comparison_dossier(nodes: dict[str, dict]) -> None:
+    validator = nodes["validate_paper_dossier"]
+    request = nodes["build_suite_comparison_request"]
+    dossier = next(
+        item
+        for item in request["data"]["variables"]
+        if item.get("variable") == "dossier_json"
+    )
+    dossier["value_selector"] = [validator["id"], "validated_json"]
+
+
 def _replace_regression_code_nodes(document: dict) -> None:
     nodes = _by_title(document)
     normalize = nodes["normalize_suite_inputs"]
@@ -1100,6 +1111,7 @@ def _replace_regression_code_nodes(document: dict) -> None:
     )
     nodes["parse_suite_response"]["data"]["code"] = _suite_parse_code()
     nodes["build_suite_comparison_request"]["data"]["code"] = _comparison_request_code()
+    _wire_validated_comparison_dossier(nodes)
     nodes["parse_suite_comparison_response"]["data"]["code"] = _comparison_parse_code()
     score = nodes["score_approximate_similarity"]["data"]
     old = 'graded.append({"name": item.get("name"), "paper_value": paper,'
@@ -1211,6 +1223,19 @@ def _validate_regression_graph(document: dict) -> None:
         if metric not in serialized:
             raise ValueError(f"regression metric is missing: {metric}")
     nodes = _by_title(document)
+    try:
+        dossier = next(
+            item
+            for item in nodes["build_suite_comparison_request"]["data"]["variables"]
+            if item.get("variable") == "dossier_json"
+        )
+    except (KeyError, StopIteration):
+        raise ValueError("regression validator/comparison chain is invalid") from None
+    if dossier.get("value_selector") != [
+        nodes["validate_paper_dossier"]["id"],
+        "validated_json",
+    ]:
+        raise ValueError("regression validator/comparison chain is invalid")
     for title in ("diagnose_dataset", "validate_dataset"):
         fields = {item.get("key"): item for item in nodes[title]["data"]["body"]["data"]}
         if fields.get("task_type", {}).get("value") != "regression":
