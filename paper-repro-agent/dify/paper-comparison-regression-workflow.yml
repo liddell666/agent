@@ -4142,8 +4142,8 @@ workflow:
         type: code
         variables:
         - value_selector:
-          - '3900000000010'
-          - dossier_json
+          - '3910000000006'
+          - validated_json
           value_type: string
           variable: dossier_json
         - value_selector:
