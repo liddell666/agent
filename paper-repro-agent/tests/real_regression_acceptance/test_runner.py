@@ -147,6 +147,41 @@ def test_run_case_prepares_then_confirms_declared_regression_choices(tmp_path: P
     assert json.loads(checkpoint_text)["terminal_status"] == "succeeded"
 
 
+def test_run_case_accepts_published_prepare_preview_contract(tmp_path: Path) -> None:
+    class PublishedContractClient(FakeClient):
+        def run(self, inputs: dict[str, object], user: str) -> WorkflowOutcome:
+            outcome = super().run(inputs, user)
+            if inputs["run_mode"] != "prepare":
+                return outcome
+            return WorkflowOutcome(
+                run_id=outcome.run_id,
+                status=outcome.status,
+                outputs={
+                    "protocol_token": self.token,
+                    "protocol_preview_json": json.dumps(
+                        {
+                            "manifest_draft": {"task_type": "regression"},
+                            "paper_summary": {"task_type": "regression"},
+                            "unresolved_protocol_fields": [],
+                        }
+                    ),
+                },
+                elapsed_seconds=outcome.elapsed_seconds,
+            )
+
+    client = PublishedContractClient()
+
+    result = run_case(
+        _case(),
+        _acquired(tmp_path),
+        client,
+        CheckpointStore(tmp_path / "checkpoint.json"),
+    )
+
+    assert result.status == "succeeded"
+    assert len(client.calls) == 2
+
+
 def test_run_case_classifies_missing_protocol_token_without_confirming(tmp_path: Path) -> None:
     client = FakeClient(token="")
 

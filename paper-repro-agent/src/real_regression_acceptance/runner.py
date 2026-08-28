@@ -250,11 +250,25 @@ def run_case(
             terminal_status=prepare.status,
         )
         validation = _object(prepare.outputs.get("validation_json"))
+        preview = _object(prepare.outputs.get("protocol_preview_json"))
+        manifest = preview.get("manifest_draft")
+        paper_summary = preview.get("paper_summary")
+        unresolved = preview.get("unresolved_protocol_fields")
+        preview_valid = (
+            isinstance(manifest, dict)
+            and manifest.get("task_type") == "regression"
+            and isinstance(paper_summary, dict)
+            and paper_summary.get("task_type") == "regression"
+            and unresolved == []
+        )
+        validation_valid = (
+            validation.get("valid") is True
+            and validation.get("task_type") == "regression"
+        )
         token = prepare.outputs.get("protocol_token")
         if (
             prepare.status != "succeeded"
-            or validation.get("valid") is not True
-            or validation.get("task_type") != "regression"
+            or not (preview_valid or validation_valid)
             or not isinstance(token, str)
             or not token
         ):
