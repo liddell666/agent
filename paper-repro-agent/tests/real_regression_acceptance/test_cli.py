@@ -3,6 +3,8 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import httpx
 import pytest
@@ -16,6 +18,18 @@ from real_regression_acceptance.models import SafeCaseResult
 APP_ID = "17fe51d4-091f-4729-87ee-3c0a2e920918"
 DIGEST = "sha256:" + "a" * 64
 TEST_DIGEST = "sha256:" + "b" * 64
+
+
+def test_repository_entry_point_runs_without_installed_package() -> None:
+    completed = subprocess.run(
+        [sys.executable, "scripts/run_real_regression_acceptance.py", "--help"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert "real-regression-acceptance" in completed.stdout
 
 
 def _registry(tmp_path: Path) -> Path:
