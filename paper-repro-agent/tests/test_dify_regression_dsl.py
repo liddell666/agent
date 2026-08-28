@@ -111,7 +111,23 @@ def test_regression_builder_outputs_compile_and_keep_secret_environment_blank() 
     assert "local-only-fallback-not-for-production" not in serialized
 
 
-@pytest.mark.parametrize("mutation", ["classification_validator", "missing_request_node"])
+@pytest.mark.parametrize("profile", ["deepseek", "ollama"])
+def test_regression_comparison_request_uses_validated_dossier(profile: str) -> None:
+    nodes = _node_map(_builder().build_regression_dsl(profile))
+    validator = nodes["validate_paper_dossier"]
+    request = nodes["build_suite_comparison_request"]
+    dossier = next(
+        item for item in request["data"]["variables"]
+        if item["variable"] == "dossier_json"
+    )
+
+    assert dossier["value_selector"] == [validator["id"], "validated_json"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["classification_validator", "missing_request_node", "raw_dossier_wiring"],
+)
 def test_regression_graph_validation_rejects_broken_validator_comparison_chain(
     mutation: str,
 ) -> None:
@@ -122,12 +138,19 @@ def test_regression_graph_validation_rejects_broken_validator_comparison_chain(
         nodes["validate_paper_dossier"]["data"]["code"] = (
             PROJECT_ROOT / "dify" / "code" / "validate_evidence.py"
         ).read_text(encoding="utf-8")
-    else:
+    elif mutation == "missing_request_node":
         document["workflow"]["graph"]["nodes"] = [
             node
             for node in _nodes(document)
             if node["data"]["title"] != "build_suite_comparison_request"
         ]
+    elif mutation == "raw_dossier_wiring":
+        request = nodes["build_suite_comparison_request"]
+        dossier = next(
+            item for item in request["data"]["variables"]
+            if item["variable"] == "dossier_json"
+        )
+        dossier["value_selector"] = [nodes["extract_paper_dossier"]["id"], "dossier_json"]
 
     with pytest.raises(ValueError, match="regression validator/comparison chain"):
         builder._validate_regression_graph(document)
