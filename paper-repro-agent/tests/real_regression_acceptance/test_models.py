@@ -16,6 +16,7 @@ from real_regression_acceptance.models import (
 
 APP_ID = "17fe51d4-091f-4729-87ee-3c0a2e920918"
 DIGEST = "sha256:" + "a" * 64
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _case(case_id: str = "energy-efficiency") -> dict[str, object]:
@@ -144,3 +145,17 @@ def test_safe_result_and_evaluation_forbid_untrusted_payload_fields() -> None:
     assert evaluation.passed is True
     with pytest.raises(ValidationError):
         SafeCaseResult.model_validate({**result.model_dump(), "paper_text": "secret"})
+
+
+def test_live_registry_pins_the_five_approved_cases() -> None:
+    registry = load_registry(REPOSITORY_ROOT / "real_world" / "regression_cases.yml")
+
+    assert [case.id for case in registry.cases] == [
+        "energy-efficiency",
+        "concrete-strength",
+        "wine-quality-red",
+        "appliances-energy",
+        "real-estate-valuation",
+    ]
+    assert all(case.paper.attribution and case.paper.rights for case in registry.cases)
+    assert all(case.dataset.attribution and case.dataset.rights for case in registry.cases)

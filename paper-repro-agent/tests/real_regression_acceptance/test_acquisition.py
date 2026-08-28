@@ -55,14 +55,18 @@ def _case(
             "paper": {
                 "url": "https://sources.example/paper.pdf",
                 "sha256": _digest(paper),
-                "media_type": "application/pdf",
-                "max_bytes": 1_000_000,
+                    "media_type": "application/pdf",
+                    "max_bytes": 1_000_000,
+                    "attribution": "Fixture paper",
+                    "rights": "Fixture terms",
             },
             "dataset": {
                 "url": "https://sources.example/data.zip",
                 "sha256": _digest(dataset_zip),
-                "media_type": "application/zip",
-                "max_bytes": 1_000_000,
+                    "media_type": "application/zip",
+                    "max_bytes": 1_000_000,
+                    "attribution": "Fixture dataset",
+                    "rights": "Fixture terms",
             },
             "transform": {
                 "member": member,
@@ -109,6 +113,8 @@ def test_fetch_verified_reuses_only_a_valid_cache_entry(tmp_path: Path) -> None:
         sha256=_digest(content),
         media_type="application/pdf",
         max_bytes=100,
+        attribution="Fixture paper",
+        rights="Fixture terms",
     )
     destination = tmp_path / "paper.pdf"
     destination.write_bytes(content)
@@ -140,6 +146,8 @@ def test_fetch_verified_rejects_bad_remote_content(
         sha256=source_digest or _digest(content),
         media_type="application/pdf",
         max_bytes=max_bytes,
+        attribution="Fixture paper",
+        rights="Fixture terms",
     )
     transport = httpx.MockTransport(
         lambda request: httpx.Response(200, content=content, request=request)
@@ -162,6 +170,8 @@ def test_fetch_verified_rejects_redirect_to_http(tmp_path: Path) -> None:
         sha256=_digest(content),
         media_type="application/pdf",
         max_bytes=100,
+        attribution="Fixture paper",
+        rights="Fixture terms",
     )
 
     with pytest.raises(AcquisitionError, match="insecure_redirect"):

@@ -1,0 +1,159 @@
+schema_version: 1
+candidate_app_id: 17fe51d4-091f-4729-87ee-3c0a2e920918
+cases:
+  - id: energy-efficiency
+    paper:
+      url: https://upcommons.upc.edu/server/api/core/bitstreams/c607c005-f9ae-4fc8-b479-15488ee31b48/content
+      sha256: sha256:85621f370eb165f419d1e3831311f415dd591ae7873f124e4f083a9543173029
+      media_type: application/pdf
+      max_bytes: 20000000
+      attribution: Angela Nebot and Francisco Mugica, Energy Performance Forecasting of Residential Buildings Using Fuzzy Approaches
+      rights: UPC institutional repository terms
+    dataset:
+      url: https://archive.ics.uci.edu/static/public/242/energy+efficiency.zip
+      sha256: sha256:499441eee27929a4b00417f58fd8c63c9cc14b8a71520cd0dd27fcb626738351
+      media_type: application/zip
+      max_bytes: 50000000
+      attribution: UCI Machine Learning Repository, Energy Efficiency dataset by Athanasios Tsanas and Angeliki Xifara
+      rights: CC BY 4.0
+    transform:
+      member: ENB2012_data.xlsx
+      format: xlsx
+      sheet_name: "Φύλλο1"
+      rename_columns:
+        X1: relative_compactness
+        X2: surface_area
+        X3: wall_area
+        X4: roof_area
+        X5: overall_height
+        X6: orientation
+        X7: glazing_area
+        X8: glazing_area_distribution
+        Y1: heating_load
+        Y2: cooling_load
+      drop_columns: [cooling_load]
+    target_column: heating_load
+    task_type: regression
+    paper_metric_overrides: []
+
+  - id: concrete-strength
+    paper:
+      url: https://mdpi-res.com/d_attachment/infrastructures/infrastructures-10-00026/article_deploy/infrastructures-10-00026-v2.pdf
+      sha256: sha256:15726c9d5d24f5bf7cb2efe216d88ebd830f71fcb79f5d3a165f625c987c4209
+      media_type: application/pdf
+      max_bytes: 20000000
+      attribution: Mohammad Saleh Nikoopayan Tak, Yanxiao Feng, and Mohamed Mahgoub, Advanced Machine Learning Techniques for Predicting Concrete Compressive Strength
+      rights: CC BY 4.0
+    dataset:
+      url: https://archive.ics.uci.edu/static/public/165/concrete+compressive+strength.zip
+      sha256: sha256:dad85d14de8aee4e07479daa774e6b569a313715b71a3b92c95a07cf91c2c9a7
+      media_type: application/zip
+      max_bytes: 50000000
+      attribution: UCI Machine Learning Repository, Concrete Compressive Strength dataset by I-Cheng Yeh
+      rights: CC BY 4.0
+    transform:
+      member: Concrete_Data.xls
+      format: xls
+      sheet_name: Sheet1
+      rename_columns:
+        "Cement (component 1)(kg in a m^3 mixture)": cement
+        "Blast Furnace Slag (component 2)(kg in a m^3 mixture)": blast_furnace_slag
+        "Fly Ash (component 3)(kg in a m^3 mixture)": fly_ash
+        "Water  (component 4)(kg in a m^3 mixture)": water
+        "Superplasticizer (component 5)(kg in a m^3 mixture)": superplasticizer
+        "Coarse Aggregate  (component 6)(kg in a m^3 mixture)": coarse_aggregate
+        "Fine Aggregate (component 7)(kg in a m^3 mixture)": fine_aggregate
+        "Age (day)": age
+        "Concrete compressive strength(MPa, megapascals)": concrete_compressive_strength
+      drop_columns: []
+    target_column: concrete_compressive_strength
+    task_type: regression
+    paper_metric_overrides: []
+
+  - id: wine-quality-red
+    paper:
+      url: https://mdpi-res.com/d_attachment/applsci/applsci-11-09885/article_deploy/applsci-11-09885-v2.pdf
+      sha256: sha256:8f5471f9c394f0c3b0d92c96cd4f48134301715e4b5fcca658b0fc1d9a61e227
+      media_type: application/pdf
+      max_bytes: 20000000
+      attribution: Hyunsun Cho and Eun-Kyung Lee, Tree-Structured Regression Model Using a Projection Pursuit Approach
+      rights: CC BY 4.0
+    dataset:
+      url: https://archive.ics.uci.edu/static/public/186/wine+quality.zip
+      sha256: sha256:3ed56667f4b828242bd732d7d1dd7f2861e54432239d7fa63877014cbb0304d4
+      media_type: application/zip
+      max_bytes: 50000000
+      attribution: UCI Machine Learning Repository, Wine Quality dataset by Paulo Cortez and coauthors
+      rights: CC BY 4.0
+    transform:
+      member: winequality-red.csv
+      format: csv
+      delimiter: ";"
+      rename_columns:
+        fixed acidity: fixed_acidity
+        volatile acidity: volatile_acidity
+        citric acid: citric_acid
+        residual sugar: residual_sugar
+        free sulfur dioxide: free_sulfur_dioxide
+        total sulfur dioxide: total_sulfur_dioxide
+      drop_columns: []
+    target_column: quality
+    task_type: regression
+    paper_metric_overrides: []
+
+  - id: appliances-energy
+    paper:
+      url: https://orbi.umons.ac.be/bitstream/20.500.12907/23357/1/1-s2.0-S0378778816308970-main.pdf
+      sha256: sha256:20ec6c6cd7b0943724c87a315bfc038f8679d2d8a7247ea8a640e76374504ba5
+      media_type: application/pdf
+      max_bytes: 20000000
+      attribution: Luis M. Candanedo, Veronique Feldheim, and Dominique Deramaix, Data Driven Prediction Models of Energy Use of Appliances in a Low-Energy House
+      rights: ORBi institutional repository terms
+    dataset:
+      url: https://archive.ics.uci.edu/static/public/374/appliances+energy+prediction.zip
+      sha256: sha256:2fccf354445d886e7917620b0195db1f3e3e34d5a067a93b844694a4c561255a
+      media_type: application/zip
+      max_bytes: 50000000
+      attribution: UCI Machine Learning Repository, Appliances Energy Prediction dataset by Luis M. Candanedo
+      rights: CC BY 4.0
+    transform:
+      member: energydata_complete.csv
+      format: csv
+      delimiter: ","
+      rename_columns: {}
+      drop_columns: [date, rv1, rv2]
+    target_column: Appliances
+    task_type: regression
+    paper_metric_overrides: []
+
+  - id: real-estate-valuation
+    paper:
+      url: https://mdpi-res.com/d_attachment/mathematics/mathematics-09-00686/article_deploy/mathematics-09-00686-v2.pdf
+      sha256: sha256:6744114a837a76686a1ec3233f76d3b6cabe4c746fb4c73af0a2b9386b66a355
+      media_type: application/pdf
+      max_bytes: 20000000
+      attribution: Jui-Sheng Chou, Dinh-Nhat Truong, and Chih-Fong Tsai, Solving Regression Problems with Intelligent Machine Learner for Engineering Informatics
+      rights: CC BY 4.0
+    dataset:
+      url: https://archive.ics.uci.edu/static/public/477/real+estate+valuation+data+set.zip
+      sha256: sha256:aa437bdac3ca23200258a0a58d251c0af90651aeaf7c7a07aaa714f0f9f25e2c
+      media_type: application/zip
+      max_bytes: 50000000
+      attribution: UCI Machine Learning Repository, Real Estate Valuation dataset by I-Cheng Yeh
+      rights: CC BY 4.0
+    transform:
+      member: Real estate valuation data set.xlsx
+      format: xlsx
+      sheet_name: "工作表1"
+      rename_columns:
+        X1 transaction date: transaction_date
+        X2 house age: house_age
+        X3 distance to the nearest MRT station: distance_to_nearest_mrt_station
+        X4 number of convenience stores: number_of_convenience_stores
+        X5 latitude: latitude
+        X6 longitude: longitude
+        Y house price of unit area: house_price_of_unit_area
+      drop_columns: ["No"]
+    target_column: house_price_of_unit_area
+    task_type: regression
+    paper_metric_overrides: []
