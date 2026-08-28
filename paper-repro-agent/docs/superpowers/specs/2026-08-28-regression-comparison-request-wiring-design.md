@@ -94,13 +94,21 @@ candidate release process:
 2. create and verify a new explicit rollback backup from the current published
    candidate;
 3. save and publish the corrected candidate graph with unchanged metadata;
-4. independently read back the new draft and published UUIDs and exact graph
-   and metadata digests;
+4. independently read back the post-publish draft and active published UUIDs
+   and exact graph and metadata digests;
 5. run the five digest-pinned real cases with no code or configuration changes
    between cases;
 6. require at least four completed cases, zero unknown failure categories, zero
    false strict-comparability claims, a clean privacy scan, no active runner
    jobs, and no post-run candidate drift.
+
+Dify's normal sync-draft behavior may update the existing draft workflow row in
+place, so publication does not require the draft UUID to change. Release
+identity verification instead requires that the active published UUID differs
+from the pre-change published UUID, that the draft and active published UUIDs
+are distinct, and that both layers have the candidate graph digest and fixed
+metadata digest. The explicit backup must independently retain the pre-change
+graph and fixed metadata digests.
 
 If the corrected graph reaches the comparison service but exposes another
 generalized defect, preserve the safe failure distribution and stop again. Do

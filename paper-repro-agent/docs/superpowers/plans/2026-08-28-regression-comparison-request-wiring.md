@@ -286,7 +286,7 @@ Expected: the manifest graph digest differs from `sha256:d63e730b785fd20b31372fb
 
 **Interfaces:**
 - Consumes: `DifyReleaseService`, `inspect_release_state`, `publish_verified_graph`, `ExpectedReleaseIdentity`, `ReleaseMark`, `WorkflowReleaseMetadata`, and the validated manifest.
-- Produces: a new backup UUID, new draft/published workflow UUIDs, exact graph/metadata digests, and fresh checker snapshots.
+- Produces: a new backup UUID, the post-publish draft UUID, a new active published UUID, exact graph/metadata digests, and fresh checker snapshots. Dify may retain the existing draft UUID when sync updates that row in place.
 
 - [ ] **Step 1: Require healthy services and an idle runner**
 
@@ -337,7 +337,7 @@ Export fresh draft/published snapshots to ignored files, then run:
 python scripts/check_workflow_release.py --dsl dify/paper-comparison-regression-workflow.yml --source scripts/build_regression_dsl.py scripts/build_multimodel_dsl.py dify/paper-comparison-workflow.yml dify/paper-dossier-workflow.yml dify/code/validate_evidence.py dify/code/comparison_workflow.py dify/code/experiment_workflow.py dify/code/validate_parser.py --draft-snapshot .live-artifacts/regression-candidate-draft-snapshot.json --published-snapshot .live-artifacts/regression-candidate-published-snapshot.json --json
 ```
 
-Expected: `{"drift":[]}`, equal draft/published graph digests matching the manifest, equal metadata digests matching the old fixed metadata digest, and distinct new draft/published UUIDs.
+Expected: `{"drift":[]}`; equal draft/published graph digests matching the manifest; equal metadata digests matching the old fixed metadata digest; a new active published UUID differing from the old published UUID; and distinct draft/active-published UUIDs. The draft UUID may equal the pre-change draft UUID under normal Dify sync-draft semantics. Independently verify that the explicit backup preserves the old graph digest and fixed metadata digest.
 
 ---
 
@@ -353,7 +353,7 @@ Expected: `{"drift":[]}`, equal draft/published graph digests matching the manif
 
 - [ ] **Step 1: Confirm an idle runner and fixed candidate identity**
 
-Repeat Task 5 health/readback checks and require no active runner job. Record the new candidate IDs/digests in memory before the first case.
+Repeat Task 5 health/readback checks and require no active runner job. Record the verified post-publish candidate IDs/digests in memory before the first case.
 
 - [ ] **Step 2: Run all five cases**
 
@@ -377,7 +377,7 @@ Expected: evaluation passes with at least four completed cases, JSON parsing suc
 
 - [ ] **Step 4: Verify post-run identity and runner quiescence**
 
-Repeat independent Dify readback and the snapshot checker. Require the exact Task 5 new IDs/digests, `{"drift":[]}`, and zero queued/running runner jobs.
+Repeat independent Dify readback and the snapshot checker. Require the exact verified Task 5 post-publish IDs/digests, `{"drift":[]}`, and zero queued/running runner jobs.
 
 - [ ] **Step 5: Stop safely on another generalized defect**
 
@@ -397,7 +397,7 @@ If the gate fails, preserve only its safe aggregate distribution, do not patch t
 
 - [ ] **Step 1: Record aggregate outcomes**
 
-Add the five case IDs, completion/failure distribution, strict and approximate status counts, new App/draft/published/backup UUIDs, graph/metadata/source/DSL digests, safe evidence path, and exact rerun command to `docs/release-workflow.md`. Include no raw metrics beyond the safe aggregate schema.
+Add the five case IDs, completion/failure distribution, strict and approximate status counts, final App/draft/published/backup UUIDs, graph/metadata/source/DSL digests, safe evidence path, and exact rerun command to `docs/release-workflow.md`. Include no raw metrics beyond the safe aggregate schema.
 
 - [ ] **Step 2: Run final verification from a clean tree**
 
