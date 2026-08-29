@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 from scripts.build_multimodel_dsl import (
     DEFAULT_LLM_PROFILE,
     LLM_PROFILES,
+    OLLAMA_PARSER_PAYLOAD_BYTES,
     _secret_safe_embedded_experiment_helper_code,
     build_merged_dsl,
     resolve_llm_profile,
@@ -1250,7 +1251,15 @@ def _validate_regression_graph(document: dict) -> None:
 def build_regression_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     """Return a deterministic regression-only clone without writing files."""
 
-    document = deepcopy(build_merged_dsl(profile))
+    context_budget = (
+        OLLAMA_PARSER_PAYLOAD_BYTES if profile == "ollama" else None
+    )
+    document = deepcopy(
+        build_merged_dsl(
+            profile,
+            parser_context_budget_bytes=context_budget,
+        )
+    )
     _set_regression_metadata(document, profile)
     _set_explicit_regression_inputs(document)
     _replace_regression_code_nodes(document)

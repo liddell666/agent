@@ -13,10 +13,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-workflow.yml"
 PAPER_DOSSIER_DSL = PROJECT_ROOT / "dify" / "paper-dossier-workflow.yml"
 PAPER_DOSSIER_VALIDATOR = PROJECT_ROOT / "dify" / "code" / "validate_evidence.py"
+PARSER_VALIDATOR = PROJECT_ROOT / "dify" / "code" / "validate_parser.py"
+PARSER_VALIDATOR_LEGACY = PROJECT_ROOT / "dify" / "code" / "validate_parser_legacy.py"
 TARGET_DSL = PROJECT_ROOT / "dify" / "paper-comparison-multimodel-workflow.yml"
 PREPARE_DSL = PROJECT_ROOT / "dify" / "paper-comparison-prepare-workflow.yml"
 MERGED_DSL = PROJECT_ROOT / "dify" / "paper-comparison-merged-workflow.yml"
 DEFAULT_LLM_PROFILE = "deepseek"
+
+OLLAMA_CONTEXT_NUM_CTX = 16_384
+OLLAMA_CONTEXT_NUM_PREDICT = 2_048
+OLLAMA_FIXED_PROMPT_UTF8_BYTES = 4_475
+OLLAMA_MAX_PROTOCOL_NOTES_UTF8_BYTES = 2_048
+OLLAMA_CHAT_OVERHEAD_TOKENS = 512
+OLLAMA_COMPLETION_RESERVE_TOKENS = 2_048
+OLLAMA_PARSER_PAYLOAD_BYTES = 7_301
 
 
 @dataclass(frozen=True)
@@ -527,9 +537,27 @@ def _secret_safe_embedded_experiment_helper_code(entrypoint: str) -> str:
     return _embedded_experiment_helper_code(entrypoint).replace('"sk-"', '"s" + "k-"')
 
 
-def _embedded_parser_validator_code() -> str:
-    validator_path = PROJECT_ROOT / "dify" / "code" / "validate_parser.py"
-    return validator_path.read_text(encoding="utf-8").rstrip() + "\n"
+def _embedded_parser_validator_code(
+    context_budget_bytes: int | None = None,
+) -> str:
+    """Return the parser code for a protected or context-pinned artifact."""
+
+    if context_budget_bytes is None:
+        return PARSER_VALIDATOR_LEGACY.read_text(encoding="utf-8").rstrip() + "\n"
+    if (
+        not isinstance(context_budget_bytes, int)
+        or isinstance(context_budget_bytes, bool)
+        or context_budget_bytes <= 0
+    ):
+        raise ValueError("parser context budget must be a positive integer")
+    code = PARSER_VALIDATOR.read_text(encoding="utf-8").rstrip() + "\n"
+    marker = "DEFAULT_CONTEXT_BUDGET_BYTES: int | None = None"
+    replacement = (
+        f"DEFAULT_CONTEXT_BUDGET_BYTES: int | None = {context_budget_bytes}"
+    )
+    if code.count(marker) != 1:
+        raise ValueError("parser validator context budget marker is missing")
+    return code.replace(marker, replacement)
 
 
 def _protocol_environment_variables(base_variables: list[dict] | None = None) -> list[dict]:
@@ -1322,12 +1350,20 @@ def _apply_profile_metadata(document: dict, profile: LLMProfile) -> dict:
     return document
 
 
-def _apply_llm_node_profile(node: dict, profile: LLMProfile) -> None:
+def _apply_llm_node_profile(
+    node: dict,
+    profile: LLMProfile,
+    *,
+    pin_context: bool = False,
+) -> None:
     model = deepcopy(node["data"].get("model", {}))
     model["provider"] = profile.provider
     model["name"] = profile.model
     if profile.name == "ollama":
         model.setdefault("completion_params", {})["think"] = False
+        if pin_context:
+            model["completion_params"]["num_ctx"] = OLLAMA_CONTEXT_NUM_CTX
+            model["completion_params"]["num_predict"] = OLLAMA_CONTEXT_NUM_PREDICT
         node["data"].pop("structured_output", None)
     node["data"]["model"] = model
 
@@ -1481,7 +1517,11 @@ def build_prepare_dsl_legacy() -> dict:
     return document
 
 
-def build_prepare_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
+def build_prepare_dsl(
+    profile: str = DEFAULT_LLM_PROFILE,
+    *,
+    parser_context_budget_bytes: int | None = None,
+) -> dict:
     """Compose the PDF-to-protocol workflow for one explicit LLM profile."""
     resolved_profile = resolve_llm_profile(profile)
     source = _load_source()
@@ -1583,7 +1623,9 @@ def build_prepare_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     parser_validate["position"] = {"x": 800, "y": 300}
     parser_validate["positionAbsolute"] = {"x": 800, "y": 300}
     parser_validate["data"]["title"] = "validate_parser_response"
-    parser_validate["data"]["code"] = _embedded_parser_validator_code()
+    parser_validate["data"]["code"] = _embedded_parser_validator_code(
+        parser_context_budget_bytes
+    )
     parser_validate["data"]["variables"] = [
         {"value_selector": [parser_id, "body"], "value_type": "string", "variable": "body"},
         {"value_selector": [parser_id, "status_code"], "value_type": "number", "variable": "status_code"},
@@ -1610,7 +1652,11 @@ def build_prepare_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
             .replace("{{#1785820293883.user_notes#}}", f"{{{{#{start_id}.protocol_notes#}}}}")
             .replace("{{#1785820293883.target_language#}}", "简体中文")
         )
-    _apply_llm_node_profile(extract, resolved_profile)
+    _apply_llm_node_profile(
+        extract,
+        resolved_profile,
+        pin_context=parser_context_budget_bytes is not None,
+    )
 
     dossier_validate = deepcopy(code_templates[1])
     dossier_validate["id"] = dossier_validate_id
@@ -2108,10 +2154,17 @@ def _clone_not_empty_if_node(template: dict, node_id: str, title: str, variable_
     return node
 
 
-def build_merged_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
+def build_merged_dsl(
+    profile: str = DEFAULT_LLM_PROFILE,
+    *,
+    parser_context_budget_bytes: int | None = None,
+) -> dict:
     """Build the deterministic merged prepare/run Dify workflow."""
     resolved_profile = resolve_llm_profile(profile)
-    prepare_doc = build_prepare_dsl(profile)
+    prepare_doc = build_prepare_dsl(
+        profile,
+        parser_context_budget_bytes=parser_context_budget_bytes,
+    )
     run_doc = build_multimodel_dsl(profile)
     prepare_nodes = _by_title(prepare_doc)
     run_nodes = _by_title(run_doc)

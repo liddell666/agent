@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from scripts.build_multimodel_dsl import (
     OLLAMA_CHAT_OVERHEAD_TOKENS,
@@ -53,6 +54,16 @@ def test_fixed_prompt_bytes_are_recomputed_from_ollama_builder() -> None:
     assert _fixed_prompt_bytes(build_prepare_dsl("ollama")) == OLLAMA_FIXED_PROMPT_UTF8_BYTES
 
 
+def test_protected_profile_builders_use_the_legacy_parser_snapshot() -> None:
+    legacy = (
+        Path(__file__).parents[1] / "dify" / "code" / "validate_parser_legacy.py"
+    ).read_text(encoding="utf-8")
+
+    for profile in ("deepseek", "ollama"):
+        parser = _node(build_prepare_dsl(profile), "validate_parser_response")
+        assert parser["data"]["code"] == legacy
+
+
 def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> None:
     ollama = build_regression_dsl("ollama")
     llm = _node(ollama, "extract_paper_dossier")["data"]
@@ -61,7 +72,7 @@ def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> No
     assert llm["model"]["completion_params"]["think"] is False
     assert llm["model"]["completion_params"]["num_ctx"] == OLLAMA_CONTEXT_NUM_CTX
     assert llm["model"]["completion_params"]["num_predict"] == OLLAMA_CONTEXT_NUM_PREDICT
-    assert "DEFAULT_CONTEXT_BUDGET_BYTES = 7301" in parser
+    assert "DEFAULT_CONTEXT_BUDGET_BYTES: int | None = 7301" in parser
 
     deepseek = build_regression_dsl("deepseek")
     deepseek_llm = _node(deepseek, "extract_paper_dossier")["data"]
