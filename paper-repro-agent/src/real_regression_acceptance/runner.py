@@ -249,6 +249,14 @@ def run_case(
             run_id=prepare.run_id,
             terminal_status=prepare.status,
         )
+        if prepare.status != "succeeded":
+            return _failure(
+                case,
+                acquired,
+                "service_unavailable",
+                time.monotonic() - started,
+                tuple(run_ids),
+            )
         validation = _object(prepare.outputs.get("validation_json"))
         preview = _object(prepare.outputs.get("protocol_preview_json"))
         manifest = preview.get("manifest_draft")
@@ -267,8 +275,7 @@ def run_case(
         )
         token = prepare.outputs.get("protocol_token")
         if (
-            prepare.status != "succeeded"
-            or not (preview_valid or validation_valid)
+            not (preview_valid or validation_valid)
             or not isinstance(token, str)
             or not token
         ):

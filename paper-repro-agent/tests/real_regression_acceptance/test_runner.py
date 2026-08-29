@@ -197,6 +197,56 @@ def test_run_case_classifies_missing_protocol_token_without_confirming(tmp_path:
     assert len(client.calls) == 1
 
 
+def test_run_case_classifies_failed_prepare_as_service_unavailable_without_leaking_outputs(
+    tmp_path: Path,
+) -> None:
+    sentinels = {
+        "error": "remote-error-sentinel",
+        "protocol_token": "secret-token-sentinel",
+        "prompt": "prompt-text-sentinel",
+        "response": "response-text-sentinel",
+        "raw_output": "raw-output-sentinel",
+    }
+    safe_run_id = "f57110fc-7a27-4f18-bc80-a1ce18dbfbdc"
+
+    class FailedPrepareClient(FakeClient):
+        def run(self, inputs: dict[str, object], user: str) -> WorkflowOutcome:
+            self.calls.append((inputs, user))
+            return WorkflowOutcome(
+                run_id=safe_run_id,
+                status="failed",
+                outputs={
+                    "error": sentinels["error"],
+                    "protocol_token": sentinels["protocol_token"],
+                    "prompt": sentinels["prompt"],
+                    "response": sentinels["response"],
+                    "raw_outputs": {"detail": sentinels["raw_output"]},
+                },
+                elapsed_seconds=1.0,
+            )
+
+    client = FailedPrepareClient()
+    checkpoint = CheckpointStore(tmp_path / "checkpoint.json")
+
+    result = run_case(_case(), _acquired(tmp_path), client, checkpoint)
+
+    assert len(client.calls) == 1
+    assert result.status == "failed"
+    assert result.failure_code == "service_unavailable"
+    assert result.workflow_run_ids == (safe_run_id,)
+    result_text = result.model_dump_json()
+    checkpoint_text = checkpoint.path.read_text(encoding="utf-8")
+    for sentinel in sentinels.values():
+        assert sentinel not in result_text
+        assert sentinel not in checkpoint_text
+    assert json.loads(checkpoint_text) == {
+        "case_id": "energy-efficiency",
+        "phase": "prepare",
+        "run_id": safe_run_id,
+        "terminal_status": "failed",
+    }
+
+
 def test_checkpoint_contains_only_allowlisted_progress_fields(tmp_path: Path) -> None:
     path = tmp_path / "checkpoint.json"
     store = CheckpointStore(path)
