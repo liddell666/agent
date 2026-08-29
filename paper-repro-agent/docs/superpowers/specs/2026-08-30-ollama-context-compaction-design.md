@@ -54,10 +54,12 @@ Only elements with a positive, non-boolean integer page and non-empty string tex
 
 Compaction is deterministic:
 
-1. Start with every eligible page and a per-page excerpt ceiling of 1,400 UTF-8 bytes.
+1. Collect every eligible page in one linear pass, then cap the candidate set at 32 pages. If there are more than 32, use the same evenly spaced index formula below with `k=32`; this retains the first and last eligible pages while bounding all later serialization work.
 2. Clip each page by UTF-8 bytes without splitting a Unicode code point. The marker is exactly `\n...[truncated for LLM context]...\n`. After reserving marker bytes, assign `floor(remaining/2)` bytes to the head and all odd remainder bytes to the tail. Each side keeps the longest complete-code-point prefix/suffix within its allocation.
-3. For a fixed page set, test every common per-page ceiling in strict descending integer order from 1,400 through 160 bytes and take the first serialized object that fits. The finite scan does not assume monotonic serialized length.
-4. If no ceiling fits, reduce the selected page count strictly one at a time (`k=n, n-1, ..., 1`) and repeat the descending ceiling scan. For `k` selected pages from `n`, use indices `floor(i*(n-1)/(k-1))` for `i=0..k-1`; `k=1` selects the first page. Thus any multi-page sample always retains the first and last eligible pages and evenly spans the interior.
+3. Find the maximum feasible page count by testing only the 160-byte floor for `k=candidate_count, candidate_count-1, ..., 1` and taking the first object that fits. For `k` selected pages from `n`, use indices `floor(i*(n-1)/(k-1))` for `i=0..k-1`; `k=1` selects the first page. Thus any multi-page sample always retains the first and last candidate pages and evenly spans the interior.
+4. For that fixed maximum-feasible page set, test every common per-page ceiling in strict descending integer order from 1,400 through 160 bytes and take the first serialized object that fits. The finite scan does not assume monotonic serialized length.
+
+After the linear collection pass, the algorithm performs at most 32 floor serializations plus 1,241 ceiling serializations, each over at most 32 elements. This bound applies even to a valid response near the 2 MB input limit with tens of thousands of unique short pages.
 
 If no positive page-addressable excerpt exists, or even the minimum one-page object cannot fit, parser validation fails closed and does not invoke the LLM.
 
@@ -98,6 +100,7 @@ RED tests must cover:
 - exact-fit payload unchanged and one-byte-over activation;
 - UTF-8 byte limits with multibyte text and no broken code points;
 - deterministic grouping, original in-page order, sorted positive pages, first/last preservation, and evenly spaced sampling;
+- the 32-page cap and bounded deterministic behavior for tens of thousands of eligible pages;
 - head/tail excerpts and non-empty page-addressable output;
 - fail-closed behavior when no eligible page can be retained;
 - exactly one context-compaction warning and no synthesized evidence;

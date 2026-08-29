@@ -15,9 +15,9 @@ Steps:
 
 1. Add a golden corpus for the disabled/default path and compare its serialized outputs with snapshots captured from the pre-change implementation, covering fitting, workflow-compacted, multibyte, and validation-failure inputs.
 2. Add exact-fit and one-byte-over tests using UTF-8 byte length, including Chinese/multibyte text.
-3. Add deterministic page grouping and sampling tests: ignore invalid pages, preserve original in-page order, sort pages, retain first/last, and evenly span interior pages.
+3. Add deterministic page grouping and sampling tests: ignore invalid pages, preserve original in-page order, sort pages, cap candidates at 32, retain first/last, and evenly span interior pages.
 4. Add head/tail clipping, non-empty excerpt, warning, original `page_count`, and no-synthesis assertions.
-5. Add fail-closed tests for missing eligible page text and impossible minimum budget.
+5. Add fail-closed tests for missing eligible page text and impossible minimum budget, plus a tens-of-thousands-of-pages case that proves bounded deterministic output.
 6. Run the focused tests and record the expected RED failures.
 7. Commit only the RED tests and obtain independent review.
 
@@ -32,7 +32,7 @@ Steps:
 
 1. Add a disabled-by-default context budget constant and the fixed context warning.
 2. Implement UTF-8-safe head/tail clipping without splitting code points.
-3. Implement positive-page collection, deterministic evenly spaced page selection, strict `k=n..1` page reduction, and a descending 1,400..160-byte ceiling scan.
+3. Implement positive-page collection, a 32-page evenly spaced candidate cap, at most 32 floor-size page-count checks, and one descending 1,400..160-byte ceiling scan for the maximum feasible page set.
 4. Make context compaction operate directly on the validated source payload and guarantee serialized bytes do not exceed the active budget.
 5. Fail closed when no eligible page-addressable result can be produced.
 6. Preserve the current 360,000-character workflow compaction exactly when the context option is disabled.
