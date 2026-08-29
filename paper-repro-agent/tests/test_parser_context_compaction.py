@@ -125,7 +125,7 @@ def test_context_budget_exact_fit_is_unchanged_and_one_byte_over_activates() -> 
 
 
 def test_context_clip_uses_utf8_bytes_fixed_marker_and_odd_byte_goes_to_tail() -> None:
-    value = "甲🙂乙é丙XYZ尾🙂"
+    value = "甲🙂乙é丙XYZ尾🙂" * 3
     limit = len(CONTEXT_MARKER.encode("utf-8")) + 13
 
     clipped = parser_validator._clip_text_utf8(value, limit)
@@ -155,9 +155,10 @@ def test_context_compaction_groups_orders_and_filters_positive_pages() -> None:
         warnings=["original", CONTEXT_WARNING, CONTEXT_WARNING],
     )
 
-    compacted = json.loads(
-        parser_validator._compact_payload(payload, context_budget_bytes=7_301)
+    serialized = parser_validator._compact_payload(
+        payload, context_budget_bytes=7_301
     )
+    compacted = json.loads(serialized)
 
     assert compacted["document_id"] == "doc-context"
     assert compacted["file_name"] == "paper.pdf"
@@ -169,8 +170,8 @@ def test_context_compaction_groups_orders_and_filters_positive_pages() -> None:
     ][0]["text"].index("first-b")
     assert all(element["kind"] == "text" for element in compacted["elements"])
     assert all(element["text"] for element in compacted["elements"])
-    assert compacted["warnings"].count(CONTEXT_WARNING) == 1
-    serialized = json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+    assert compacted["warnings"] == ["original", CONTEXT_WARNING]
+    assert len(serialized.encode("utf-8")) <= 7_301
     for forbidden in (
         "metric-only-in-markdown",
         "boolean-page",
@@ -192,9 +193,10 @@ def test_context_compaction_caps_at_32_and_uses_evenly_spaced_pages() -> None:
         ],
     )
 
-    compacted = json.loads(
-        parser_validator._compact_payload(payload, context_budget_bytes=7_301)
+    serialized = parser_validator._compact_payload(
+        payload, context_budget_bytes=7_301
     )
+    compacted = json.loads(serialized)
     pages = [element["page"] for element in compacted["elements"]]
     expected = [1 + (index * (page_count - 1)) // 31 for index in range(32)]
 
@@ -202,6 +204,7 @@ def test_context_compaction_caps_at_32_and_uses_evenly_spaced_pages() -> None:
     assert len(pages) == 32
     assert pages[0] == 1
     assert pages[-1] == page_count
+    assert len(serialized.encode("utf-8")) <= 7_301
 
 
 def test_context_compaction_evenly_resamples_when_budget_reduces_page_count() -> None:
@@ -215,9 +218,10 @@ def test_context_compaction_evenly_resamples_when_budget_reduces_page_count() ->
         ],
     )
 
-    compacted = json.loads(
-        parser_validator._compact_payload(payload, context_budget_bytes=900)
+    serialized = parser_validator._compact_payload(
+        payload, context_budget_bytes=900
     )
+    compacted = json.loads(serialized)
     pages = [element["page"] for element in compacted["elements"]]
     selected_count = len(pages)
     assert 1 < selected_count < len(candidate_pages)
@@ -229,6 +233,7 @@ def test_context_compaction_evenly_resamples_when_budget_reduces_page_count() ->
     assert pages == expected
     assert pages[0] == candidate_pages[0]
     assert pages[-1] == candidate_pages[-1]
+    assert len(serialized.encode("utf-8")) <= 900
 
 
 @pytest.mark.parametrize(
