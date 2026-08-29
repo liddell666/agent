@@ -365,6 +365,7 @@ def main():
             from graphon.model_runtime.entities.message_entities import SystemPromptMessage
             from graphon.model_runtime.entities.model_entities import ModelType
             from models.model import App
+            globals()["SystemPromptMessage"] = SystemPromptMessage
 
             with flask_app.app_context():
                 candidate = db.session.get(App, APP_ID)
