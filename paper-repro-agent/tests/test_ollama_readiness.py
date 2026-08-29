@@ -53,6 +53,14 @@ def assert_allowlisted_probe(probe: dict[str, object]) -> None:
         "response_nonempty",
         "response_length",
         "response_sha256",
+        "input_bytes",
+        "input_sha256",
+        "empty_prompt_tokens",
+        "prompt_tokens",
+        "prompt_token_limit",
+        "num_ctx",
+        "num_predict",
+        "think",
         "failure_phase",
         "failure_category",
     }
@@ -67,15 +75,18 @@ def assert_private_text_absent(value: object) -> None:
 
 def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     recorded: dict[str, object] = {}
+    payloads: list[dict[str, object]] = []
 
     def opener(request, timeout: float):
         recorded["url"] = request.full_url
         recorded["timeout"] = timeout
-        recorded["payload"] = json.loads(request.data)
+        payload = json.loads(request.data)
+        payloads.append(payload)
         return FakeHttpResponse(
             {
                 "done": True,
-                "response": "RESPONSE_SENTINEL_DO_NOT_PERSIST",
+                "message": {"role": "assistant", "content": "ready"},
+                "prompt_eval_count": 7 if len(payloads) == 1 else 9_000,
                 "ignored": "PROVIDER_BODY_SENTINEL",
             }
         )
@@ -97,6 +108,16 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
                     "response_nonempty": True,
                     "response_length": len(completion),
                     "response_sha256": hashlib.sha256(completion.encode()).hexdigest(),
+                    "input_bytes": readiness.OLLAMA_PRODUCTION_INPUT_BYTES,
+                    "input_sha256": hashlib.sha256(
+                        readiness.SYNTHETIC_PROMPT.encode("utf-8")
+                    ).hexdigest(),
+                    "empty_prompt_tokens": 7,
+                    "prompt_tokens": 9_000,
+                    "prompt_token_limit": readiness.OLLAMA_MAX_PROMPT_TOKENS,
+                    "num_ctx": readiness.OLLAMA_CONTEXT_NUM_CTX,
+                    "num_predict": readiness.OLLAMA_CONTEXT_NUM_PREDICT,
+                    "think": False,
                 }
             ),
             stderr="STDERR_SENTINEL",
@@ -112,14 +133,23 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
         timestamp="2026-08-29T00:00:00Z",
     )
 
-    assert recorded["url"] == "http://127.0.0.1:11434/api/generate"
+    assert recorded["url"] == "http://127.0.0.1:11434/api/chat"
     assert recorded["timeout"] == 120
-    assert recorded["payload"] == {
+    assert payloads[0] == {
         "model": "qwen3:8b",
-        "prompt": readiness.SYNTHETIC_PROMPT,
+        "messages": [{"role": "system", "content": ""}],
         "stream": False,
         "think": False,
+        "options": {
+            "num_ctx": readiness.OLLAMA_CONTEXT_NUM_CTX,
+            "num_predict": readiness.OLLAMA_CONTEXT_NUM_PREDICT,
+        },
     }
+    assert payloads[1]["model"] == "qwen3:8b"
+    assert payloads[1]["messages"][0]["role"] == "system"
+    assert len(payloads[1]["messages"][0]["content"].encode("utf-8")) == 13_824
+    assert payloads[1]["options"] == payloads[0]["options"]
+    assert payloads[1]["think"] is False
     assert recorded["argv"][:4] == [
         "docker",
         "exec",
@@ -134,7 +164,9 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     assert readiness.OLLAMA_PROVIDER in child_source
     assert readiness.OLLAMA_MODEL in child_source
     assert "from app import app as flask_app" in child_source
-    assert "from graphon.model_runtime.entities.message_entities import UserPromptMessage" in child_source
+    assert "from graphon.model_runtime.entities.message_entities import SystemPromptMessage" in child_source
+    assert "num_ctx" in child_source
+    assert "num_predict" in child_source
     assert "from graphon.model_runtime.entities.model_entities import ModelType" in child_source
     assert "ModelManager.for_tenant" in child_source
     assert "ModelType.LLM" in child_source
@@ -151,6 +183,8 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
         assert probe["response_nonempty"] is True
         assert probe["response_length"] > 0
         assert len(probe["response_sha256"]) == 64
+        assert probe["input_bytes"] == readiness.OLLAMA_PRODUCTION_INPUT_BYTES
+        assert probe["prompt_tokens"] == 9_000
     assert_private_text_absent(evidence)
 
 

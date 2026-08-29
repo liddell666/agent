@@ -118,9 +118,15 @@ def test_dify_probe_uses_system_message_and_records_only_safe_boundary_metadata(
                     "response_length": len(completion),
                     "response_sha256": hashlib.sha256(completion.encode()).hexdigest(),
                     "input_bytes": 13_824,
+                    "input_sha256": hashlib.sha256(
+                        readiness.SYNTHETIC_PROMPT.encode("utf-8")
+                    ).hexdigest(),
                     "empty_prompt_tokens": 7,
                     "prompt_tokens": 9_000,
                     "prompt_token_limit": 14_336,
+                    "num_ctx": 16_384,
+                    "num_predict": 2_048,
+                    "think": False,
                 }
             ),
             stderr="private stderr must not persist",
@@ -157,9 +163,15 @@ def test_dify_probe_rejects_invalid_or_overflow_prompt_token_evidence(prompt_tok
                     "response_length": 5,
                     "response_sha256": hashlib.sha256(b"ready").hexdigest(),
                     "input_bytes": 13_824,
+                    "input_sha256": hashlib.sha256(
+                        readiness.SYNTHETIC_PROMPT.encode("utf-8")
+                    ).hexdigest(),
                     "empty_prompt_tokens": 7,
                     "prompt_tokens": prompt_tokens,
                     "prompt_token_limit": 14_336,
+                    "num_ctx": 16_384,
+                    "num_predict": 2_048,
+                    "think": False,
                 }
             ),
             stderr="",
