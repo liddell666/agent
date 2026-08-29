@@ -182,14 +182,13 @@ def main():
     sink = io.StringIO()
     try:
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-            from app import create_app
+            from app import app as flask_app
             from core.model_manager import ModelManager
-            from core.model_runtime.entities.message_entities import UserPromptMessage
-            from core.model_runtime.entities.model_entities import ModelType
             from extensions.ext_database import db
+            from graphon.model_runtime.entities.message_entities import UserPromptMessage
+            from graphon.model_runtime.entities.model_entities import ModelType
             from models.model import App
 
-            flask_app = create_app()
             with flask_app.app_context():
                 candidate = db.session.get(App, APP_ID)
                 if candidate is None:
@@ -206,9 +205,8 @@ def main():
                     tools=[],
                     stop=[],
                     stream=False,
-                    user="ollama-readiness",
                 )
-                completion = getattr(getattr(result, "message", None), "content", None)
+                completion = result.message.get_text_content()
                 if not isinstance(completion, str) or not completion.strip():
                     raise RuntimeError("empty completion")
         encoded = completion.encode("utf-8")
@@ -260,7 +258,9 @@ def probe_dify_model_boundary(
         nonempty = document.get("response_nonempty")
         length = document.get("response_length")
         digest = document.get("response_sha256")
-        if nonempty is not True or not isinstance(length, int) or length <= 0:
+        if not isinstance(length, int) or isinstance(length, bool):
+            raise ValueError("invalid response length")
+        if nonempty is not True or length <= 0:
             category = "empty_response"
             raise ValueError("empty child result")
         if (
@@ -328,6 +328,9 @@ def build_evidence(
             and len(digest) == 64
             and all(character in "0123456789abcdef" for character in digest)
         )
+        malformed_ready = status == "ready" and not response_valid
+        if malformed_ready:
+            status = "failed"
         safe: dict[str, object] = {
             "status": status,
             "provider": provider,
@@ -345,8 +348,8 @@ def build_evidence(
             ),
         }
         if status != "ready":
-            phase = probe.get("failure_phase")
-            category = probe.get("failure_category")
+            phase = "validation" if malformed_ready else probe.get("failure_phase")
+            category = "invalid_result" if malformed_ready else probe.get("failure_category")
             safe["failure_phase"] = (
                 phase if phase in ALLOWED_FAILURE_PHASES else "validation"
             )

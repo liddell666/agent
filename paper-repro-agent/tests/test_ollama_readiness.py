@@ -133,9 +133,15 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     assert readiness.CANDIDATE_APP_ID in child_source
     assert readiness.OLLAMA_PROVIDER in child_source
     assert readiness.OLLAMA_MODEL in child_source
+    assert "from app import app as flask_app" in child_source
+    assert "from graphon.model_runtime.entities.message_entities import UserPromptMessage" in child_source
+    assert "from graphon.model_runtime.entities.model_entities import ModelType" in child_source
     assert "ModelManager.for_tenant" in child_source
     assert "ModelType.LLM" in child_source
+    assert "result.message.get_text_content()" in child_source
     assert "stream=False" in child_source
+    assert "create_app" not in child_source
+    assert "user=" not in child_source
     assert evidence["status"] == "ready"
     assert set(evidence) == {"schema", "timestamp", "status", "probes"}
     assert set(evidence["probes"]) == {"local_ollama", "dify_model_boundary"}
@@ -192,6 +198,31 @@ def test_dify_failures_map_to_safe_categories_without_raw_leakage(outcome: objec
     assert result["status"] == "failed"
     assert result["failure_category"] == category
     assert result["failure_phase"] in {"transport", "validation"}
+    assert_private_text_absent(result)
+
+
+def test_dify_probe_rejects_boolean_response_length() -> None:
+    digest = hashlib.sha256(b"x").hexdigest()
+
+    result = readiness.probe_dify_model_boundary(
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ok": True,
+                    "response_nonempty": True,
+                    "response_length": True,
+                    "response_sha256": digest,
+                }
+            ),
+            stderr="STDERR_SENTINEL",
+        ),
+        monotonic=ticking_clock(1.0, 1.1),
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_phase"] == "validation"
+    assert result["failure_category"] == "invalid_result"
     assert_private_text_absent(result)
 
 
@@ -320,3 +351,34 @@ def test_evidence_builder_drops_unrecognized_probe_fields() -> None:
     for probe in evidence["probes"].values():
         assert_allowlisted_probe(probe)
     assert_private_text_absent(evidence)
+
+
+def test_evidence_builder_downgrades_malformed_ready_probe() -> None:
+    digest = hashlib.sha256(b"x").hexdigest()
+    malformed_ready = {
+        "status": "ready",
+        "provider": readiness.OLLAMA_PROVIDER,
+        "model": readiness.OLLAMA_MODEL,
+        "mode": "dify_model_boundary",
+        "duration_seconds": 0.1,
+        "response_nonempty": True,
+        "response_length": True,
+        "response_sha256": digest,
+    }
+    local_ready = {
+        **malformed_ready,
+        "provider": "ollama",
+        "mode": "direct_http",
+        "response_length": 1,
+    }
+
+    evidence = readiness.build_evidence(local_ready, malformed_ready)
+
+    dify = evidence["probes"]["dify_model_boundary"]
+    assert evidence["status"] == "failed"
+    assert dify["status"] == "failed"
+    assert dify["failure_phase"] == "validation"
+    assert dify["failure_category"] == "invalid_result"
+    assert dify["response_nonempty"] is False
+    assert dify["response_length"] == 0
+    assert dify["response_sha256"] is None
