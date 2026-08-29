@@ -13,6 +13,7 @@ CONTEXT_MARKER = "\n...[truncated for LLM context]...\n"
 MAX_CONTEXT_PAGES = 32
 MIN_CONTEXT_PAGE_BYTES = 160
 MAX_CONTEXT_PAGE_BYTES = 1_400
+DEFAULT_CONTEXT_BUDGET_BYTES: int | None = None
 CONTEXT_COMPACTION_FAILURE = "解析器内容无法压缩到模型上下文预算，已停止发送给模型。"
 
 HTTP_ERRORS = {
@@ -142,9 +143,7 @@ def _context_pages(elements: Any) -> dict[int, str]:
             or not text.strip()
         ):
             continue
-        kind = element.get("kind")
-        prefix = f"[{kind}] " if isinstance(kind, str) and kind else ""
-        page_text.setdefault(page, []).append(prefix + text.strip())
+        page_text.setdefault(page, []).append(text.strip())
 
     return {page: "\n".join(page_text[page]) for page in sorted(page_text)}
 
@@ -192,11 +191,15 @@ def _compact_payload_for_context(
         return None
 
     all_pages = list(page_text)
-    max_page_count = min(len(all_pages), MAX_CONTEXT_PAGES)
+    candidate_pages = all_pages
+    if len(candidate_pages) > MAX_CONTEXT_PAGES:
+        candidate_pages = _sample_context_pages(
+            candidate_pages, MAX_CONTEXT_PAGES
+        )
 
     selected_pages: list[int] | None = None
-    for count in range(max_page_count, 0, -1):
-        pages = _sample_context_pages(all_pages, count)
+    for count in range(len(candidate_pages), 0, -1):
+        pages = _sample_context_pages(candidate_pages, count)
         compact = _context_object(
             payload, page_text, pages, MIN_CONTEXT_PAGE_BYTES
         )
@@ -222,7 +225,8 @@ def _compact_payload_for_context(
 
 
 def _compact_payload(
-    payload: dict[str, Any], context_budget_bytes: int | None = None
+    payload: dict[str, Any],
+    context_budget_bytes: int | None = DEFAULT_CONTEXT_BUDGET_BYTES,
 ) -> str | None:
     serialized = _serialized(payload)
 
@@ -267,7 +271,9 @@ def _compact_payload(
 
 
 def main(
-    body: str, status_code: int = 200, context_budget_bytes: int | None = None
+    body: str,
+    status_code: int = 200,
+    context_budget_bytes: int | None = DEFAULT_CONTEXT_BUDGET_BYTES,
 ) -> dict[str, Any]:
     """Return Dify-compatible validation outputs without raising user errors."""
 

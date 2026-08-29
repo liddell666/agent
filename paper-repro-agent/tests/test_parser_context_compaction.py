@@ -236,6 +236,34 @@ def test_context_compaction_evenly_resamples_when_budget_reduces_page_count() ->
     assert len(serialized.encode("utf-8")) <= 900
 
 
+def test_context_compaction_resamples_only_after_the_32_page_candidate_cap() -> None:
+    page_count = 64
+    payload = _valid_payload(
+        page_count=page_count,
+        markdown="source markdown " * 1_000,
+        elements=[
+            {"kind": "text", "page": page, "text": f"p{page}:" + "x" * 400}
+            for page in range(1, page_count + 1)
+        ],
+    )
+
+    serialized = parser_validator._compact_payload(
+        payload, context_budget_bytes=1_000
+    )
+    compacted = json.loads(serialized)
+    pages = [element["page"] for element in compacted["elements"]]
+    candidates = [
+        1 + (index * (page_count - 1)) // 31 for index in range(32)
+    ]
+    expected = [
+        candidates[(index * (len(candidates) - 1)) // (len(pages) - 1)]
+        for index in range(len(pages))
+    ]
+
+    assert pages == expected == [1, 21, 41, 64]
+    assert len(serialized.encode("utf-8")) <= 1_000
+
+
 @pytest.mark.parametrize(
     "payload,budget",
     [
