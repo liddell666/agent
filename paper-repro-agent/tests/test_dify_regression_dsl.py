@@ -114,14 +114,28 @@ def test_regression_builder_outputs_compile_and_keep_secret_environment_blank() 
 @pytest.mark.parametrize("profile", ["deepseek", "ollama"])
 def test_regression_comparison_request_uses_validated_dossier(profile: str) -> None:
     nodes = _node_map(_builder().build_regression_dsl(profile))
-    validator = nodes["validate_paper_dossier"]
+    draft_reader = nodes["normalize_protocol_draft_read_response"]
     request = nodes["build_suite_comparison_request"]
     dossier = next(
         item for item in request["data"]["variables"]
         if item["variable"] == "dossier_json"
     )
 
-    assert dossier["value_selector"] == [validator["id"], "validated_json"]
+    assert dossier["value_selector"] == [draft_reader["id"], "dossier_json"]
+
+
+def test_merged_regression_comparison_request_reads_saved_validated_dossier() -> None:
+    nodes = _node_map(_builder().build_regression_dsl("deepseek"))
+    request = nodes["build_suite_comparison_request"]
+    dossier = next(
+        item for item in request["data"]["variables"]
+        if item["variable"] == "dossier_json"
+    )
+
+    assert dossier["value_selector"] == [
+        nodes["normalize_protocol_draft_read_response"]["id"],
+        "dossier_json",
+    ]
 
 
 @pytest.mark.parametrize(

@@ -1091,14 +1091,16 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 
 
 def _wire_validated_comparison_dossier(nodes: dict[str, dict]) -> None:
-    validator = nodes["validate_paper_dossier"]
     request = nodes["build_suite_comparison_request"]
+    draft_reader = nodes.get("normalize_protocol_draft_read_response")
+    if draft_reader is None:
+        raise ValueError("regression validator/comparison chain is invalid")
     dossier = next(
         item
         for item in request["data"]["variables"]
         if item.get("variable") == "dossier_json"
     )
-    dossier["value_selector"] = [validator["id"], "validated_json"]
+    dossier["value_selector"] = [draft_reader["id"], "dossier_json"]
 
 
 def _replace_regression_code_nodes(document: dict) -> None:
@@ -1233,9 +1235,10 @@ def _validate_regression_graph(document: dict) -> None:
         )
     except (KeyError, StopIteration):
         raise ValueError("regression validator/comparison chain is invalid") from None
-    if dossier.get("value_selector") != [
-        nodes["validate_paper_dossier"]["id"],
-        "validated_json",
+    draft_reader = nodes.get("normalize_protocol_draft_read_response")
+    if draft_reader is None or dossier.get("value_selector") != [
+        draft_reader["id"],
+        "dossier_json",
     ]:
         raise ValueError("regression validator/comparison chain is invalid")
     for title in ("diagnose_dataset", "validate_dataset"):
