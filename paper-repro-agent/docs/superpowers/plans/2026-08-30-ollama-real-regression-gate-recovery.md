@@ -24,7 +24,7 @@
   - `dify/paper-comparison-multimodel-workflow-ollama.yml` — `db895087afd10762f406b12784185465e4ae93e0a63d1f2b9e3e086e0b5b4bcb`
   - `dify/paper-comparison-prepare-workflow.yml` — `54749c2b649b79e5cd0e5364541d94b0b8a207ce73014310ad320ff66523f5fb`
   - `dify/paper-comparison-prepare-workflow-ollama.yml` — `1066496786d2684b1ac8b5138a954a98937a487522d3991dcf6cac5388beae18`
-- Pre-publication candidate identity is app `17fe51d4-091f-4729-87ee-3c0a2e920918`, draft `912d4e05-494c-4302-a189-788a59c6c0c2`, published workflow `29528ff6-6615-44d5-8cee-a210bb50399a`, graph `sha256:ed6b1b42b1f84c9c2e79f0c9d32db975a2283b798c845d291d457814a42630a8`, and metadata `sha256:97f0389ff657384392ff4c2ae8aa7ea94c2b9113fb8b4d6b83c0398d524b1d6a`.
+- Pre-publication live baseline identity is app `17fe51d4-091f-4729-87ee-3c0a2e920918`, draft `912d4e05-494c-4302-a189-788a59c6c0c2`, published workflow `29528ff6-6615-44d5-8cee-a210bb50399a`, graph `sha256:ed6b1b42b1f84c9c2e79f0c9d32db975a2283b798c845d291d457814a42630a8`, and metadata `sha256:97f0389ff657384392ff4c2ae8aa7ea94c2b9113fb8b4d6b83c0398d524b1d6a`. The offline candidate graph is intentionally different: `sha256:0418e486b3196df26159d82ffcd42adaed94390ad8ccb034619e096cc712a327`.
 - Never reset Docker, delete Docker data, clear containers, or modify another Dify app.
 
 ---
