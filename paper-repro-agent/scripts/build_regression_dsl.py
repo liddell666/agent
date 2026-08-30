@@ -600,7 +600,7 @@ def main(dossier_json: str, experiment_json: str) -> dict:
     suite = object_or_empty(experiment_json)
     reported = []
     dossier_task_type = dossier.get("task_type")
-    if dossier_task_type in {"regression", "uncertain"} and suite.get("task_type") == "regression":
+    if dossier_task_type in {{"regression", "uncertain"}} and suite.get("task_type") == "regression":
         metrics = dossier.get("metrics") if isinstance(dossier.get("metrics"), list) else []
         for metric in metrics:
             if not isinstance(metric, dict) or metric.get("supported") is not True or metric.get("ambiguous") is True:

@@ -232,6 +232,16 @@ def test_regression_comparison_request_accepts_natural_values_and_aliases_only()
     assert all(sentinel not in json.dumps(result, ensure_ascii=False) for sentinel in SENTINELS)
 
 
+def test_regression_comparison_request_preserves_task_type_set_literal() -> None:
+    request = next(
+        node
+        for node in _document()["workflow"]["graph"]["nodes"]
+        if node["data"]["title"] == "build_suite_comparison_request"
+    )
+
+    assert 'in {"regression", "uncertain"}' in request["data"]["code"]
+
+
 def test_regression_comparison_request_accepts_uncertain_dossier_when_execution_is_regression() -> None:
     dossier = {
         "task_type": "uncertain",
