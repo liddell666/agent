@@ -1106,9 +1106,10 @@ def _regression_extractor_prompt(text: str) -> str:
     original = text[start:end]
     replacement = (
         "## Field guidance\n\n"
-        "- `task_type`: use `regression` only for an explicit continuous target; otherwise `uncertain`.\n"
-        "- `metrics`: For this regression workflow, extract only MAE, RMSE, and R2/R^2. Search all page elements. Keep exact evidence and dataset/split qualifiers. `reported_value` must be a single finite numeric scalar; otherwise use null and add a gap. Never put prose such as `unknown`, `not reported`, `N/A`, or `unavailable` in `reported_value`.\n"
-        "- `datasets`, `methods`, and `gaps`: keep only supported, actionable paper facts.\n\n"
+        "- Fields: title, research_problem, task_type, datasets, methods, metrics, gaps. Never omit any field; use uncertain or [] when absent.\n"
+        "- task_type: regression only for an explicit continuous target; otherwise uncertain.\n"
+        "- metrics: For this regression workflow, extract only MAE, RMSE, and R2/R^2. Search all page elements. Preserve dataset/split qualifiers. reported_value must be a single finite numeric scalar; otherwise null + gap. Never put prose such as unknown/not reported/N/A/unavailable in reported_value.\n"
+        "- Evidence: one short verbatim excerpt per fact, actual page, no long quotes. Do not explain or reason; JSON only, no Markdown/commentary.\n\n"
     )
     original_bytes = len(original.encode("utf-8"))
     replacement_bytes = len(replacement.encode("utf-8"))

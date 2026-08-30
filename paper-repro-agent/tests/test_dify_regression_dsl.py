@@ -227,6 +227,10 @@ def test_regression_extractor_prompt_requires_usable_scalar_metrics(profile: str
     assert "single finite numeric scalar" in prompt
     assert "Never put prose such as" in prompt
     assert "Search all page elements" in prompt
+    assert "title, research_problem, task_type, datasets, methods, metrics, gaps" in prompt
+    assert "Never omit any field" in prompt
+    assert "one short verbatim excerpt" in prompt
+    assert "Do not explain or reason" in prompt
 
 
 def test_regression_ollama_prompt_keeps_the_fixed_byte_budget() -> None:
