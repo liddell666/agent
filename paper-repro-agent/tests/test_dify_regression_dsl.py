@@ -217,6 +217,30 @@ def test_dossier_prompt_adds_regression_aliases_without_weakening_classification
     assert "Copy each paper-reported value exactly." in prompt
 
 
+@pytest.mark.parametrize("profile", ["deepseek", "ollama"])
+def test_regression_extractor_prompt_requires_usable_scalar_metrics(profile: str) -> None:
+    document = _builder().build_regression_dsl(profile)
+    prompt = _node_map(document)["extract_paper_dossier"]["data"]["prompt_template"][0]["text"]
+
+    assert "For this regression workflow" in prompt
+    assert "MAE, RMSE, and R2/R^2" in prompt
+    assert "single finite numeric scalar" in prompt
+    assert "Never put prose such as" in prompt
+    assert "Search all page elements" in prompt
+
+
+def test_regression_ollama_prompt_keeps_the_fixed_byte_budget() -> None:
+    document = _builder().build_regression_dsl("ollama")
+    prompt = _node_map(document)["extract_paper_dossier"]["data"]["prompt_template"][0]["text"]
+    for placeholder in (
+        "{{#3910000000003.parsed_json#}}",
+        "{{#3900000000001.protocol_notes#}}",
+    ):
+        prompt = prompt.replace(placeholder, "")
+
+    assert len(prompt.encode("utf-8")) == 4_475
+
+
 def test_synthetic_regression_pdf_is_small_and_contains_acceptance_literals() -> None:
     assert REGRESSION_PDF.stat().st_size < 100_000
     text = "\n".join(page.extract_text() or "" for page in PdfReader(REGRESSION_PDF).pages)

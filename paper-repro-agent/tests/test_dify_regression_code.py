@@ -552,6 +552,65 @@ def test_similarity_assessment_preserves_allowlisted_model_identity() -> None:
     assert assessment["items"][0]["model"] == "random_forest"
 
 
+def test_regression_assessment_emits_safe_strict_reason_codes() -> None:
+    result = _exec_code_node("score_approximate_similarity")(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "model": "random_forest",
+                        "name": "rmse",
+                        "paper_value": 2.0,
+                        "independent_value": 1.8,
+                        "absolute_difference": 0.2,
+                        "relative_difference": -0.1,
+                        "comparable": False,
+                        "reason": SENTINELS[1],
+                    }
+                ]
+            }
+        ),
+        0.05,
+        0.1,
+    )
+
+    assessment = json.loads(result["assessment_json"])
+    assert assessment["strict_status"] == "not_comparable"
+    assert assessment["strict_reason_codes"] == ["paper_provenance_unverified"]
+    assert all(sentinel not in _combined_output(result) for sentinel in SENTINELS)
+
+
+def test_regression_report_preserves_only_allowlisted_strict_reason_codes() -> None:
+    result = _exec_code_node("format_suite_comparison_report")(
+        "{}",
+        "{}",
+        json.dumps(
+            {
+                "experiment_id": "exp-strict-reason",
+                "status": "succeeded",
+                "task_type": "regression",
+                "results": [],
+            }
+        ),
+        "{}",
+        json.dumps(
+            {
+                "strict_status": "not_comparable",
+                "approximate_status": "insufficient_metrics",
+                "strict_reason_codes": [
+                    "paper_provenance_unverified",
+                    SENTINELS[2],
+                ],
+                "items": [],
+            }
+        ),
+    )
+
+    assessment = json.loads(result["assessment_json"])
+    assert assessment["strict_reason_codes"] == ["paper_provenance_unverified"]
+    assert all(sentinel not in _combined_output(result) for sentinel in SENTINELS)
+
+
 def test_regression_report_uses_natural_metrics_both_rankings_and_redacts_outputs() -> None:
     result = _exec_code_node("format_suite_comparison_report")(
         json.dumps(

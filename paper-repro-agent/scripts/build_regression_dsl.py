@@ -884,6 +884,7 @@ SAFE_STATUSES = {{"queued", "running", "succeeded", "partial", "failed", "cancel
 SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{{0,63}}$")
 SAFE_ID_RE = re.compile(r"^(?:exp|job)-[A-Za-z0-9][A-Za-z0-9-]{{0,127}}$")
 SHA_RE = re.compile(r"^sha256:[0-9a-f]{{64}}$")
+SAFE_STRICT_REASON_CODES = {{"comparison_metrics_missing", "paper_provenance_unverified"}}
 
 def object_or_empty(value):
     try:
@@ -1026,6 +1027,11 @@ def safe_assessment(raw):
         safe["strict_status"] = raw["strict_status"]
     if raw.get("approximate_status") in {{"insufficient_metrics", "highly_similar", "partially_similar", "materially_different"}}:
         safe["approximate_status"] = raw["approximate_status"]
+    reasons = raw.get("strict_reason_codes")
+    if isinstance(reasons, list):
+        safe["strict_reason_codes"] = [
+            reason for reason in reasons if reason in SAFE_STRICT_REASON_CODES
+        ]
     safe["items"] = []
     for item in raw.get("items", []) if isinstance(raw.get("items"), list) else []:
         if not isinstance(item, dict) or item.get("model") not in KNOWN_MODELS or item.get("name") not in KNOWN_METRICS:
@@ -1090,6 +1096,28 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 '''
 
 
+def _regression_extractor_prompt(text: str) -> str:
+    start_marker = "## Field guidance\n"
+    end_marker = "\nWrite descriptions"
+    start = text.find(start_marker)
+    end = text.find(end_marker, start + len(start_marker))
+    if start < 0 or end < 0:
+        raise ValueError("regression extractor prompt contract is invalid")
+    original = text[start:end]
+    replacement = (
+        "## Field guidance\n\n"
+        "- `task_type`: use `regression` only for an explicit continuous target; otherwise `uncertain`.\n"
+        "- `metrics`: For this regression workflow, extract only MAE, RMSE, and R2/R^2. Search all page elements. Keep exact evidence and dataset/split qualifiers. `reported_value` must be a single finite numeric scalar; otherwise use null and add a gap. Never put prose such as `unknown`, `not reported`, `N/A`, or `unavailable` in `reported_value`.\n"
+        "- `datasets`, `methods`, and `gaps`: keep only supported, actionable paper facts.\n\n"
+    )
+    original_bytes = len(original.encode("utf-8"))
+    replacement_bytes = len(replacement.encode("utf-8"))
+    if replacement_bytes > original_bytes:
+        raise ValueError("regression extractor prompt guidance exceeds fixed budget")
+    padding = " " * (original_bytes - replacement_bytes)
+    return text[:start] + replacement + padding + text[end:]
+
+
 def _wire_validated_comparison_dossier(nodes: dict[str, dict]) -> None:
     request = nodes["build_suite_comparison_request"]
     draft_reader = nodes.get("normalize_protocol_draft_read_response")
@@ -1117,12 +1145,43 @@ def _replace_regression_code_nodes(document: dict) -> None:
     nodes["build_suite_comparison_request"]["data"]["code"] = _comparison_request_code()
     _wire_validated_comparison_dossier(nodes)
     nodes["parse_suite_comparison_response"]["data"]["code"] = _comparison_parse_code()
+    for message in nodes["extract_paper_dossier"]["data"].get("prompt_template", []):
+        if isinstance(message, dict) and isinstance(message.get("text"), str):
+            message["text"] = _regression_extractor_prompt(message["text"])
     score = nodes["score_approximate_similarity"]["data"]
     old = 'graded.append({"name": item.get("name"), "paper_value": paper,'
     new = 'graded.append({"model": item.get("model"), "name": item.get("name"), "paper_value": paper,'
     if score["code"].count(old) != 1:
         raise ValueError("regression similarity scorer contract is invalid")
     score["code"] = score["code"].replace(old, new)
+    old_reason = '"reason": item.get("reason")'
+    new_reason = '"reason": "details redacted for privacy." if isinstance(item.get("reason"), str) else None'
+    if score["code"].count(old_reason) != 1:
+        raise ValueError("regression similarity reason contract is invalid")
+    score["code"] = score["code"].replace(old_reason, new_reason)
+    old_status_block = (
+        '    comparable = sum(item["comparable"] for item in graded)\n'
+        '    strict = "not_comparable" if not graded or comparable == 0 else "strictly_comparable" if comparable == len(graded) else "partially_comparable"\n'
+    )
+    new_status_block = (
+        '    comparable = sum(item["comparable"] for item in graded)\n'
+        '    strict = "not_comparable" if not graded or comparable == 0 else "strictly_comparable" if comparable == len(graded) else "partially_comparable"\n'
+        '    strict_reason_codes = [\n'
+        '        "comparison_metrics_missing" if not graded else "paper_provenance_unverified"\n'
+        '    ] if strict == "not_comparable" else []\n'
+    )
+    if score["code"].count(old_status_block) != 1:
+        raise ValueError("regression similarity strict-status contract is invalid")
+    score["code"] = score["code"].replace(old_status_block, new_status_block)
+    old_assessment_fields = (
+        '"strict_status": strict, "approximate_status": approximate,'
+    )
+    new_assessment_fields = (
+        '"strict_status": strict, "strict_reason_codes": strict_reason_codes, "approximate_status": approximate,'
+    )
+    if score["code"].count(old_assessment_fields) != 1:
+        raise ValueError("regression similarity assessment contract is invalid")
+    score["code"] = score["code"].replace(old_assessment_fields, new_assessment_fields)
     nodes["format_suite_comparison_report"]["data"]["code"] = _report_code()
     _replace_terminal_failure_nodes(nodes)
     for node in _nodes(document):
