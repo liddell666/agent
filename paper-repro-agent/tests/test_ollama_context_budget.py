@@ -34,12 +34,12 @@ def _fixed_prompt_bytes(document: dict) -> int:
 
 def test_ollama_budget_constants_prove_the_fixed_context_envelope() -> None:
     assert OLLAMA_CONTEXT_NUM_CTX == 16_384
-    assert OLLAMA_CONTEXT_NUM_PREDICT == 2_048
+    assert OLLAMA_CONTEXT_NUM_PREDICT == 3_072
     assert OLLAMA_FIXED_PROMPT_UTF8_BYTES == 4_475
     assert OLLAMA_MAX_PROTOCOL_NOTES_UTF8_BYTES == 2_048
     assert OLLAMA_CHAT_OVERHEAD_TOKENS == 512
-    assert OLLAMA_COMPLETION_RESERVE_TOKENS == 2_048
-    assert OLLAMA_PARSER_PAYLOAD_BYTES == 7_301
+    assert OLLAMA_COMPLETION_RESERVE_TOKENS == 3_072
+    assert OLLAMA_PARSER_PAYLOAD_BYTES == 6_277
     assert (
         OLLAMA_FIXED_PROMPT_UTF8_BYTES
         + OLLAMA_MAX_PROTOCOL_NOTES_UTF8_BYTES
@@ -72,7 +72,7 @@ def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> No
     assert llm["model"]["completion_params"]["think"] is False
     assert llm["model"]["completion_params"]["num_ctx"] == OLLAMA_CONTEXT_NUM_CTX
     assert llm["model"]["completion_params"]["num_predict"] == OLLAMA_CONTEXT_NUM_PREDICT
-    assert "DEFAULT_CONTEXT_BUDGET_BYTES: int | None = 7301" in parser
+    assert "DEFAULT_CONTEXT_BUDGET_BYTES: int | None = 6277" in parser
 
     deepseek = build_regression_dsl("deepseek")
     deepseek_llm = _node(deepseek, "extract_paper_dossier")["data"]

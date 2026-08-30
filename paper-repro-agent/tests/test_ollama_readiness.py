@@ -147,7 +147,10 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     }
     assert payloads[1]["model"] == "qwen3:8b"
     assert payloads[1]["messages"][0]["role"] == "system"
-    assert len(payloads[1]["messages"][0]["content"].encode("utf-8")) == 13_824
+    assert (
+        len(payloads[1]["messages"][0]["content"].encode("utf-8"))
+        == readiness.OLLAMA_PRODUCTION_INPUT_BYTES
+    )
     assert payloads[1]["options"] == payloads[0]["options"]
     assert payloads[1]["think"] is False
     assert recorded["argv"][:4] == [
