@@ -232,6 +232,74 @@ def test_regression_comparison_request_accepts_natural_values_and_aliases_only()
     assert all(sentinel not in json.dumps(result, ensure_ascii=False) for sentinel in SENTINELS)
 
 
+def test_regression_comparison_request_accepts_uncertain_dossier_when_execution_is_regression() -> None:
+    dossier = {
+        "task_type": "uncertain",
+        "metrics": [{
+            "name": "MAE",
+            "supported": True,
+            "ambiguous": False,
+            "reported_value": 1.25,
+            "dataset": "benchmark",
+            "split": "test",
+        }],
+    }
+
+    result = _exec_code_node("build_suite_comparison_request")(
+        json.dumps(dossier, ensure_ascii=False),
+        json.dumps({"experiment_id": "exp-uncertain-dossier", "task_type": "regression"}),
+    )
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"]) == {
+        "experiment_id": "exp-uncertain-dossier",
+        "reported_metrics": [{
+            "name": "mae",
+            "reported_value": 1.25,
+            "dataset": "benchmark",
+            "split": "test",
+        }],
+    }
+    assert dossier["task_type"] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    ("dossier_task_type", "suite_task_type", "experiment_id"),
+    [
+        ("classification", "regression", "exp-explicit-conflict"),
+        ("uncertain", "classification", "exp-wrong-suite"),
+        ("uncertain", "regression", "not valid"),
+    ],
+)
+def test_regression_comparison_request_rejects_conflicts_and_invalid_execution_authority(
+    dossier_task_type: str,
+    suite_task_type: str,
+    experiment_id: str,
+) -> None:
+    result = _exec_code_node("build_suite_comparison_request")(
+        json.dumps(
+            {
+                "task_type": dossier_task_type,
+                "metrics": [{
+                    "name": "RMSE",
+                    "supported": True,
+                    "ambiguous": False,
+                    "reported_value": 2.0,
+                }],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps({"experiment_id": experiment_id, "task_type": suite_task_type}),
+    )
+
+    assert result["suite_comparison_request_ok"] is False
+    assert json.loads(result["suite_comparison_request_json"]) == {}
+    assert json.loads(result["suite_comparison_request_errors"]) == [{
+        "code": "invalid_regression_comparison_request",
+        "message": "Regression experiment and supported metrics are required.",
+    }]
+
+
 def test_regression_validator_feeds_supported_natural_metrics_to_comparison_request() -> None:
     validator = _exec_code_node("validate_paper_dossier")
     dossier = {
