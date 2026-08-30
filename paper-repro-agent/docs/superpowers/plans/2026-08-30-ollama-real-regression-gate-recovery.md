@@ -337,8 +337,7 @@ Use `requesting-code-review` against commits from Tasks 1 and 2. Resolve every c
 **Files:**
 - Create: `.live-artifacts/ollama-real-regression-gate-recovery-readiness-pre-publication.json`
 - Create: `.live-artifacts/ollama-real-regression-gate-recovery-release-manifest.json`
-- Create: `.live-artifacts/ollama-real-regression-gate-recovery-draft-snapshot.json`
-- Create: `.live-artifacts/ollama-real-regression-gate-recovery-published-snapshot.json`
+- Temporarily create and remove: two graph snapshots under a verified task-specific directory returned by `[System.IO.Path]::GetTempPath()`
 
 **Interfaces:**
 - Consumes: verified Ollama DSL and the live local Docker/Dify/Ollama boundaries.
@@ -364,15 +363,15 @@ Expected: aggregate status `ready`; direct and Dify probes both record `num_ctx=
 
 - [ ] **Step 3: Read and freeze exact candidate state**
 
-Use the existing Dify ORM readback procedure to assert the Global Constraints app/draft/published/graph/metadata identities. Write the draft and published graph objects to the two explicitly named snapshot files for the checker, with no workflow inputs, outputs, prompts, or execution data. Convert the generated Ollama DSL to its canonical graph with `scripts.workflow_release_integrity.canonical_graph`, then record source, DSL, and graph SHA-256 digests plus node/edge counts in `.live-artifacts/ollama-real-regression-gate-recovery-release-manifest.json`. Store no model text.
+Use the existing Dify ORM readback procedure to assert the Global Constraints app/draft/published/graph/metadata identities. Create a task-specific directory under `[System.IO.Path]::GetTempPath()`, verify its resolved absolute path remains beneath that root, and write the draft and published graph objects there solely for the checker. Convert the generated Ollama DSL to its canonical graph with `scripts.workflow_release_integrity.canonical_graph`, then record source, DSL, and graph SHA-256 digests plus node/edge counts in `.live-artifacts/ollama-real-regression-gate-recovery-release-manifest.json`. Persist no graph body, prompt template, or model text under `.live-artifacts`.
 
 - [ ] **Step 4: Verify the release manifest read-only**
 
 ```powershell
-python scripts/check_workflow_release.py --dsl dify/paper-comparison-regression-workflow-ollama.yml --source scripts/build_multimodel_dsl.py scripts/build_regression_dsl.py dify/code/validate_parser.py dify/paper-dossier-system-prompt.md --draft-snapshot .live-artifacts/ollama-real-regression-gate-recovery-draft-snapshot.json --published-snapshot .live-artifacts/ollama-real-regression-gate-recovery-published-snapshot.json --json
+python scripts/check_workflow_release.py --dsl dify/paper-comparison-regression-workflow-ollama.yml --source scripts/build_multimodel_dsl.py scripts/build_regression_dsl.py dify/code/validate_parser.py dify/paper-dossier-system-prompt.md --draft-snapshot $draftSnapshot --published-snapshot $publishedSnapshot --json
 ```
 
-Expected result: the checker reports no source/DSL/draft/published drift before mutation.
+Expected result: the checker reports no source/DSL/draft/published drift before mutation. After capturing only the safe checker result and digests, resolve both snapshot paths and their parent again, verify all remain under the task-specific temporary directory, then remove that exact directory with `Remove-Item -LiteralPath $temporarySnapshotDirectory -Recurse`. Confirm neither snapshot exists and no prompt-bearing snapshot was copied to `.live-artifacts`.
 
 ### Task 5: Publish only the isolated Ollama candidate
 
