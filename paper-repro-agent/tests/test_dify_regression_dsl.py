@@ -231,6 +231,10 @@ def test_regression_extractor_prompt_requires_usable_scalar_metrics(profile: str
     assert "Never omit any field" in prompt
     assert "one short verbatim excerpt" in prompt
     assert "Do not explain or reason" in prompt
+    assert "Keep the output compact" in prompt
+    assert "reported_value is a bare JSON number" in prompt
+    assert "dataset and split must be non-empty" in prompt
+    assert "Do not copy equations or metric definitions" in prompt
 
 
 def test_regression_ollama_prompt_keeps_the_fixed_byte_budget() -> None:
