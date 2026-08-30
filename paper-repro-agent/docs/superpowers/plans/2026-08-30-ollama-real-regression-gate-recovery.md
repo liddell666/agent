@@ -367,11 +367,13 @@ Use the existing Dify ORM readback procedure to assert the Global Constraints ap
 
 - [ ] **Step 4: Verify the release manifest read-only**
 
+Run the candidate source/DSL check without live snapshots:
+
 ```powershell
-python scripts/check_workflow_release.py --dsl dify/paper-comparison-regression-workflow-ollama.yml --source scripts/build_multimodel_dsl.py scripts/build_regression_dsl.py dify/code/validate_parser.py dify/paper-dossier-system-prompt.md --draft-snapshot $draftSnapshot --published-snapshot $publishedSnapshot --json
+python scripts/check_workflow_release.py --dsl dify/paper-comparison-regression-workflow-ollama.yml --source scripts/build_multimodel_dsl.py scripts/build_regression_dsl.py dify/code/validate_parser.py dify/paper-dossier-system-prompt.md --json
 ```
 
-Expected result: the checker reports no source/DSL/draft/published drift before mutation. After capturing only the safe checker result and digests, resolve both snapshot paths and their parent again, verify all remain under the task-specific temporary directory, then remove that exact directory with `Remove-Item -LiteralPath $temporarySnapshotDirectory -Recurse`. Confirm neither snapshot exists and no prompt-bearing snapshot was copied to `.live-artifacts`.
+Expected result: `{"drift":[]}`. This proves the candidate is self-consistent; it must not compare the new candidate DSL to the old live draft before publication. Separately compare the two temporary live snapshots in memory and require their app IDs, metadata digests, canonical graph digests, node counts, and edge counts to match the current pre-publication values in Global Constraints. The expected result is live draft/published equality at `sha256:ed6b1b42b1f84c9c2e79f0c9d32db975a2283b798c845d291d457814a42630a8`, while the candidate graph is the intentionally different graph recorded in the release manifest. After capturing only the safe checker result and digests, resolve both snapshot paths and their parent again, verify all remain under the task-specific temporary directory, then remove that exact directory with `Remove-Item -LiteralPath $temporarySnapshotDirectory -Recurse`. Confirm neither snapshot exists and no prompt-bearing snapshot was copied to `.live-artifacts`.
 
 ### Task 5: Publish only the isolated Ollama candidate
 
