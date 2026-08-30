@@ -224,6 +224,8 @@ def test_regression_extractor_prompt_requires_usable_scalar_metrics(profile: str
 
     assert "For this regression workflow" in prompt
     assert "MAE, RMSE, and R2/R^2" in prompt
+    assert "paper predicts a continuous numeric target" in prompt
+    assert "R²=>r2" in prompt
     assert "single finite numeric scalar" in prompt
     assert "Never put prose such as" in prompt
     assert "Search all page elements" in prompt

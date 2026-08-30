@@ -1107,11 +1107,11 @@ def _regression_extractor_prompt(text: str) -> str:
     replacement = (
         "## Field guidance\n\n"
         "- Fields: title, research_problem, task_type, datasets, methods, metrics, gaps; Never omit any field; absent=uncertain/[]\n"
-        "- task_type: regression only for explicit continuous target; else uncertain\n"
-        "- For this regression workflow: MAE, RMSE, and R2/R^2. Search all page elements. reported_value=single finite numeric scalar or null; Never put prose such as words.\n"
+        "- task_type: if paper predicts a continuous numeric target, emit regression; else uncertain\n"
+        "- For this regression workflow: MAE, RMSE, and R2/R^2; R²=>r2. Search all page elements. reported_value is a bare JSON number; single finite numeric scalar; Never put prose such as words.\n"
         "- Evidence: one short verbatim excerpt, page. Do not explain or reason; JSON only.\n"
-        "- Keep the output compact; one evidence object/fact. Do not copy equations or metric definitions.\n"
-        "- Comparison: dataset and split must be non-empty; usable reported_value is a bare JSON number; else null + evidence + gap.\n"
+        "- Keep the output compact; evidence object/fact. Do not copy equations or metric definitions.\n"
+        "- Comparison: dataset and split must be non-empty; else null + evidence + gap.\n"
     )
     original_bytes = len(original.encode("utf-8"))
     replacement_bytes = len(replacement.encode("utf-8"))
