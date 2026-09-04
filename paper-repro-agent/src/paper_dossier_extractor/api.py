@@ -6,6 +6,8 @@ import asyncio
 import logging
 import secrets
 import time
+from contextlib import contextmanager
+from threading import Lock
 from typing import Annotated
 from uuid import uuid4
 
@@ -23,7 +25,7 @@ from paper_parser.schemas import ParsedPaper
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Paper Dossier Extractor", version="0.1.0")
-_extraction_semaphore = asyncio.Semaphore(1)
+_extraction_capacity_lock = Lock()
 
 
 def _request_id() -> str:
@@ -35,6 +37,17 @@ def _error(status_code: int, code: str, request_id: str) -> HTTPException:
         status_code=status_code,
         detail={"code": code, "request_id": request_id},
     )
+
+
+@contextmanager
+def _reserve_extraction_capacity(request_id: str):
+    if not _extraction_capacity_lock.acquire(blocking=False):
+        _log_terminal(request_id, "extraction_capacity_reached")
+        raise _error(429, "extraction_capacity_reached", request_id)
+    try:
+        yield
+    finally:
+        _extraction_capacity_lock.release()
 
 
 def _log_terminal(
@@ -151,14 +164,9 @@ async def extract_dossier_endpoint(
     request_id = _request_id()
     _require_valid_token(request_id, token, settings)
 
-    if _extraction_semaphore.locked():
-        _log_terminal(request_id, "extraction_capacity_reached")
-        raise _error(429, "extraction_capacity_reached", request_id)
-
-    await _extraction_semaphore.acquire()
-    started = time.monotonic()
-    observed_client = _ObservedClient(client)
-    try:
+    with _reserve_extraction_capacity(request_id):
+        started = time.monotonic()
+        observed_client = _ObservedClient(client)
         try:
             response = await run_in_threadpool(
                 extract_dossier,
@@ -192,8 +200,6 @@ async def extract_dossier_endpoint(
         elapsed_seconds = time.monotonic() - started
         _log_response(request_id, response, elapsed_seconds)
         return response
-    finally:
-        _extraction_semaphore.release()
 
 
 @app.get("/v1/readiness/extractor", response_model=ExtractorReadinessResponse)
@@ -205,13 +211,8 @@ async def extractor_readiness_endpoint(
     request_id = _request_id()
     _require_valid_token(request_id, token, settings)
 
-    if _extraction_semaphore.locked():
-        _log_terminal(request_id, "extraction_capacity_reached")
-        raise _error(429, "extraction_capacity_reached", request_id)
-
-    await _extraction_semaphore.acquire()
-    started = time.monotonic()
-    try:
+    with _reserve_extraction_capacity(request_id):
+        started = time.monotonic()
         try:
             response = await run_in_threadpool(
                 extract_readiness_probe,
@@ -247,5 +248,3 @@ async def extractor_readiness_endpoint(
             failed_chunk_count=response.failed_chunk_count,
         )
         return response
-    finally:
-        _extraction_semaphore.release()

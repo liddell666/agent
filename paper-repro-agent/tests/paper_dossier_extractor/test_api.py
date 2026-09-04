@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from paper_parser.schemas import PaperElement, ParsedPaper
@@ -111,6 +112,10 @@ def _post(client: TestClient, *, headers: dict[str, str] | None = None):
         headers=headers,
         json=_paper().model_dump(mode="json"),
     )
+
+
+def _get_readiness(client: TestClient, *, headers: dict[str, str] | None = None):
+    return client.get("/v1/readiness/extractor", headers=headers)
 
 
 def test_health_is_public_and_reports_fixed_service_identity(client: TestClient) -> None:
@@ -226,6 +231,48 @@ def test_second_concurrent_extraction_is_rejected_and_slot_recovers(
         assert entered.wait(timeout=5)
 
         second = _post(client, headers={"X-Extractor-Token": TOKEN})
+        assert second.status_code == 429
+        detail = second.json()["detail"]
+        assert detail["code"] == "extraction_capacity_reached"
+        assert detail["request_id"]
+
+        release.set()
+        first = first_future.result(timeout=5)
+
+    assert first.status_code == 200
+
+
+def test_capacity_reservation_rejects_second_reservation_without_waiting() -> None:
+    with api._reserve_extraction_capacity("a" * 32):
+        with pytest.raises(HTTPException) as error:
+            with api._reserve_extraction_capacity("b" * 32):
+                pytest.fail("second reservation should never succeed")
+
+    assert error.value.status_code == 429
+    assert error.value.detail["code"] == "extraction_capacity_reached"
+    assert error.value.detail["request_id"] == "b" * 32
+
+
+def test_second_concurrent_readiness_is_rejected_and_slot_recovers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def blocking_readiness(*_args):
+        entered.set()
+        assert release.wait(timeout=5)
+        return _readiness_response()
+
+    monkeypatch.setattr(api, "extract_readiness_probe", blocking_readiness)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_future = executor.submit(
+            _get_readiness, client, headers={"X-Extractor-Token": TOKEN}
+        )
+        assert entered.wait(timeout=5)
+
+        second = _get_readiness(client, headers={"X-Extractor-Token": TOKEN})
         assert second.status_code == 429
         detail = second.json()["detail"]
         assert detail["code"] == "extraction_capacity_reached"

@@ -169,6 +169,10 @@ def extract_readiness_probe(
         or extracted.completion_tokens is None
     ):
         raise RuntimeError("synthetic readiness evidence incomplete")
+    if extracted.completion_tokens <= 0:
+        raise RuntimeError("synthetic readiness completion tokens invalid")
+    if extracted.completion_tokens > settings.num_predict:
+        raise RuntimeError("synthetic readiness completion exceeds reserved budget")
     if extracted.prompt_tokens + settings.num_predict > settings.num_ctx:
         raise RuntimeError("synthetic readiness prompt exceeds reserved context")
     if (

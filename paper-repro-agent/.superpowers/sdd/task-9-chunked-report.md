@@ -56,3 +56,23 @@ GREEN:
 concerns:
 - The existing FastAPI/Starlette `TestClient` deprecation warning remains.
 - Live Docker/Dify/Ollama readiness was not run in this task; verification was limited to the focused automated suites above.
+
+## 2026-09-04 Review Fix 2
+
+status: fixed; readiness now fails closed on impossible completion-token evidence, and extractor capacity reservation is shared, deterministic, and non-blocking across extract and readiness routes.
+
+commit_message: `fix: harden readiness evidence and capacity reservation`
+
+RED:
+- `python -m pytest tests/paper_dossier_extractor/test_service.py::test_readiness_probe_fails_closed_when_completion_tokens_exceed_reserved_budget tests/paper_dossier_extractor/test_api.py::test_second_concurrent_readiness_is_rejected_without_waiting_after_reservation_race -q`
+- Result: `2 failed, 1 warning in 1.01s`; readiness accepted completion tokens beyond the configured reserve, and the readiness route allowed a second request to wait through the check/acquire race instead of returning a stable capacity error.
+
+GREEN:
+- `python -m pytest tests/paper_dossier_extractor/test_service.py::test_readiness_probe_fails_closed_when_completion_tokens_exceed_reserved_budget tests/paper_dossier_extractor/test_api.py::test_capacity_reservation_rejects_second_reservation_without_waiting tests/paper_dossier_extractor/test_api.py::test_second_concurrent_readiness_is_rejected_and_slot_recovers -q`
+- Result: `3 passed, 1 warning in 0.82s`
+- `python -m pytest tests/paper_dossier_extractor tests/test_ollama_readiness.py tests/test_ollama_readiness_contract.py -q`
+- Result: `121 passed, 1 warning in 1.38s`
+
+concerns:
+- The existing FastAPI/Starlette `TestClient` deprecation warning remains.
+- Live Docker/Dify/Ollama readiness was not run in this task; verification was limited to focused extractor and readiness suites.

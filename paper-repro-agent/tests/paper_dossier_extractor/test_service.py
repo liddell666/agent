@@ -1,6 +1,8 @@
 import hashlib
 import json
 
+import pytest
+
 from paper_parser.schemas import PaperElement, ParsedPaper
 
 from paper_dossier_extractor.chunking import serialize_pages
@@ -145,6 +147,24 @@ def test_readiness_probe_returns_extractor_owned_metadata_and_effective_config()
     assert response.num_predict == 1_024
     assert response.max_chunk_source_bytes == 4_096
     assert response.max_ollama_calls == 6
+
+
+def test_readiness_probe_fails_closed_when_completion_tokens_exceed_reserved_budget() -> None:
+    settings = _settings(num_predict=128)
+    client = ScriptedClient(
+        OllamaCompletion(
+            text=json.dumps(_successful_partial(), ensure_ascii=False, separators=(",", ":")),
+            finish_reason="stop",
+            prompt_tokens=321,
+            completion_tokens=129,
+        )
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic readiness completion exceeds reserved budget",
+    ):
+        extract_readiness_probe(settings, client, clock=lambda: 15.0)
 
 
 def test_long_paper_uses_chunked_mode_and_preserves_chunk_order() -> None:
