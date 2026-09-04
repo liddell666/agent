@@ -1,7 +1,9 @@
+import hashlib
 import json
 
 from paper_parser.schemas import PaperElement, ParsedPaper
 
+from paper_dossier_extractor.chunking import serialize_pages
 from paper_dossier_extractor.config import Settings
 from paper_dossier_extractor.ollama import OllamaError
 from paper_dossier_extractor.schemas import OllamaCompletion, PageChunk
@@ -86,6 +88,38 @@ def test_short_paper_uses_single_mode_and_returns_a_dossier() -> None:
     assert response.diagnostics.ollama_call_count == 1
     assert response.diagnostics.successful_chunk_count == 1
     assert response.diagnostics.failed_chunk_count == 0
+
+
+def test_service_diagnostics_include_safe_effective_config_and_actual_call_evidence() -> None:
+    paper = _paper("Results: RMSE was 2.0.")
+    settings = _settings(
+        num_ctx=12_288,
+        num_predict=1_024,
+        max_chunk_source_bytes=4_096,
+        max_ollama_calls=6,
+    )
+    client = ScriptedClient(
+        OllamaCompletion(
+            text=json.dumps(_successful_partial(), ensure_ascii=False, separators=(",", ":")),
+            finish_reason="stop",
+            prompt_tokens=321,
+            completion_tokens=111,
+        )
+    )
+
+    response = extract_dossier(paper, settings, client, clock=lambda: 15.0)
+    chunk = client.calls[0]
+    expected_source = serialize_pages(chunk.pages).encode("utf-8")
+
+    assert response.ok is True
+    assert response.diagnostics.num_ctx == 12_288
+    assert response.diagnostics.num_predict == 1_024
+    assert response.diagnostics.max_chunk_source_bytes == 4_096
+    assert response.diagnostics.max_ollama_calls == 6
+    assert response.diagnostics.source_bytes == chunk.source_bytes
+    assert response.diagnostics.source_sha256 == hashlib.sha256(expected_source).hexdigest()
+    assert response.diagnostics.prompt_tokens == 321
+    assert response.diagnostics.completion_tokens == 111
 
 
 def test_long_paper_uses_chunked_mode_and_preserves_chunk_order() -> None:

@@ -51,6 +51,10 @@ def _diagnostics(*, failed: int = 0) -> ExtractionDiagnostics:
         split_retry_count=0,
         failed_chunk_count=failed,
         elapsed_seconds=0.1,
+        num_ctx=16_384,
+        num_predict=1_536,
+        max_chunk_source_bytes=8_192,
+        max_ollama_calls=12,
     )
 
 

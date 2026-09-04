@@ -188,7 +188,9 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     assert readiness.EXTRACTOR_HEALTH_URL in child_source
     assert readiness.OLLAMA_MODEL in child_source
     assert "X-Extractor-Token" in child_source
-    assert "EXPECTED_SOURCE_BYTES" in child_source
+    assert 'diagnostics.get("source_bytes")' in child_source
+    assert 'diagnostics.get("prompt_tokens")' in child_source
+    assert 'diagnostics.get("completion_tokens")' in child_source
     assert evidence["status"] == "ready"
     assert set(evidence) == {"schema", "timestamp", "status", "probes"}
     assert set(evidence["probes"]) == {"direct_ollama", "extractor_boundary"}

@@ -40,6 +40,10 @@ def _diagnostics() -> ExtractionDiagnostics:
         split_retry_count=0,
         failed_chunk_count=0,
         elapsed_seconds=0.5,
+        num_ctx=16_384,
+        num_predict=1_536,
+        max_chunk_source_bytes=8_192,
+        max_ollama_calls=12,
     )
 
 
@@ -58,7 +62,9 @@ def test_diagnostics_forbid_source_content() -> None:
         "mode", "page_count", "candidate_page_count", "initial_chunk_count",
         "ollama_call_count", "successful_chunk_count", "split_retry_count",
         "failed_chunk_count", "elapsed_seconds", "warnings", "errors",
-        "failed_page_ranges",
+        "failed_page_ranges", "source_bytes", "source_sha256",
+        "prompt_tokens", "completion_tokens", "num_ctx", "num_predict",
+        "max_chunk_source_bytes", "max_ollama_calls",
     }
 
 
@@ -169,6 +175,14 @@ def test_extraction_error_and_diagnostics_preserve_only_bounded_metadata() -> No
         split_retry_count=1,
         failed_chunk_count=1,
         elapsed_seconds=12.25,
+        source_bytes=4_096,
+        source_sha256="a" * 64,
+        prompt_tokens=321,
+        completion_tokens=111,
+        num_ctx=16_384,
+        num_predict=1_536,
+        max_chunk_source_bytes=8_192,
+        max_ollama_calls=12,
         warnings=("candidate_pages_capped",),
         errors=(error,),
         failed_page_ranges=((2, 5),),

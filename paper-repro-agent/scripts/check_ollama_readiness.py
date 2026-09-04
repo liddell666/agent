@@ -627,12 +627,6 @@ import urllib.request
 HEALTH_URL = {EXTRACTOR_HEALTH_URL!r}
 EXTRACTOR_URL = {EXTRACTOR_URL!r}
 MODEL = {OLLAMA_MODEL!r}
-EXPECTED_SOURCE_BYTES = {EXTRACTOR_MAX_CHUNK_SOURCE_BYTES}
-EXPECTED_SOURCE_SHA256 = {EXTRACTOR_SYNTHETIC_SOURCE_SHA256!r}
-NUM_CTX = {EXTRACTOR_NUM_CTX}
-NUM_PREDICT = {EXTRACTOR_NUM_PREDICT}
-MAX_CHUNK_SOURCE_BYTES = {EXTRACTOR_MAX_CHUNK_SOURCE_BYTES}
-MAX_OLLAMA_CALLS = {EXTRACTOR_MAX_OLLAMA_CALLS}
 TIMEOUT = {DEFAULT_TIMEOUT_SECONDS}
 
 def _failure_category(error):
@@ -649,6 +643,13 @@ def _positive_count(value, *, allow_zero=False):
         raise ValueError("invalid count")
     if value < 0 or (value == 0 and not allow_zero):
         raise ValueError("invalid count")
+    return value
+
+def _safe_digest(value):
+    if not isinstance(value, str):
+        raise ValueError("invalid digest")
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError("invalid digest")
     return value
 
 def main():
@@ -701,12 +702,16 @@ def main():
             "response_nonempty": bool(raw_body),
             "response_length": len(raw_body),
             "response_sha256": hashlib.sha256(raw_body).hexdigest(),
-            "source_bytes": EXPECTED_SOURCE_BYTES,
-            "source_sha256": EXPECTED_SOURCE_SHA256,
-            "num_ctx": NUM_CTX,
-            "num_predict": NUM_PREDICT,
-            "max_chunk_source_bytes": MAX_CHUNK_SOURCE_BYTES,
-            "max_ollama_calls": MAX_OLLAMA_CALLS,
+            "source_bytes": _positive_count(diagnostics.get("source_bytes")),
+            "source_sha256": _safe_digest(diagnostics.get("source_sha256")),
+            "prompt_tokens": _positive_count(diagnostics.get("prompt_tokens")),
+            "completion_tokens": _positive_count(diagnostics.get("completion_tokens")),
+            "num_ctx": _positive_count(diagnostics.get("num_ctx")),
+            "num_predict": _positive_count(diagnostics.get("num_predict")),
+            "max_chunk_source_bytes": _positive_count(
+                diagnostics.get("max_chunk_source_bytes")
+            ),
+            "max_ollama_calls": _positive_count(diagnostics.get("max_ollama_calls")),
             "page_count": _positive_count(diagnostics.get("page_count")),
             "candidate_page_count": _positive_count(
                 diagnostics.get("candidate_page_count"), allow_zero=True
@@ -727,10 +732,6 @@ def main():
                 diagnostics.get("failed_chunk_count"), allow_zero=True
             ),
         }}
-        for key in ("prompt_tokens", "completion_tokens"):
-            value = diagnostics.get(key)
-            if value is not None:
-                safe_output[key] = _positive_count(value, allow_zero=True)
         print(json.dumps(safe_output, sort_keys=True))
         return 0
     except BaseException as error:
@@ -766,6 +767,16 @@ def _extractor_probe_metadata(document: Mapping[str, object]) -> dict[str, objec
     response_digest = _safe_digest(document.get("response_sha256"))
     source_bytes = document.get("source_bytes")
     source_digest = _safe_digest(document.get("source_sha256"))
+    prompt_tokens = _validate_prompt_tokens(
+        document.get("prompt_tokens"),
+        limit=EXTRACTOR_MAX_PROMPT_TOKENS,
+    )
+    completion_tokens = _validate_prompt_tokens(
+        document.get("completion_tokens"),
+        limit=EXTRACTOR_NUM_PREDICT,
+    )
+    num_ctx = document.get("num_ctx")
+    num_predict = document.get("num_predict")
     if (
         response_nonempty is not True
         or not isinstance(response_length, int)
@@ -774,12 +785,14 @@ def _extractor_probe_metadata(document: Mapping[str, object]) -> dict[str, objec
         or response_digest is None
         or source_bytes != EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
         or source_digest != EXTRACTOR_SYNTHETIC_SOURCE_SHA256
-        or document.get("num_ctx") != EXTRACTOR_NUM_CTX
-        or document.get("num_predict") != EXTRACTOR_NUM_PREDICT
+        or num_ctx != EXTRACTOR_NUM_CTX
+        or num_predict != EXTRACTOR_NUM_PREDICT
         or document.get("max_chunk_source_bytes") != EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
         or document.get("max_ollama_calls") != EXTRACTOR_MAX_OLLAMA_CALLS
     ):
         raise _ProbeFailure("invalid_result")
+    if prompt_tokens + EXTRACTOR_NUM_PREDICT > EXTRACTOR_NUM_CTX:
+        raise _ProbeFailure("context_overflow")
 
     counts: dict[str, int] = {}
     for key in (
@@ -806,30 +819,14 @@ def _extractor_probe_metadata(document: Mapping[str, object]) -> dict[str, objec
     ):
         raise _ProbeFailure("invalid_result")
 
-    optional_tokens: dict[str, int] = {}
-    prompt_tokens = document.get("prompt_tokens")
-    if prompt_tokens is not None:
-        prompt_tokens = _validate_prompt_tokens(
-            prompt_tokens,
-            limit=EXTRACTOR_MAX_PROMPT_TOKENS,
-        )
-        if prompt_tokens + EXTRACTOR_NUM_PREDICT > EXTRACTOR_NUM_CTX:
-            raise _ProbeFailure("context_overflow")
-        optional_tokens["prompt_tokens"] = prompt_tokens
-    completion_tokens = document.get("completion_tokens")
-    if completion_tokens is not None:
-        optional_tokens["completion_tokens"] = _validate_prompt_tokens(
-            completion_tokens,
-            limit=EXTRACTOR_NUM_PREDICT,
-        )
-
     return {
         "response_nonempty": True,
         "response_length": response_length,
         "response_sha256": response_digest,
         "source_bytes": source_bytes,
         "source_sha256": source_digest,
-        **optional_tokens,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
         **counts,
         "num_ctx": EXTRACTOR_NUM_CTX,
         "num_predict": EXTRACTOR_NUM_PREDICT,
@@ -1063,24 +1060,27 @@ def build_evidence(
         counts_valid = counts_valid and counts.get("failed_chunk_count") == 0
         prompt_tokens = probe.get("prompt_tokens")
         completion_tokens = probe.get("completion_tokens")
-        token_overflow = (
-            isinstance(prompt_tokens, int)
-            and not isinstance(prompt_tokens, bool)
-            and prompt_tokens > EXTRACTOR_MAX_PROMPT_TOKENS
+        prompt_is_int = isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool)
+        completion_is_int = isinstance(completion_tokens, int) and not isinstance(
+            completion_tokens, bool
         )
-        tokens_valid = prompt_tokens is None and completion_tokens is None
-        if prompt_tokens is not None:
-            tokens_valid = (
-                isinstance(prompt_tokens, int)
-                and not isinstance(prompt_tokens, bool)
-                and 0 < prompt_tokens <= EXTRACTOR_MAX_PROMPT_TOKENS
+        token_overflow = (
+            (prompt_is_int and prompt_tokens > EXTRACTOR_MAX_PROMPT_TOKENS)
+            or (completion_is_int and completion_tokens > EXTRACTOR_NUM_PREDICT)
+            or (
+                prompt_is_int
+                and completion_is_int
+                and prompt_tokens > 0
+                and completion_tokens > 0
+                and prompt_tokens + EXTRACTOR_NUM_PREDICT > EXTRACTOR_NUM_CTX
             )
-        if completion_tokens is not None:
-            tokens_valid = tokens_valid and (
-                isinstance(completion_tokens, int)
-                and not isinstance(completion_tokens, bool)
-                and 0 < completion_tokens <= EXTRACTOR_NUM_PREDICT
-            )
+        )
+        tokens_valid = (
+            prompt_is_int
+            and 0 < prompt_tokens <= EXTRACTOR_MAX_PROMPT_TOKENS
+            and completion_is_int
+            and 0 < completion_tokens <= EXTRACTOR_NUM_PREDICT
+        )
         response_valid = (
             probe.get("response_nonempty") is True
             and isinstance(length, int)
@@ -1131,11 +1131,9 @@ def build_evidence(
             "num_predict": EXTRACTOR_NUM_PREDICT,
             "max_chunk_source_bytes": EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
             "max_ollama_calls": EXTRACTOR_MAX_OLLAMA_CALLS,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
         }
-        if prompt_tokens is not None:
-            safe["prompt_tokens"] = prompt_tokens
-        if completion_tokens is not None:
-            safe["completion_tokens"] = completion_tokens
         return safe
 
     direct_safe = sanitize_direct(direct_ollama_probe)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import time
@@ -82,6 +83,10 @@ class ChunkExtractionResult:
     call_count: int
     split_retry_count: int
     elapsed_seconds: float
+    source_bytes: int | None
+    source_sha256: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
 
 
 def parse_partial(completion: OllamaCompletion) -> PartialDossier:
@@ -130,16 +135,6 @@ def _client_error(error: OllamaError) -> ChunkError:
     return ChunkError("qwen_chunk_invalid")
 
 
-def _complete(client: OllamaClient, chunk: PageChunk) -> PartialDossier:
-    try:
-        completion = client.complete(chunk)
-    except OllamaError as error:
-        raise _client_error(error) from None
-    except (TimeoutError, socket.timeout):
-        raise ChunkError("qwen_chunk_timeout") from None
-    return parse_partial(completion)
-
-
 def extract_chunks(
     chunks: tuple[PageChunk, ...],
     client: OllamaClient,
@@ -155,6 +150,28 @@ def extract_chunks(
     failures: list[ChunkFailure] = []
     call_count = 0
     split_retry_count = 0
+    max_source_bytes: int | None = None
+    max_source_sha256: str | None = None
+    max_prompt_tokens: int | None = None
+    max_completion_tokens: int | None = None
+
+    def observe_call(chunk: PageChunk) -> None:
+        nonlocal max_source_bytes, max_source_sha256
+        if max_source_bytes is None or chunk.source_bytes > max_source_bytes:
+            max_source_bytes = chunk.source_bytes
+            max_source_sha256 = hashlib.sha256(
+                serialize_pages(chunk.pages).encode("utf-8")
+            ).hexdigest()
+
+    def observe_tokens(completion: OllamaCompletion) -> None:
+        nonlocal max_prompt_tokens, max_completion_tokens
+        if max_prompt_tokens is None or completion.prompt_tokens > max_prompt_tokens:
+            max_prompt_tokens = completion.prompt_tokens
+        if (
+            max_completion_tokens is None
+            or completion.completion_tokens > max_completion_tokens
+        ):
+            max_completion_tokens = completion.completion_tokens
 
     def budget_exceeded(chunk: PageChunk) -> None:
         failures.append(
@@ -174,36 +191,48 @@ def extract_chunks(
             return
 
         call_count += 1
+        observe_call(chunk)
+        error: ChunkError | None = None
         try:
-            partial = _complete(client, chunk)
-        except ChunkError as error:
-            if error.code not in _RETRYABLE_CHUNK_ERRORS:
-                failures.append(
-                    ChunkFailure(
-                        chunk_id=chunk.chunk_id,
-                        code=error.code,
-                        page_range=_page_range(chunk),
-                    )
-                )
-                return
-
-            children = _split_chunk(chunk)
-            if children is None:
-                failures.append(
-                    ChunkFailure(
-                        chunk_id=chunk.chunk_id,
-                        code=error.code,
-                        page_range=_page_range(chunk),
-                    )
-                )
-                return
-
-            split_retry_count += 1
-            process(children[0])
-            process(children[1])
+            completion = client.complete(chunk)
+            observe_tokens(completion)
+            partial = parse_partial(completion)
+        except OllamaError as caught:
+            error = _client_error(caught)
+        except (TimeoutError, socket.timeout):
+            error = ChunkError("qwen_chunk_timeout")
+        except ChunkError as caught:
+            error = caught
+        else:
+            successes.append(ChunkSuccess(chunk_id=chunk.chunk_id, partial=partial))
             return
 
-        successes.append(ChunkSuccess(chunk_id=chunk.chunk_id, partial=partial))
+        assert error is not None
+        if error.code not in _RETRYABLE_CHUNK_ERRORS:
+            failures.append(
+                ChunkFailure(
+                    chunk_id=chunk.chunk_id,
+                    code=error.code,
+                    page_range=_page_range(chunk),
+                )
+            )
+            return
+
+        children = _split_chunk(chunk)
+        if children is None:
+            failures.append(
+                ChunkFailure(
+                    chunk_id=chunk.chunk_id,
+                    code=error.code,
+                    page_range=_page_range(chunk),
+                )
+            )
+            return
+
+        split_retry_count += 1
+        process(children[0])
+        process(children[1])
+        return
 
     for chunk in chunks:
         process(chunk)
@@ -215,4 +244,8 @@ def extract_chunks(
         call_count=call_count,
         split_retry_count=split_retry_count,
         elapsed_seconds=elapsed_seconds,
+        source_bytes=max_source_bytes,
+        source_sha256=max_source_sha256,
+        prompt_tokens=max_prompt_tokens,
+        completion_tokens=max_completion_tokens,
     )

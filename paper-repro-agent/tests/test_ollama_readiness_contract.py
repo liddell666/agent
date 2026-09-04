@@ -155,6 +155,36 @@ def test_extractor_boundary_rejects_mismatched_service_configuration() -> None:
     assert result["failure_category"] == "invalid_result"
 
 
+@pytest.mark.parametrize(
+    "missing_keys",
+    [
+        ("prompt_tokens",),
+        ("completion_tokens",),
+        ("prompt_tokens", "completion_tokens"),
+    ],
+)
+def test_extractor_boundary_rejects_missing_token_evidence(missing_keys) -> None:
+    child = {
+        "ok": True,
+        **_ready_extractor_probe(),
+    }
+    for key in missing_keys:
+        child.pop(key)
+
+    result = readiness.probe_extractor_boundary(
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(child),
+            stderr="",
+        ),
+        token="x" * 32,
+        monotonic=lambda: 1.0,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_category"] == "invalid_result"
+
+
 def test_local_probe_uses_chat_shape_and_validates_empty_and_full_token_budget() -> None:
     calls: list[dict[str, object]] = []
 
