@@ -48,6 +48,69 @@ def _form_fields(node: dict) -> dict[str, dict]:
     return {item["key"]: item for item in node["data"]["body"]["data"]}
 
 
+_RUN_BRANCH_TITLES = (
+    "Start",
+    "normalize_run_mode",
+    "run_mode?",
+    "normalize_suite_inputs",
+    "normalize_protocol_confirmation",
+    "protocol_ok?",
+    "get_protocol_draft",
+    "normalize_protocol_draft_read_response",
+    "dossier_ok?",
+    "validate_dataset",
+    "parse_validation_response",
+    "validation_ok?",
+    "submit_confirmed_job",
+    "parse_job_submission_response",
+    "job_submission_ok?",
+    "poll_confirmed_job",
+    "parse_suite_response",
+    "experiment_ok?",
+    "build_suite_comparison_request",
+    "comparison_request_ok?",
+    "compare_model_suite_result",
+    "parse_suite_comparison_response",
+    "comparison_ok?",
+    "score_approximate_similarity",
+    "format_suite_comparison_report",
+    "protocol_confirmation_failure",
+    "protocol_draft_read_failure",
+    "normalize_job_submission_http_failure",
+    "normalize_validation_http_failure",
+    "validation_semantic_failure",
+    "normalize_experiment_http_failure",
+    "experiment_semantic_failure",
+    "request_failure",
+    "normalize_comparison_http_failure",
+    "comparison_semantic_failure",
+    "aggregate_run_dossier_json",
+    "aggregate_run_validation_json",
+    "aggregate_run_experiment_json",
+    "aggregate_run_comparison_json",
+    "aggregate_run_assessment_json",
+    "aggregate_run_markdown_report",
+    "Output_run",
+)
+
+
+def _run_branch_snapshot(document: dict) -> tuple[dict, tuple[dict, ...]]:
+    nodes = _node_map(document)
+    node_snapshot = {title: nodes[title] for title in _RUN_BRANCH_TITLES}
+    ids = {node["id"] for node in node_snapshot.values()}
+    edge_snapshot = tuple(
+        sorted(
+            (
+                edge
+                for edge in document["workflow"]["graph"]["edges"]
+                if edge["source"] in ids and edge["target"] in ids
+            ),
+            key=lambda edge: edge["id"],
+        )
+    )
+    return node_snapshot, edge_snapshot
+
+
 def test_regression_builder_module_exists() -> None:
     assert BUILDER_PATH.is_file()
 
@@ -217,9 +280,8 @@ def test_dossier_prompt_adds_regression_aliases_without_weakening_classification
     assert "Copy each paper-reported value exactly." in prompt
 
 
-@pytest.mark.parametrize("profile", ["deepseek", "ollama"])
-def test_regression_extractor_prompt_requires_usable_scalar_metrics(profile: str) -> None:
-    document = _builder().build_regression_dsl(profile)
+def test_deepseek_regression_extractor_prompt_requires_usable_scalar_metrics() -> None:
+    document = _builder().build_regression_dsl("deepseek")
     prompt = _node_map(document)["extract_paper_dossier"]["data"]["prompt_template"][0]["text"]
 
     assert "For this regression workflow" in prompt
@@ -241,14 +303,10 @@ def test_regression_extractor_prompt_requires_usable_scalar_metrics(profile: str
 
 def test_regression_ollama_prompt_keeps_the_fixed_byte_budget() -> None:
     document = _builder().build_regression_dsl("ollama")
-    prompt = _node_map(document)["extract_paper_dossier"]["data"]["prompt_template"][0]["text"]
-    for placeholder in (
-        "{{#3910000000003.parsed_json#}}",
-        "{{#3900000000001.protocol_notes#}}",
-    ):
-        prompt = prompt.replace(placeholder, "")
+    nodes = _node_map(document)
 
-    assert len(prompt.encode("utf-8")) == 4_475
+    assert "extract_paper_dossier" not in nodes
+    assert nodes["extract_paper_dossier_chunks"]["data"]["type"] == "http-request"
 
 
 def test_synthetic_regression_pdf_is_small_and_contains_acceptance_literals() -> None:
@@ -257,3 +315,129 @@ def test_synthetic_regression_pdf_is_small_and_contains_acceptance_literals() ->
 
     for literal in ("synthetic acceptance data", "frozen train/test protocol", "MAE=1.5", "RMSE=2.0", "R²=0.80"):
         assert literal in text
+
+
+def test_ollama_extractor_routes_through_authenticated_service() -> None:
+    document = _builder().build_regression_dsl("ollama")
+    nodes = _node_map(document)
+    environment = {
+        item["name"]: item for item in document["workflow"]["environment_variables"]
+    }
+
+    assert environment["DIFY_EXTRACTOR_API_TOKEN"] == {
+        "description": "Dossier extractor token shared with paper-dossier-extractor; exported without a value.",
+        "id": "39000000-0000-4000-8000-000000000002",
+        "name": "DIFY_EXTRACTOR_API_TOKEN",
+        "selector": ["env", "DIFY_EXTRACTOR_API_TOKEN"],
+        "value": "",
+        "value_type": "secret",
+    }
+    assert nodes["extract_paper_dossier_chunks"]["data"]["type"] == "http-request"
+    assert "extract_paper_dossier" not in nodes
+
+    extractor_node = nodes["extract_paper_dossier_chunks"]
+    extractor = extractor_node["data"]
+    assert "model" not in extractor
+    assert "prompt_template" not in extractor
+    assert extractor["url"] == "http://paper-dossier-extractor:8002/v1/extract-dossier"
+    assert extractor["error_strategy"] == "fail-branch"
+    assert "X-Extractor-Token:" in extractor["headers"]
+    assert "{{#env.DIFY_EXTRACTOR_API_TOKEN#}}" in extractor["headers"]
+    parser_validator = nodes["validate_parser_response"]
+    assert extractor["body"]["type"] == "raw-text"
+    assert extractor["body"]["data"] == [
+        {
+            "type": "text",
+            "value": f"{{{{#{parser_validator['id']}.parsed_json#}}}}",
+        }
+    ]
+
+    normalizer = nodes["normalize_extractor_response"]
+    assert normalizer["data"]["type"] == "code"
+    normalizer_variables = {
+        item["variable"]: item for item in normalizer["data"]["variables"]
+    }
+    assert normalizer_variables["body"]["value_selector"] == [extractor_node["id"], "body"]
+    assert normalizer_variables["status_code"]["value_selector"] == [extractor_node["id"], "status_code"]
+
+    gate = nodes["extractor_ok?"]
+    assert gate["data"]["cases"][0]["conditions"][0]["variable_selector"] == [
+        normalizer["id"],
+        "can_continue",
+    ]
+    validator = nodes["validate_paper_dossier"]
+    dossier_input = next(
+        item for item in validator["data"]["variables"] if item["variable"] == "dossier_json"
+    )
+    assert dossier_input["value_selector"] == [normalizer["id"], "dossier_json"]
+
+    ids = {node["data"]["title"]: node["id"] for node in _nodes(document)}
+    edges = document["workflow"]["graph"]["edges"]
+
+    def has_edge(source: str, handle: str, target: str) -> bool:
+        return any(
+            edge["source"] == ids[source]
+            and edge["sourceHandle"] == handle
+            and edge["target"] == ids[target]
+            for edge in edges
+        )
+
+    assert has_edge("normalize_extractor_response", "source", "extractor_ok?")
+    assert has_edge("extractor_ok?", "true", "validate_paper_dossier")
+    assert has_edge("extractor_ok?", "false", "prepare_extractor_failure")
+    assert has_edge("extract_paper_dossier_chunks", "fail-branch", "prepare_extractor_failure")
+    for variable in (
+        "protocol_preview_json",
+        "protocol_token",
+        "draft_expires_at",
+    ):
+        aggregator_title = f"aggregate_prepare_{variable}"
+        assert has_edge("prepare_extractor_failure", "source", aggregator_title)
+        assert [
+            nodes["prepare_extractor_failure"]["id"],
+            variable,
+        ] in nodes[aggregator_title]["data"]["variables"]
+
+
+def test_ollama_extractor_failure_is_terminal_and_preserves_exact_stable_code() -> None:
+    document = _builder().build_regression_dsl("ollama")
+    nodes = _node_map(document)
+    failure = nodes["prepare_extractor_failure"]
+    namespace: dict[str, object] = {}
+    exec(compile(failure["data"]["code"], "<prepare-extractor-failure>", "exec"), namespace)
+
+    result = namespace["main"](
+        "qwen_chunk_truncated",
+        '{"mode":"chunked","page_count":8,"candidate_page_count":4,"initial_chunk_count":2,'
+        '"ollama_call_count":3,"successful_chunk_count":2,"split_retry_count":1,'
+        '"failed_chunk_count":1,"elapsed_seconds":1.25,"warnings":[],'
+        '"errors":[{"code":"qwen_chunk_truncated","page_range":[2,5]}],'
+        '"failed_page_ranges":[[2,5]]}',
+    )
+
+    assert json.loads(result["error_json"]) == [
+        {
+            "code": "qwen_chunk_truncated",
+            "message": "Paper dossier extraction failed; details were redacted.",
+        }
+    ]
+    assert json.loads(result["protocol_preview_json"])["errors"][0]["code"] == "qwen_chunk_truncated"
+    assert json.loads(result["protocol_preview_json"])["extraction_diagnostics"]["errors"][0]["code"] == "qwen_chunk_truncated"
+    assert nodes["prepare_extractor_failure"]["data"]["outputs"]["error_json"]
+
+
+def test_ollama_extractor_change_does_not_change_deepseek_or_run_branch() -> None:
+    builder = _builder()
+    deepseek = builder.build_regression_dsl("deepseek")
+    ollama = builder.build_regression_dsl("ollama")
+    deepseek_nodes = _node_map(deepseek)
+
+    assert deepseek_nodes["extract_paper_dossier"]["data"]["type"] == "llm"
+    assert _run_branch_snapshot(deepseek) == _run_branch_snapshot(ollama)
+
+
+def test_deepseek_extractor_artifact_remains_byte_identical_after_ollama_generation(tmp_path: Path) -> None:
+    generated = _builder().write_profile_dsl("deepseek", output_root=tmp_path)
+
+    assert generated == tmp_path / DEEPSEEK_DSL.name
+    assert generated.read_bytes() == DEEPSEEK_DSL.read_bytes()

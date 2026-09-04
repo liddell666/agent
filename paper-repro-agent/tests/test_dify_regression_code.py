@@ -28,6 +28,11 @@ def _document() -> dict:
     return module.build_regression_dsl("deepseek")
 
 
+def _ollama_document() -> dict:
+    module = importlib.import_module("scripts.build_regression_dsl")
+    return module.build_regression_dsl("ollama")
+
+
 def _exec_code_node(title: str):
     return _exec_code_node_from(_document(), title)
 
@@ -45,6 +50,48 @@ def _exec_code_node_from(document: dict, title: str):
 
 def _combined_output(result: dict) -> str:
     return json.dumps(result, ensure_ascii=False)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _extractor_dossier() -> dict:
+    return {
+        "title": "Regression candidate",
+        "research_problem": "",
+        "task_type": "uncertain",
+        "datasets": [],
+        "methods": [],
+        "metrics": [],
+        "gaps": [],
+    }
+
+
+def _extractor_diagnostics(**overrides: object) -> dict:
+    diagnostics = {
+        "mode": "chunked",
+        "page_count": 8,
+        "candidate_page_count": 4,
+        "initial_chunk_count": 2,
+        "ollama_call_count": 3,
+        "successful_chunk_count": 2,
+        "split_retry_count": 1,
+        "failed_chunk_count": 0,
+        "elapsed_seconds": 1.25,
+        "warnings": ["candidate_pages_capped"],
+        "errors": [],
+        "failed_page_ranges": [],
+    }
+    diagnostics.update(overrides)
+    return diagnostics
+
+
+def _exec_extractor_normalizer():
+    module = importlib.import_module("scripts.build_regression_dsl")
+    namespace: dict[str, object] = {}
+    exec(compile(module._extractor_response_normalizer_code(), "<extractor-normalizer>", "exec"), namespace)
+    return namespace["main"]
 
 
 def _resign_token(token: str, secret: str, mutation) -> str:
@@ -784,3 +831,141 @@ def test_regression_report_rejects_nonfinite_metrics_without_leaking_spellings()
     assert "nan" not in combined
     assert "infinity" not in combined
     assert "-inf" not in combined
+
+
+def test_extractor_response_normalizer_returns_canonical_success() -> None:
+    dossier = _extractor_dossier()
+    diagnostics = _extractor_diagnostics()
+    body = _canonical_json({"ok": True, "dossier": dossier, "diagnostics": diagnostics})
+
+    result = _exec_extractor_normalizer()(body, 200)
+
+    assert result == {
+        "dossier_json": _canonical_json(dossier),
+        "extraction_diagnostics_json": _canonical_json(diagnostics),
+        "can_continue": True,
+        "error_code": "",
+    }
+
+
+def test_extractor_response_normalizer_routes_chunk_failure_without_parser_code() -> None:
+    diagnostics = _extractor_diagnostics(
+        failed_chunk_count=1,
+        errors=[{"code": "qwen_chunk_truncated", "page_range": [2, 5]}],
+        failed_page_ranges=[[2, 5]],
+    )
+    body = _canonical_json(
+        {
+            "ok": False,
+            "dossier": None,
+            "diagnostics": diagnostics,
+            "raw_paper_text": SENTINELS[1],
+            "extractor_token": SENTINELS[2],
+        }
+    )
+
+    result = _exec_extractor_normalizer()(body, 200)
+
+    assert result == {
+        "dossier_json": "{}",
+        "extraction_diagnostics_json": _canonical_json(diagnostics),
+        "can_continue": False,
+        "error_code": "qwen_chunk_truncated",
+    }
+    assert "paper_parse_failed" not in json.dumps(result)
+    assert all(sentinel not in json.dumps(result) for sentinel in SENTINELS)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "expected_code"),
+    [
+        (
+            401,
+            _canonical_json(
+                {
+                    "detail": {
+                        "code": "invalid_token",
+                        "request_id": SENTINELS[2],
+                        "paper": SENTINELS[1],
+                    }
+                }
+            ),
+            "invalid_token",
+        ),
+        (
+            429,
+            _canonical_json(
+                {
+                    "detail": {
+                        "code": "extraction_capacity_reached",
+                        "request_id": SENTINELS[2],
+                    }
+                }
+            ),
+            "extraction_capacity_reached",
+        ),
+        (
+            502,
+            _canonical_json(
+                {
+                    "detail": {
+                        "code": "ollama_unavailable",
+                        "request_id": SENTINELS[2],
+                    }
+                }
+            ),
+            "ollama_unavailable",
+        ),
+    ],
+)
+def test_extractor_response_normalizer_maps_http_failures_without_echoing_body(
+    status_code: int, body: str, expected_code: str
+) -> None:
+    result = _exec_extractor_normalizer()(body, status_code)
+
+    assert result == {
+        "dossier_json": "{}",
+        "extraction_diagnostics_json": "{}",
+        "can_continue": False,
+        "error_code": expected_code,
+    }
+    assert all(sentinel not in json.dumps(result) for sentinel in SENTINELS)
+
+
+def test_extractor_response_normalizer_rejects_malformed_json_without_echoing_body() -> None:
+    body = "not-json:" + SENTINELS[1] + ":" + SENTINELS[2]
+
+    result = _exec_extractor_normalizer()(body, 200)
+
+    assert result == {
+        "dossier_json": "{}",
+        "extraction_diagnostics_json": "{}",
+        "can_continue": False,
+        "error_code": "extractor_response_invalid",
+    }
+    assert all(sentinel not in json.dumps(result) for sentinel in SENTINELS)
+
+
+def test_extractor_response_normalizer_truncates_warning_and_error_lists() -> None:
+    diagnostics = _extractor_diagnostics(
+        warnings=[f"warning_{index:02d}" for index in range(60)],
+        errors=[
+            {"code": f"error_{index:02d}", "page_range": [1, 1]}
+            for index in range(60)
+        ],
+        failed_chunk_count=60,
+        failed_page_ranges=[[1, 1] for _ in range(60)],
+    )
+    body = _canonical_json(
+        {"ok": False, "dossier": None, "diagnostics": diagnostics}
+    )
+
+    result = _exec_extractor_normalizer()(body, 200)
+
+    normalized = json.loads(result["extraction_diagnostics_json"])
+    assert result["can_continue"] is False
+    assert result["error_code"] == "error_00"
+    assert len(normalized["warnings"]) == 50
+    assert normalized["warnings"] == diagnostics["warnings"][:50]
+    assert len(normalized["errors"]) == 50
+    assert len(normalized["failed_page_ranges"]) == 50

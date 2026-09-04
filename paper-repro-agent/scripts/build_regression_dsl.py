@@ -32,6 +32,11 @@ REGRESSION_MODELS = (
 REGRESSION_METRICS = ("mae", "rmse", "r2")
 WORKFLOW_VERSION = "regression-1.0.0"
 
+OLLAMA_EXTRACTOR_NORMALIZER_ID = "3910000000010"
+OLLAMA_EXTRACTOR_GATE_ID = "3910000000011"
+OLLAMA_EXTRACTOR_FAILURE_ID = "3900000000058"
+OLLAMA_EXTRACTOR_ENV_ID = "39000000-0000-4000-8000-000000000002"
+
 
 def _nodes(document: dict) -> list[dict]:
     return document["workflow"]["graph"]["nodes"]
@@ -303,6 +308,110 @@ def main(dossier_response_json: str, diagnosis_response_json: str, target_column
     return result
 '''
     )
+
+
+def _prepare_protocol_code_with_extraction_diagnostics() -> str:
+    code = _prepare_protocol_code()
+    old_signature = (
+        'def main(dossier_response_json: str, diagnosis_response_json: str, '
+        'target_column: str, protocol_notes: str, protocol_secret: str = "") -> dict:'
+    )
+    new_signature = (
+        'def main(dossier_response_json: str, diagnosis_response_json: str, '
+        'target_column: str, protocol_notes: str, protocol_secret: str = "", '
+        'extraction_diagnostics_json: str = "") -> dict:'
+    )
+    if code.count(old_signature) != 1:
+        raise ValueError("regression prepare code signature contract is invalid")
+    code = code.replace(old_signature, new_signature)
+    old_body = '''    result["protocol_preview_json"] = _json(_private_preview(result.get("protocol_preview_json")))
+    return result'''
+    new_body = '''    preview = _private_preview(result.get("protocol_preview_json"))
+
+    def _safe_page_range(value):
+        if not isinstance(value, list) or len(value) != 2:
+            return None
+        start = _safe_int(value[0], 1, 1_000_000)
+        end = _safe_int(value[1], 1, 1_000_000)
+        if start is None or end is None or end < start:
+            return None
+        return [start, end]
+
+    diagnostics = {}
+    try:
+        parsed_diagnostics = (
+            json.loads(extraction_diagnostics_json)
+            if isinstance(extraction_diagnostics_json, str)
+            else {}
+        )
+    except (TypeError, json.JSONDecodeError):
+        parsed_diagnostics = {}
+    if isinstance(parsed_diagnostics, dict):
+        mode = parsed_diagnostics.get("mode")
+        page_count = _safe_int(parsed_diagnostics.get("page_count"), 1, 1_000_000)
+        counters = {}
+        for name in (
+            "candidate_page_count",
+            "initial_chunk_count",
+            "ollama_call_count",
+            "successful_chunk_count",
+            "split_retry_count",
+            "failed_chunk_count",
+        ):
+            counters[name] = _safe_int(parsed_diagnostics.get(name), 0, 1_000_000)
+        elapsed_seconds = _safe_number(parsed_diagnostics.get("elapsed_seconds"), 0.0, 1_200.0)
+        warnings = parsed_diagnostics.get("warnings", [])
+        errors = parsed_diagnostics.get("errors", [])
+        failed_page_ranges = parsed_diagnostics.get("failed_page_ranges", [])
+        safe_warnings = [
+            code for code in warnings[:50]
+            if isinstance(code, str) and _safe_code(code) is not None
+        ] if isinstance(warnings, list) else []
+        safe_errors = []
+        if isinstance(errors, list):
+            for item in errors[:50]:
+                if not isinstance(item, dict):
+                    continue
+                code = _safe_code(item.get("code"))
+                page_range = item.get("page_range")
+                if code is None:
+                    continue
+                if page_range is not None:
+                    page_range = _safe_page_range(page_range)
+                    if page_range is None:
+                        continue
+                safe_errors.append({"code": code, "page_range": page_range})
+        safe_failed_page_ranges = []
+        if isinstance(failed_page_ranges, list):
+            for page_range in failed_page_ranges[:50]:
+                safe_page_range = _safe_page_range(page_range)
+                if safe_page_range is not None:
+                    safe_failed_page_ranges.append(safe_page_range)
+        if (
+            mode in {"single", "chunked"}
+            and page_count is not None
+            and all(value is not None for value in counters.values())
+            and elapsed_seconds is not None
+            and isinstance(warnings, list)
+            and isinstance(errors, list)
+            and isinstance(failed_page_ranges, list)
+        ):
+            diagnostics = {
+                "mode": mode,
+                "page_count": page_count,
+                **counters,
+                "elapsed_seconds": elapsed_seconds,
+                "warnings": safe_warnings,
+                "errors": safe_errors,
+                "failed_page_ranges": safe_failed_page_ranges,
+            }
+    if diagnostics:
+        preview["extraction_diagnostics"] = diagnostics
+    result["protocol_preview_json"] = _json(preview)
+    return result'''
+    if code.count(old_body) != 1:
+        raise ValueError("regression prepare preview contract is invalid")
+    return code.replace(old_body, new_body)
 
 
 def _confirmation_code() -> str:
@@ -1100,6 +1209,346 @@ def main(dossier_json: str, validation_json: str, experiment_json: str, comparis
 '''
 
 
+def _extractor_response_normalizer_code() -> str:
+    return r'''import json
+import math
+import re
+
+
+_MAX_BODY_BYTES = 2 * 1024 * 1024
+_MAX_DIAGNOSTIC_ITEMS = 50
+_MAX_PAGE_COUNT = 1_000_000
+_MAX_COUNTER = 1_000_000
+_MAX_ELAPSED_SECONDS = 1_200.0
+_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_KNOWN_MODELS = {
+    "linear_regression",
+    "random_forest",
+    "gradient_boosting",
+    "xgboost",
+}
+_KNOWN_METRICS = {"mae", "rmse", "r2"}
+_KNOWN_TASK_TYPES = {"regression", "uncertain"}
+_HTTP_FALLBACK_CODES = {
+    401: "extractor_auth_failed",
+    429: "extractor_capacity_reached",
+    502: "extractor_unavailable",
+}
+
+
+def _json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _object(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        if len(value.encode("utf-8")) > _MAX_BODY_BYTES:
+            return None
+        parsed = json.loads(value, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+    except (TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _status(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        candidate = int(value)
+    else:
+        return None
+    return candidate if 100 <= candidate <= 599 else None
+
+
+def _text(value, maximum, *, required=False):
+    if not isinstance(value, str) or len(value.encode("utf-8")) > maximum:
+        return None
+    if required and not value.strip():
+        return None
+    return value
+
+
+def _number(value, minimum=None, maximum=None):
+    if isinstance(value, bool):
+        return None
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(candidate):
+        return None
+    if minimum is not None and candidate < minimum:
+        return None
+    if maximum is not None and candidate > maximum:
+        return None
+    return candidate
+
+
+def _counter(value, maximum=_MAX_COUNTER):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        candidate = int(value)
+    else:
+        return None
+    return candidate if 0 <= candidate <= maximum else None
+
+
+def _page_range(value, maximum_page=None):
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    start, end = value
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+        or start < 1
+        or end < start
+        or (maximum_page is not None and end > maximum_page)
+    ):
+        return None
+    return [start, end]
+
+
+def _error_code(value):
+    return value if isinstance(value, str) and _ERROR_CODE_RE.fullmatch(value) else None
+
+
+def _evidence(value):
+    if not isinstance(value, list) or not value or len(value) > 50:
+        return None
+    result = []
+    for item in value[:3]:
+        if not isinstance(item, dict):
+            return None
+        page = item.get("page")
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            return None
+        source_text = _text(item.get("source_text"), 320, required=True)
+        if source_text is None:
+            return None
+        source = item.get("source", "paper")
+        if source != "paper":
+            return None
+        confidence = _number(item.get("confidence", 1.0), 0.0, 1.0)
+        if confidence is None:
+            return None
+        result.append(
+            {
+                "page": page,
+                "source_text": source_text,
+                "source": "paper",
+                "confidence": confidence,
+            }
+        )
+    return result
+
+
+def _fact(value):
+    if not isinstance(value, dict):
+        return None
+    name = _text(value.get("name"), 200, required=True)
+    description = _text(value.get("description", ""), 500)
+    evidence = _evidence(value.get("evidence"))
+    if name is None or description is None or evidence is None:
+        return None
+    return {"name": name, "description": description, "evidence": evidence}
+
+
+def _metric(value):
+    if not isinstance(value, dict) or value.get("name") not in _KNOWN_METRICS:
+        return None
+    reported = value.get("reported_value")
+    if reported is not None:
+        reported = _number(reported)
+        if reported is None:
+            return None
+    model = value.get("model")
+    if model is not None and (not isinstance(model, str) or model not in _KNOWN_MODELS):
+        return None
+    dataset = value.get("dataset")
+    if dataset is not None:
+        dataset = _text(dataset, 200)
+        if dataset is None:
+            return None
+    split = value.get("split")
+    if split is not None:
+        split = _text(split, 100)
+        if split is None:
+            return None
+    evidence = _evidence(value.get("evidence"))
+    if evidence is None:
+        return None
+    return {
+        "name": value["name"],
+        "reported_value": reported,
+        "model": model,
+        "dataset": dataset,
+        "split": split,
+        "evidence": evidence,
+    }
+
+
+def _dossier(value):
+    if not isinstance(value, dict):
+        return None
+    title = _text(value.get("title"), 500, required=True)
+    research_problem = _text(value.get("research_problem", ""), 1_000)
+    task_type = value.get("task_type")
+    if title is None or research_problem is None or task_type not in _KNOWN_TASK_TYPES:
+        return None
+    collections = (
+        ("datasets", 12, _fact),
+        ("methods", 20, _fact),
+        ("metrics", 40, _metric),
+    )
+    result = {
+        "title": title,
+        "research_problem": research_problem,
+        "task_type": task_type,
+    }
+    for name, maximum, normalizer in collections:
+        raw = value.get(name, [])
+        if not isinstance(raw, list) or len(raw) > maximum:
+            return None
+        normalized = []
+        for item in raw:
+            safe = normalizer(item)
+            if safe is None:
+                return None
+            normalized.append(safe)
+        result[name] = normalized
+    gaps = value.get("gaps", [])
+    if not isinstance(gaps, list) or len(gaps) > 20:
+        return None
+    result["gaps"] = []
+    for gap in gaps:
+        safe_gap = _text(gap, 500, required=True)
+        if safe_gap is None:
+            return None
+        result["gaps"].append(safe_gap)
+    return result
+
+
+def _diagnostics(value):
+    if not isinstance(value, dict):
+        return None
+    mode = value.get("mode")
+    page_count = value.get("page_count")
+    if mode not in {"single", "chunked"}:
+        return None
+    if isinstance(page_count, bool) or not isinstance(page_count, int) or not 1 <= page_count <= _MAX_PAGE_COUNT:
+        return None
+    counters = {}
+    for name in (
+        "candidate_page_count",
+        "initial_chunk_count",
+        "ollama_call_count",
+        "successful_chunk_count",
+        "split_retry_count",
+        "failed_chunk_count",
+    ):
+        counter = _counter(value.get(name))
+        if counter is None:
+            return None
+        counters[name] = counter
+    elapsed = _number(value.get("elapsed_seconds"), 0.0, _MAX_ELAPSED_SECONDS)
+    if elapsed is None:
+        return None
+    warnings = value.get("warnings", [])
+    if not isinstance(warnings, list):
+        return None
+    safe_warnings = []
+    for warning in warnings[:_MAX_DIAGNOSTIC_ITEMS]:
+        code = _error_code(warning)
+        if code is None:
+            return None
+        safe_warnings.append(code)
+    errors = value.get("errors", [])
+    if not isinstance(errors, list):
+        return None
+    safe_errors = []
+    for error in errors[:_MAX_DIAGNOSTIC_ITEMS]:
+        if not isinstance(error, dict):
+            return None
+        code = _error_code(error.get("code"))
+        if code is None:
+            return None
+        page_range = error.get("page_range")
+        if page_range is not None:
+            page_range = _page_range(page_range, page_count)
+            if page_range is None:
+                return None
+        safe_errors.append({"code": code, "page_range": page_range})
+    failed_ranges = value.get("failed_page_ranges", [])
+    if not isinstance(failed_ranges, list):
+        return None
+    safe_failed_ranges = []
+    for page_range in failed_ranges[:_MAX_DIAGNOSTIC_ITEMS]:
+        safe_page_range = _page_range(page_range, page_count)
+        if safe_page_range is None:
+            return None
+        safe_failed_ranges.append(safe_page_range)
+    return {
+        "mode": mode,
+        "page_count": page_count,
+        **counters,
+        "elapsed_seconds": elapsed,
+        "warnings": safe_warnings,
+        "errors": safe_errors,
+        "failed_page_ranges": safe_failed_ranges,
+    }
+
+
+def _transport_code(response, status):
+    detail = response.get("detail") if isinstance(response, dict) else None
+    candidate = detail.get("code") if isinstance(detail, dict) else None
+    return _error_code(candidate) or _HTTP_FALLBACK_CODES.get(status, "extractor_http_error")
+
+
+def _failure(code, diagnostics=None):
+    return {
+        "dossier_json": "{}",
+        "extraction_diagnostics_json": _json(diagnostics) if diagnostics is not None else "{}",
+        "can_continue": False,
+        "error_code": code,
+    }
+
+
+def main(body: str, status_code: int) -> dict:
+    status = _status(status_code)
+    response = _object(body)
+    if status is None:
+        return _failure("extractor_status_invalid")
+    if response is None:
+        return _failure("extractor_response_invalid")
+    if status < 200 or status >= 300:
+        return _failure(_transport_code(response, status))
+    diagnostics = _diagnostics(response.get("diagnostics"))
+    if response.get("ok") is not True:
+        code = "extraction_failed"
+        if diagnostics is not None and diagnostics["errors"]:
+            code = diagnostics["errors"][0]["code"]
+        return _failure(code, diagnostics)
+    dossier = _dossier(response.get("dossier"))
+    if dossier is None or diagnostics is None:
+        return _failure("extractor_response_invalid", diagnostics)
+    return {
+        "dossier_json": _json(dossier),
+        "extraction_diagnostics_json": _json(diagnostics),
+        "can_continue": True,
+        "error_code": "",
+    }
+'''
+
+
 def _regression_extractor_prompt(text: str) -> str:
     start_marker = "## Field guidance\n"
     end_marker = "\nWrite descriptions"
@@ -1123,6 +1572,367 @@ def _regression_extractor_prompt(text: str) -> str:
         raise ValueError("regression extractor prompt guidance exceeds fixed budget")
     padding = " " * (original_bytes - replacement_bytes)
     return text[:start] + replacement + padding + text[end:]
+
+
+def _extractor_prepare_failure_code() -> str:
+    return r'''import json
+import math
+import re
+
+
+_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _safe_code(value):
+    return value if isinstance(value, str) and _CODE_RE.fullmatch(value) else None
+
+
+def _safe_int(value, minimum, maximum):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        candidate = value
+    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        candidate = int(value)
+    else:
+        return None
+    return candidate if minimum <= candidate <= maximum else None
+
+
+def _safe_number(value, minimum, maximum):
+    if isinstance(value, bool):
+        return None
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(candidate) or candidate < minimum or candidate > maximum:
+        return None
+    return candidate
+
+
+def _safe_page_range(value, page_count):
+    if not isinstance(value, list) or len(value) != 2:
+        return None
+    start = _safe_int(value[0], 1, page_count)
+    end = _safe_int(value[1], 1, page_count)
+    if start is None or end is None or end < start:
+        return None
+    return [start, end]
+
+
+def _safe_diagnostics(value):
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict) or parsed.get("mode") not in {"single", "chunked"}:
+        return {}
+    page_count = _safe_int(parsed.get("page_count"), 1, 1_000_000)
+    if page_count is None:
+        return {}
+    counters = {}
+    for name in (
+        "candidate_page_count",
+        "initial_chunk_count",
+        "ollama_call_count",
+        "successful_chunk_count",
+        "split_retry_count",
+        "failed_chunk_count",
+    ):
+        counters[name] = _safe_int(parsed.get(name), 0, 1_000_000)
+    elapsed_seconds = _safe_number(parsed.get("elapsed_seconds"), 0.0, 1_200.0)
+    warnings = parsed.get("warnings", [])
+    errors = parsed.get("errors", [])
+    failed_page_ranges = parsed.get("failed_page_ranges", [])
+    if (
+        any(value is None for value in counters.values())
+        or elapsed_seconds is None
+        or not isinstance(warnings, list)
+        or not isinstance(errors, list)
+        or not isinstance(failed_page_ranges, list)
+    ):
+        return {}
+    safe_warnings = [
+        code for code in warnings[:50]
+        if _safe_code(code) is not None
+    ]
+    safe_errors = []
+    for item in errors[:50]:
+        if not isinstance(item, dict):
+            continue
+        code = _safe_code(item.get("code"))
+        page_range = item.get("page_range")
+        if code is None:
+            continue
+        if page_range is not None:
+            page_range = _safe_page_range(page_range, page_count)
+            if page_range is None:
+                continue
+        safe_errors.append({"code": code, "page_range": page_range})
+    safe_failed_page_ranges = []
+    for page_range in failed_page_ranges[:50]:
+        page_range = _safe_page_range(page_range, page_count)
+        if page_range is not None:
+            safe_failed_page_ranges.append(page_range)
+    return {
+        "mode": parsed["mode"],
+        "page_count": page_count,
+        **counters,
+        "elapsed_seconds": elapsed_seconds,
+        "warnings": safe_warnings,
+        "errors": safe_errors,
+        "failed_page_ranges": safe_failed_page_ranges,
+    }
+
+
+def main(error_code: str = "", extraction_diagnostics_json: str = "") -> dict:
+    code = _safe_code(error_code) or "extractor_response_invalid"
+    error = {
+        "code": code,
+        "message": "Paper dossier extraction failed; details were redacted.",
+    }
+    preview = {"errors": [error]}
+    diagnostics = _safe_diagnostics(extraction_diagnostics_json)
+    if diagnostics:
+        preview["extraction_diagnostics"] = diagnostics
+    return {
+        "protocol_preview_json": json.dumps(preview, ensure_ascii=False, separators=(",", ":")),
+        "protocol_token": "",
+        "draft_expires_at": "",
+        "error_json": json.dumps([error], ensure_ascii=False, separators=(",", ":")),
+        "markdown_report": "Paper dossier extraction failed; details were redacted.",
+    }
+'''
+
+
+def _regression_clone_code_node(
+    template: dict,
+    node_id: str,
+    title: str,
+    code: str,
+    outputs: dict,
+    variables: list[dict],
+    x: int,
+    y: int,
+) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["code"] = code
+    node["data"]["outputs"] = outputs
+    node["data"]["variables"] = variables
+    return node
+
+
+def _regression_clone_if_node(
+    template: dict,
+    node_id: str,
+    title: str,
+    variable_selector: list[str],
+    x: int,
+    y: int,
+) -> dict:
+    node = deepcopy(template)
+    node["id"] = node_id
+    node["position"] = {"x": x, "y": y}
+    node["positionAbsolute"] = {"x": x, "y": y}
+    node["data"]["title"] = title
+    node["data"]["cases"] = [
+        {
+            "case_id": "true",
+            "conditions": [
+                {
+                    "comparison_operator": "is",
+                    "id": f"{node_id}-condition",
+                    "value": True,
+                    "varType": "boolean",
+                    "variable_selector": variable_selector,
+                }
+            ],
+            "id": "true",
+            "logical_operator": "and",
+        }
+    ]
+    return node
+
+
+def _regression_make_edge(
+    document: dict, source: str, source_handle: str, target: str
+) -> dict:
+    nodes = {node["id"]: node for node in _nodes(document)}
+    source_type = nodes[source]["data"]["type"]
+    target_type = nodes[target]["data"]["type"]
+    return {
+        "data": {
+            "isInIteration": False,
+            "isInLoop": False,
+            "sourceType": source_type,
+            "targetType": target_type,
+        },
+        "id": f"{source}-{source_handle}-{target}-target",
+        "source": source,
+        "sourceHandle": source_handle,
+        "target": target,
+        "targetHandle": "target",
+        "type": "custom",
+        "zIndex": 0,
+    }
+
+
+def _ollama_extractor_environment_variable() -> dict:
+    return {
+        "description": "Dossier extractor token shared with paper-dossier-extractor; exported without a value.",
+        "id": OLLAMA_EXTRACTOR_ENV_ID,
+        "name": "DIFY_EXTRACTOR_API_TOKEN",
+        "selector": ["env", "DIFY_EXTRACTOR_API_TOKEN"],
+        "value": "",
+        "value_type": "secret",
+    }
+
+
+def _wire_ollama_extractor(document: dict) -> None:
+    nodes = _by_title(document)
+    extractor = nodes["extract_paper_dossier"]
+    http_template = nodes["parse_paper"]
+    parser_validator = nodes["validate_parser_response"]
+    extractor["data"] = deepcopy(http_template["data"])
+    extractor["data"].update(
+        {
+            "title": "extract_paper_dossier_chunks",
+            "type": "http-request",
+            "method": "post",
+            "url": "http://paper-dossier-extractor:8002/v1/extract-dossier",
+            "headers": "Content-Type: application/json\nX-Extractor-Token:{{#env.DIFY_EXTRACTOR_API_TOKEN#}}",
+            "body": {
+                "type": "raw-text",
+                "data": [
+                    {
+                        "type": "text",
+                        "value": f"{{{{#{parser_validator['id']}.parsed_json#}}}}",
+                    }
+                ],
+            },
+            "error_strategy": "fail-branch",
+            "variables": [],
+        }
+    )
+    normalizer = _regression_clone_code_node(
+        nodes["prepare_protocol_artifacts"],
+        OLLAMA_EXTRACTOR_NORMALIZER_ID,
+        "normalize_extractor_response",
+        _extractor_response_normalizer_code(),
+        {
+            "dossier_json": {"children": None, "type": "string"},
+            "extraction_diagnostics_json": {"children": None, "type": "string"},
+            "can_continue": {"children": None, "type": "boolean"},
+            "error_code": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [extractor["id"], "body"], "value_type": "string", "variable": "body"},
+            {"value_selector": [extractor["id"], "status_code"], "value_type": "number", "variable": "status_code"},
+        ],
+        1700,
+        300,
+    )
+    extractor_gate = _regression_clone_if_node(
+        nodes["paper_parser_ok?"],
+        OLLAMA_EXTRACTOR_GATE_ID,
+        "extractor_ok?",
+        [OLLAMA_EXTRACTOR_NORMALIZER_ID, "can_continue"],
+        2000,
+        300,
+    )
+    failure = _regression_clone_code_node(
+        nodes["prepare_dossier_semantic_failure"],
+        OLLAMA_EXTRACTOR_FAILURE_ID,
+        "prepare_extractor_failure",
+        _extractor_prepare_failure_code(),
+        {
+            "protocol_preview_json": {"children": None, "type": "string"},
+            "protocol_token": {"children": None, "type": "string"},
+            "draft_expires_at": {"children": None, "type": "string"},
+            "error_json": {"children": None, "type": "string"},
+            "markdown_report": {"children": None, "type": "string"},
+        },
+        [
+            {"value_selector": [OLLAMA_EXTRACTOR_NORMALIZER_ID, "error_code"], "value_type": "string", "variable": "error_code"},
+            {"value_selector": [OLLAMA_EXTRACTOR_NORMALIZER_ID, "extraction_diagnostics_json"], "value_type": "string", "variable": "extraction_diagnostics_json"},
+        ],
+        2300,
+        -980,
+    )
+
+    graph_nodes = _nodes(document)
+    validator_index = next(
+        index
+        for index, node in enumerate(graph_nodes)
+        if node["id"] == nodes["validate_paper_dossier"]["id"]
+    )
+    graph_nodes[validator_index:validator_index] = [normalizer, extractor_gate]
+    graph_nodes.append(failure)
+    nodes = _by_title(document)
+
+    validator_input = next(
+        item
+        for item in nodes["validate_paper_dossier"]["data"]["variables"]
+        if item.get("variable") == "dossier_json"
+    )
+    validator_input["value_selector"] = [normalizer["id"], "dossier_json"]
+
+    prepare = nodes["prepare_protocol_artifacts"]
+    prepare["data"]["code"] = _prepare_protocol_code_with_extraction_diagnostics()
+    prepare["data"]["variables"] = [
+        variable
+        for variable in prepare["data"].get("variables", [])
+        if variable.get("variable") != "extraction_diagnostics_json"
+    ] + [
+        {
+            "value_selector": [normalizer["id"], "extraction_diagnostics_json"],
+            "value_type": "string",
+            "variable": "extraction_diagnostics_json",
+        }
+    ]
+
+    environment_variables = document["workflow"].setdefault("environment_variables", [])
+    if not any(item.get("name") == "DIFY_EXTRACTOR_API_TOKEN" for item in environment_variables):
+        environment_variables.append(_ollama_extractor_environment_variable())
+
+    edges = [
+        edge
+        for edge in document["workflow"]["graph"]["edges"]
+        if edge["source"] != extractor["id"]
+    ]
+    edges.extend(
+        [
+            _regression_make_edge(document, extractor["id"], "source", normalizer["id"]),
+            _regression_make_edge(document, extractor["id"], "fail-branch", failure["id"]),
+            _regression_make_edge(document, normalizer["id"], "source", extractor_gate["id"]),
+            _regression_make_edge(
+                document,
+                extractor_gate["id"],
+                "true",
+                nodes["validate_paper_dossier"]["id"],
+            ),
+            _regression_make_edge(document, extractor_gate["id"], "false", failure["id"]),
+        ]
+    )
+    for variable in ("protocol_preview_json", "protocol_token", "draft_expires_at"):
+        aggregator = nodes[f"aggregate_prepare_{variable}"]
+        source = [failure["id"], variable]
+        if source not in aggregator["data"]["variables"]:
+            aggregator["data"]["variables"].append(source)
+        edges.append(
+            _regression_make_edge(
+                document,
+                failure["id"],
+                "source",
+                aggregator["id"],
+            )
+        )
+    document["workflow"]["graph"]["edges"] = edges
 
 
 def _wire_validated_comparison_dossier(nodes: dict[str, dict]) -> None:
@@ -1333,6 +2143,8 @@ def build_regression_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     _set_regression_metadata(document, profile)
     _set_explicit_regression_inputs(document)
     _replace_regression_code_nodes(document)
+    if profile == "ollama":
+        _wire_ollama_extractor(document)
     _validate_regression_graph(document)
     return document
 
