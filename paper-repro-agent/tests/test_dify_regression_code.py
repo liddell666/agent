@@ -232,6 +232,41 @@ def test_regression_comparison_request_accepts_natural_values_and_aliases_only()
     assert all(sentinel not in json.dumps(result, ensure_ascii=False) for sentinel in SENTINELS)
 
 
+def test_regression_comparison_request_normalizes_chinese_regression_task_type() -> None:
+    result = _exec_code_node("build_suite_comparison_request")(
+        json.dumps(
+            {
+                "task_type": "回归",
+                "metrics": [
+                    {
+                        "name": "MAE",
+                        "normalized_name": "mae",
+                        "supported": True,
+                        "ambiguous": False,
+                        "reported_value": "1.5",
+                        "dataset": "synthetic regression data",
+                        "split": "test",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {"experiment_id": "exp-chinese-task-type", "task_type": "regression"}
+        ),
+    )
+
+    assert result["suite_comparison_request_ok"] is True
+    assert json.loads(result["suite_comparison_request_json"])["reported_metrics"] == [
+        {
+            "name": "mae",
+            "reported_value": 1.5,
+            "dataset": "synthetic regression data",
+            "split": "test",
+        }
+    ]
+
+
 def test_regression_comparison_request_preserves_task_type_set_literal() -> None:
     request = next(
         node

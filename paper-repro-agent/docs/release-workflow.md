@@ -311,16 +311,16 @@ Candidate release identity:
 
 - App UUID: `17fe51d4-091f-4729-87ee-3c0a2e920918`.
 - Draft workflow UUID: `912d4e05-494c-4302-a189-788a59c6c0c2`.
-- Published workflow UUID: `8cc0de24-ed72-4026-9850-a9a4cccc0a23`.
+- Published workflow UUID: `f8dfef88-2407-44d2-87ef-664bf21c71a5`.
 - Explicit rollback backup UUID: `ae8bef35-36fb-4500-97de-a4e054e01544`.
 - Graph digest:
-  `sha256:d63e730b785fd20b31372fb853129d891b80b169b62eac4e78b01e222db4236a`.
+  `sha256:4f484a4fc43cc7c7788cb33f6aad0179d13fe0fbf572fe333d73cb35856633f6`.
 - Metadata digest:
   `sha256:97f0389ff657384392ff4c2ae8aa7ea94c2b9113fb8b4d6b83c0398d524b1d6a`.
 - Source digest:
-  `sha256:9fed22327fc1772ce80b562aeff036e36ead841f1d95726d2b9bf71e0b13ca2e`.
-- DSL digest:
-  `sha256:fffc16f68d24aa7b13b47b1038db3f2ee4b3497b97354c36c037478fcae85c18`.
+  `sha256:7bb99b7e472ff96e2688570acc298b6f350c308483db02fcdc11ce08c457a8de`.
+- Ollama DSL digest:
+  `sha256:4f484a4fc43cc7c7788cb33f6aad0179d13fe0fbf572fe333d73cb35856633f6`.
 - The previously published graph was preserved as the explicit rollback backup
   above. Its exact graph and metadata identities are stored in the ignored,
   privacy-safe `.live-artifacts/regression-candidate-verification.json` record.
@@ -338,7 +338,7 @@ command is:
 
 ```powershell
 python scripts/check_workflow_release.py `
-  --dsl dify/paper-comparison-regression-workflow.yml `
+  --dsl dify/paper-comparison-regression-workflow-ollama.yml `
   --source scripts/build_regression_dsl.py scripts/build_multimodel_dsl.py dify/paper-comparison-workflow.yml dify/paper-dossier-workflow.yml dify/code/validate_evidence.py dify/code/comparison_workflow.py dify/code/experiment_workflow.py dify/code/validate_parser.py `
   --json
 ```
@@ -351,18 +351,19 @@ run. That source-only clean result does not substantiate equality with the
 live draft or published graph; the previously recorded candidate IDs and
 publication digests remain unchanged.
 
-Before safe use, require runner and Dify health, zero queued/running jobs, a
-configured DeepSeek provider, and a runner contract that exposes explicit
-regression `task_type`. Keep both candidate environment values in Dify secret
+Before safe use, require runner and Dify health, no active runner job, a local
+Ollama `qwen3:8b` provider configured with `num_ctx=16384`,
+`num_predict=3072`, and thinking disabled, plus a runner contract that exposes
+explicit regression `task_type`. Keep both candidate environment values in Dify secret
 fields, run only bounded inputs, inspect aggregate results, and never persist
 tokens, cookies, document text, CSV rows, or full request payloads as evidence.
 Rollback must target the exact backup UUID above; never select a version by
 recency.
 
-The controlled acceptance completed on 2026-08-28 against the published
+The latest controlled acceptance completed on 2026-09-03 against the published
 candidate above. Prepare workflow run
-`80c9fa4f-2693-4142-8af3-52f15e5aba17` and confirmed run
-`16a241e7-9cf6-466b-8731-3a7cd2395180` both succeeded. Dataset validation
+`99c0dbd8-aabd-4963-b10c-dcc7e2f3770c` and confirmed run
+`50a902fe-ca6f-4c24-9867-fd52685d988e` both succeeded. Dataset validation
 explicitly reported regression. Linear regression, random forest, gradient
 boosting, and XGBoost all succeeded with finite MAE, RMSE, and R² values. The
 shared held-out split identity was
@@ -373,10 +374,12 @@ comparison items, 12 assessment items, `strict_status=not_comparable`, and
 the synthetic paper does not identify the CSV dataset or its held-out digest;
 the approximate result still compares the paper values 1.5, 2.0, and 0.80.
 Evidence scans found no raw CSV row, PDF body, protocol token, cookie, or secret.
+The final rerun also verifies that the comparison-request builder normalizes the
+localized model value `回归` to the canonical `regression` task type.
 
 The acceptance used a locally generated, explicitly qualified synthetic PDF so
 the extractor could associate each metric with the test set without weakening
 the ambiguity gate. This is a controlled regression-path check, not evidence
-that results generalize to real research papers or datasets. Two fresh complete
-repository suites each passed with `644 passed` and the one pre-existing
-Starlette/httpx deprecation warning.
+that results generalize to real research papers or datasets. After the localized
+task-type fix, the focused regression code and DSL suites passed with `46 passed`,
+and the release-integrity suite passed with `45 passed`.
