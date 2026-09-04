@@ -66,12 +66,13 @@ def test_protected_profile_builders_use_the_legacy_parser_snapshot() -> None:
 
 def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> None:
     ollama = build_regression_dsl("ollama")
-    llm = _node(ollama, "extract_paper_dossier")["data"]
+    nodes = {
+        node["data"]["title"]: node for node in ollama["workflow"]["graph"]["nodes"]
+    }
     parser = _node(ollama, "validate_parser_response")["data"]["code"]
 
-    assert llm["model"]["completion_params"]["think"] is False
-    assert llm["model"]["completion_params"]["num_ctx"] == OLLAMA_CONTEXT_NUM_CTX
-    assert llm["model"]["completion_params"]["num_predict"] == OLLAMA_CONTEXT_NUM_PREDICT
+    assert "extract_paper_dossier" not in nodes
+    assert nodes["extract_paper_dossier_chunks"]["data"]["type"] == "http-request"
     assert "DEFAULT_CONTEXT_BUDGET_BYTES: int | None = 6277" in parser
 
     deepseek = build_regression_dsl("deepseek")
