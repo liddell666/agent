@@ -13,6 +13,18 @@ from .schemas import OllamaCompletion, PageChunk
 
 SYSTEM_PROMPT = (
     "Return exactly one compact JSON object and no Markdown or analysis.\n"
+    "Use exactly these top-level keys and value shapes:\n"
+    '{"title":string|null,"title_evidence":[evidence],'
+    '"research_problem":string|null,"task_type":"regression"|"uncertain",'
+    '"task_evidence":[evidence],"datasets":[fact],"methods":[fact],'
+    '"metrics":[metric],"gaps":[string]}.\n'
+    'evidence={"page":integer,"source_text":string}; '
+    'fact={"name":string,"description":string,"evidence":[evidence]}; '
+    'metric={"name":"MAE"|"RMSE"|"R2","reported_value":number|null,'
+    '"dataset":string|null,"split":string|null,"model":string|null,'
+    '"evidence":[evidence]}.\n'
+    "Use [] for unsupported arrays and null for unsupported nullable values. "
+    "Do not add other keys.\n"
     "Use only the supplied page objects. Preserve their original page numbers.\n"
     "Extract only title, research_problem, regression task evidence, datasets,\n"
     "methods, MAE, RMSE, and R2. Copy a short exact source_text from its page.\n"

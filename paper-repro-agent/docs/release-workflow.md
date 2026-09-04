@@ -383,3 +383,64 @@ the ambiguity gate. This is a controlled regression-path check, not evidence
 that results generalize to real research papers or datasets. After the localized
 task-type fix, the focused regression code and DSL suites passed with `46 passed`,
 and the release-integrity suite passed with `45 passed`.
+
+## Chunked Ollama extractor candidate (2026-09-04)
+
+The isolated candidate was republished after the chunked extractor passed its
+content-free readiness probe. Only app
+`17fe51d4-091f-4729-87ee-3c0a2e920918` was changed; the legacy application and
+DeepSeek workflow were not modified.
+
+Candidate release identity:
+
+- Draft workflow UUID: `912d4e05-494c-4302-a189-788a59c6c0c2`.
+- Published workflow UUID: `e9bdb4b2-8fc4-4d1b-865d-04bac0fa31cc`.
+- Explicit rollback workflow UUID: `233c5ef4-a36f-4ccd-93f2-de2e0605894c`.
+- Published graph digest: `sha256:750cc295dc62001754dc4c2d4e410ecdef00259dbfeb43f66740238008b05420`.
+- Published metadata digest: `sha256:3459bcaeebe74852636b1d43d12cafeff203d9bbcb8402549bbf89ba25a09ff4`.
+
+The readiness gate returned `ready` for `qwen3:8b`. The direct Ollama probe
+used `num_ctx=16384` and `num_predict=3072`; the extractor boundary used
+`num_ctx=16384`, `num_predict=1536`, an 8,192-byte maximum chunk source, and a
+12-call maximum. The extractor container is internal-only and has no host
+port. Dify's `SSRF_PROXY_ALLOW_PRIVATE_DOMAINS` must include
+`paper-dossier-extractor` alongside the existing parser and runner entries;
+recreate `ssrf_proxy` after changing that allowlist.
+
+The accepted authorized long-paper case used input digests
+`sha256:3920c6c465e4fb1501a5f24adc94fca16cf8070b2254efba04036b2cfb76310b`
+and
+`sha256:38f6635100e1ec2d4944d6f8cec829b4b2b5ff621e5af75facab2a06589a433c`.
+Prepare run `efc3018e-1820-430c-818d-69311b96b796` and confirmed run
+`f8510dc5-584c-42ac-9012-f32b24d075de` both succeeded. Extraction processed
+155 pages, selected 15 candidate pages, formed 4 initial chunks, made 4
+Ollama calls, and completed 4/4 chunks with zero failed chunks and zero split
+retries. The extractor returned HTTP 200/`ok=true`, with no warning or error
+and no whole-document `finish_reason=length`.
+
+The exact CSV bytes did not contain a column named `target`; diagnosis returned
+one candidate column. To complete the user-confirmed same-byte acceptance, the
+one-off acceptance runner supplied that unique candidate in memory and recorded
+only `target_column_inferred=true`; it did not rewrite or persist CSV content.
+The bounded confirmed run used regression mode, `cv_folds=3`, `n_iter=1`, the
+four supported models, and `use_gpu=false`. All four models succeeded with
+finite MAE/RMSE/R² values. Both rankings contained 4 entries, comparison and
+assessment each contained 4 items, and the conclusions were
+`strict_status=not_comparable` and `approximate_status=materially_different`.
+
+Use the candidate in two stages: submit `run_mode=prepare` to obtain the
+short-lived protocol preview, then submit `run_mode=run` with
+`confirm_protocol=true` and the returned token before expiry. Store neither
+the token nor raw inputs/outputs in evidence. A `missing_target_column` result
+means the caller's target is absent from the CSV; an extractor SSRF/private
+network error means the Dify proxy allowlist is stale; parser HTTP 503 is a
+transport/service readiness failure and should be retried only after health is
+restored. The privacy-safe evidence is stored in ignored
+`.live-artifacts/ollama-chunked-extractor-readiness.json` and
+`.live-artifacts/ollama-chunked-extractor-acceptance.json`.
+
+The acceptance artifact passed its privacy scan and records the two run IDs,
+the service counters, model statuses, comparison counts, digests, and boolean
+privacy gates only. Roll back only to
+`233c5ef4-a36f-4ccd-93f2-de2e0605894c`; never select a rollback version by
+recency.
