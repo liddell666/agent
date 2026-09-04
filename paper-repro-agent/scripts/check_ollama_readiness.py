@@ -35,6 +35,15 @@ CANDIDATE_APP_ID = "17fe51d4-091f-4729-87ee-3c0a2e920918"
 OLLAMA_PROVIDER = "langgenius/ollama/ollama"
 OLLAMA_MODEL = "qwen3:8b"
 LOCAL_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+EXTRACTOR_HEALTH_URL = "http://paper-dossier-extractor:8002/healthz"
+EXTRACTOR_URL = "http://paper-dossier-extractor:8002/v1/extract-dossier"
+EXTRACTOR_TOKEN_ENV = "PAPER_DOSSIER_EXTRACTOR_API_TOKEN"
+EXTRACTOR_DIFY_TOKEN_ENV = "DIFY_EXTRACTOR_API_TOKEN"
+EXTRACTOR_NUM_CTX = 16_384
+EXTRACTOR_NUM_PREDICT = 1_536
+EXTRACTOR_MAX_PROMPT_TOKENS = EXTRACTOR_NUM_CTX - EXTRACTOR_NUM_PREDICT
+EXTRACTOR_MAX_CHUNK_SOURCE_BYTES = 8_192
+EXTRACTOR_MAX_OLLAMA_CALLS = 12
 DEFAULT_TIMEOUT_SECONDS = 120
 SCHEMA = "ollama-readiness/v1"
 OLLAMA_MAX_PROMPT_TOKENS = OLLAMA_CONTEXT_NUM_CTX - OLLAMA_CONTEXT_NUM_PREDICT
@@ -105,6 +114,86 @@ SYNTHETIC_PROMPT = render_production_prompt(
 SYNTHETIC_PROMPT_BYTES = len(SYNTHETIC_PROMPT.encode("utf-8"))
 if SYNTHETIC_PROMPT_BYTES != OLLAMA_PRODUCTION_INPUT_BYTES:
     raise RuntimeError("Ollama synthetic production prompt byte budget changed")
+
+
+SYNTHETIC_PAGE_TEXT = (
+    "Synthetic readiness results for a regression dataset and method. "
+    "RMSE is reported for the regression task. "
+    + "x" * 20_000
+)
+
+
+def _serialize_synthetic_source(text: str) -> str:
+    return json.dumps(
+        {"page": 1, "kinds": ["text"], "text": text},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _clip_synthetic_source(text: str, limit: int) -> str:
+    marker = "\n...[truncated for chunk budget]...\n"
+    encoded = text.encode("utf-8")
+    if len(_serialize_synthetic_source(text).encode("utf-8")) <= limit:
+        return text
+    marker_bytes = marker.encode("utf-8")
+    low = len(marker_bytes)
+    high = len(encoded)
+    best = marker
+    while low <= high:
+        text_limit = (low + high) // 2
+        remaining = text_limit - len(marker_bytes)
+        head_limit = remaining // 2
+        tail_limit = remaining - head_limit
+        candidate = (
+            encoded[:head_limit].decode("utf-8", errors="ignore")
+            + marker
+            + encoded[-tail_limit:].decode("utf-8", errors="ignore")
+            if tail_limit
+            else encoded[:head_limit].decode("utf-8", errors="ignore") + marker
+        )
+        if len(_serialize_synthetic_source(candidate).encode("utf-8")) <= limit:
+            best = candidate
+            low = text_limit + 1
+        else:
+            high = text_limit - 1
+    return best
+
+
+SYNTHETIC_SOURCE_TEXT = _clip_synthetic_source(
+    SYNTHETIC_PAGE_TEXT,
+    EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+)
+SYNTHETIC_SOURCE = _serialize_synthetic_source(SYNTHETIC_SOURCE_TEXT)
+SYNTHETIC_SOURCE_BYTES = len(SYNTHETIC_SOURCE.encode("utf-8"))
+if SYNTHETIC_SOURCE_BYTES != EXTRACTOR_MAX_CHUNK_SOURCE_BYTES:
+    raise RuntimeError("extractor synthetic source budget changed")
+EXTRACTOR_SYNTHETIC_SOURCE_SHA256 = hashlib.sha256(
+    SYNTHETIC_SOURCE.encode("utf-8")
+).hexdigest()
+
+
+def _synthetic_paper_json() -> str:
+    return json.dumps(
+        {
+            "document_id": "readiness-synthetic-document",
+            "file_name": "readiness-synthetic.pdf",
+            "page_count": 1,
+            "markdown": "",
+            "elements": [
+                {
+                    "kind": "text",
+                    "page": 1,
+                    "text": SYNTHETIC_PAGE_TEXT,
+                }
+            ],
+            "warnings": [],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _safe_duration(start: float, end: float, timeout: float) -> float:
@@ -187,6 +276,8 @@ def _boundary_metadata(
     *,
     empty_prompt_tokens: int,
     prompt_tokens: int,
+    empty_completion_tokens: int,
+    completion_tokens: int,
     response: str,
 ) -> dict[str, object]:
     encoded_prompt = SYNTHETIC_PROMPT.encode("utf-8")
@@ -197,7 +288,9 @@ def _boundary_metadata(
         "input_bytes": len(encoded_prompt),
         "input_sha256": hashlib.sha256(encoded_prompt).hexdigest(),
         "empty_prompt_tokens": empty_prompt_tokens,
+        "empty_completion_tokens": empty_completion_tokens,
         "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
         "prompt_token_limit": OLLAMA_MAX_PROMPT_TOKENS,
         "num_ctx": OLLAMA_CONTEXT_NUM_CTX,
         "num_predict": OLLAMA_CONTEXT_NUM_PREDICT,
@@ -205,7 +298,11 @@ def _boundary_metadata(
     }
 
 
-def _parse_local_response(raw_body: bytes, *, prompt_token_limit: int) -> tuple[str, int]:
+def _parse_local_response(
+    raw_body: bytes,
+    *,
+    prompt_token_limit: int,
+) -> tuple[str, int, int]:
     try:
         document = json.loads(raw_body)
     except json.JSONDecodeError as exc:
@@ -221,9 +318,11 @@ def _parse_local_response(raw_body: bytes, *, prompt_token_limit: int) -> tuple[
     if not isinstance(content, str) or not content.strip():
         raise _ProbeFailure("empty_response")
     prompt_tokens = document.get("prompt_eval_count")
-    return content, _validate_prompt_tokens(
-        prompt_tokens,
-        limit=prompt_token_limit,
+    completion_tokens = document.get("eval_count")
+    return (
+        content,
+        _validate_prompt_tokens(prompt_tokens, limit=prompt_token_limit),
+        _validate_prompt_tokens(completion_tokens, limit=OLLAMA_CONTEXT_NUM_PREDICT),
     )
 
 
@@ -233,7 +332,7 @@ def _local_request(
     opener: Callable[..., Any],
     timeout: float,
     prompt_token_limit: int,
-) -> tuple[str, int]:
+) -> tuple[str, int, int]:
     payload = json.dumps(
         {
             "model": OLLAMA_MODEL,
@@ -270,14 +369,14 @@ def probe_local_ollama(
     category = "connection_error"
     try:
         phase = "validation"
-        empty_response, empty_prompt_tokens = _local_request(
+        empty_response, empty_prompt_tokens, empty_completion_tokens = _local_request(
             "",
             opener=opener,
             timeout=timeout,
             prompt_token_limit=OLLAMA_CHAT_OVERHEAD_TOKENS,
         )
         _ = empty_response
-        full_response, prompt_tokens = _local_request(
+        full_response, prompt_tokens, completion_tokens = _local_request(
             SYNTHETIC_PROMPT,
             opener=opener,
             timeout=timeout,
@@ -290,7 +389,9 @@ def probe_local_ollama(
             duration_seconds=duration,
             response_metadata=_boundary_metadata(
                 empty_prompt_tokens=empty_prompt_tokens,
+                empty_completion_tokens=empty_completion_tokens,
                 prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 response=full_response,
             ),
         )
@@ -516,120 +617,544 @@ def probe_dify_model_boundary(
     )
 
 
+EXTRACTOR_CHILD_SOURCE = f'''import contextlib
+import hashlib
+import json
+import sys
+import urllib.error
+import urllib.request
+
+HEALTH_URL = {EXTRACTOR_HEALTH_URL!r}
+EXTRACTOR_URL = {EXTRACTOR_URL!r}
+MODEL = {OLLAMA_MODEL!r}
+EXPECTED_SOURCE_BYTES = {EXTRACTOR_MAX_CHUNK_SOURCE_BYTES}
+EXPECTED_SOURCE_SHA256 = {EXTRACTOR_SYNTHETIC_SOURCE_SHA256!r}
+NUM_CTX = {EXTRACTOR_NUM_CTX}
+NUM_PREDICT = {EXTRACTOR_NUM_PREDICT}
+MAX_CHUNK_SOURCE_BYTES = {EXTRACTOR_MAX_CHUNK_SOURCE_BYTES}
+MAX_OLLAMA_CALLS = {EXTRACTOR_MAX_OLLAMA_CALLS}
+TIMEOUT = {DEFAULT_TIMEOUT_SECONDS}
+
+def _failure_category(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return "http_error"
+    if isinstance(error, urllib.error.URLError):
+        return "connection_error"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    return "invalid_result"
+
+def _positive_count(value, *, allow_zero=False):
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError("invalid count")
+    if value < 0 or (value == 0 and not allow_zero):
+        raise ValueError("invalid count")
+    return value
+
+def main():
+    safe_output = None
+    try:
+        stdin = sys.stdin.read()
+        token, separator, paper_json = stdin.partition("\\n")
+        if not separator or not token or not paper_json:
+            raise ValueError("missing input")
+        paper = json.loads(paper_json)
+        if not isinstance(paper, dict):
+            raise ValueError("invalid synthetic paper")
+        sink = __import__("io").StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            health_request = urllib.request.Request(HEALTH_URL, method="GET")
+            with urllib.request.urlopen(health_request, timeout=TIMEOUT) as response:
+                health = json.loads(response.read())
+            if health != {{
+                "status": "ok",
+                "service": "paper-dossier-extractor",
+                "model": MODEL,
+            }}:
+                raise ValueError("invalid extractor health")
+
+            body = json.dumps(
+                paper, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8")
+            extraction_request = urllib.request.Request(
+                EXTRACTOR_URL,
+                data=body,
+                headers={{
+                    "Content-Type": "application/json",
+                    "X-Extractor-Token": token,
+                }},
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                extraction_request, timeout=TIMEOUT
+            ) as response:
+                raw_body = response.read()
+            document = json.loads(raw_body)
+
+        if not isinstance(document, dict) or document.get("ok") is not True:
+            raise ValueError("extractor did not return ready")
+        diagnostics = document.get("diagnostics")
+        if not isinstance(diagnostics, dict):
+            raise ValueError("missing extractor diagnostics")
+        safe_output = {{
+            "ok": True,
+            "response_nonempty": bool(raw_body),
+            "response_length": len(raw_body),
+            "response_sha256": hashlib.sha256(raw_body).hexdigest(),
+            "source_bytes": EXPECTED_SOURCE_BYTES,
+            "source_sha256": EXPECTED_SOURCE_SHA256,
+            "num_ctx": NUM_CTX,
+            "num_predict": NUM_PREDICT,
+            "max_chunk_source_bytes": MAX_CHUNK_SOURCE_BYTES,
+            "max_ollama_calls": MAX_OLLAMA_CALLS,
+            "page_count": _positive_count(diagnostics.get("page_count")),
+            "candidate_page_count": _positive_count(
+                diagnostics.get("candidate_page_count"), allow_zero=True
+            ),
+            "initial_chunk_count": _positive_count(
+                diagnostics.get("initial_chunk_count"), allow_zero=True
+            ),
+            "ollama_call_count": _positive_count(
+                diagnostics.get("ollama_call_count"), allow_zero=True
+            ),
+            "successful_chunk_count": _positive_count(
+                diagnostics.get("successful_chunk_count"), allow_zero=True
+            ),
+            "split_retry_count": _positive_count(
+                diagnostics.get("split_retry_count"), allow_zero=True
+            ),
+            "failed_chunk_count": _positive_count(
+                diagnostics.get("failed_chunk_count"), allow_zero=True
+            ),
+        }}
+        for key in ("prompt_tokens", "completion_tokens"):
+            value = diagnostics.get(key)
+            if value is not None:
+                safe_output[key] = _positive_count(value, allow_zero=True)
+        print(json.dumps(safe_output, sort_keys=True))
+        return 0
+    except BaseException as error:
+        print(json.dumps({{"ok": False, "failure_category": _failure_category(error)}}, sort_keys=True))
+        return 2
+
+raise SystemExit(main())
+'''
+
+
+def _extractor_token(value: str | None) -> str | None:
+    token = value
+    if token is None:
+        token = os.environ.get(EXTRACTOR_TOKEN_ENV)
+        if token is None:
+            token = os.environ.get(EXTRACTOR_DIFY_TOKEN_ENV)
+    if not isinstance(token, str) or len(token) < 32 or "\n" in token:
+        return None
+    return token
+
+
+def _safe_digest(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        return None
+    return value
+
+
+def _extractor_probe_metadata(document: Mapping[str, object]) -> dict[str, object]:
+    response_nonempty = document.get("response_nonempty")
+    response_length = document.get("response_length")
+    response_digest = _safe_digest(document.get("response_sha256"))
+    source_bytes = document.get("source_bytes")
+    source_digest = _safe_digest(document.get("source_sha256"))
+    if (
+        response_nonempty is not True
+        or not isinstance(response_length, int)
+        or isinstance(response_length, bool)
+        or response_length <= 0
+        or response_digest is None
+        or source_bytes != EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
+        or source_digest != EXTRACTOR_SYNTHETIC_SOURCE_SHA256
+        or document.get("num_ctx") != EXTRACTOR_NUM_CTX
+        or document.get("num_predict") != EXTRACTOR_NUM_PREDICT
+        or document.get("max_chunk_source_bytes") != EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
+        or document.get("max_ollama_calls") != EXTRACTOR_MAX_OLLAMA_CALLS
+    ):
+        raise _ProbeFailure("invalid_result")
+
+    counts: dict[str, int] = {}
+    for key in (
+        "page_count",
+        "candidate_page_count",
+        "initial_chunk_count",
+        "ollama_call_count",
+        "successful_chunk_count",
+        "split_retry_count",
+        "failed_chunk_count",
+    ):
+        value = document.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise _ProbeFailure("invalid_result")
+        counts[key] = value
+    if (
+        counts["page_count"] <= 0
+        or counts["candidate_page_count"] <= 0
+        or counts["initial_chunk_count"] <= 0
+        or counts["ollama_call_count"] <= 0
+        or counts["ollama_call_count"] > EXTRACTOR_MAX_OLLAMA_CALLS
+        or counts["successful_chunk_count"] <= 0
+        or counts["failed_chunk_count"] != 0
+    ):
+        raise _ProbeFailure("invalid_result")
+
+    optional_tokens: dict[str, int] = {}
+    prompt_tokens = document.get("prompt_tokens")
+    if prompt_tokens is not None:
+        prompt_tokens = _validate_prompt_tokens(
+            prompt_tokens,
+            limit=EXTRACTOR_MAX_PROMPT_TOKENS,
+        )
+        if prompt_tokens + EXTRACTOR_NUM_PREDICT > EXTRACTOR_NUM_CTX:
+            raise _ProbeFailure("context_overflow")
+        optional_tokens["prompt_tokens"] = prompt_tokens
+    completion_tokens = document.get("completion_tokens")
+    if completion_tokens is not None:
+        optional_tokens["completion_tokens"] = _validate_prompt_tokens(
+            completion_tokens,
+            limit=EXTRACTOR_NUM_PREDICT,
+        )
+
+    return {
+        "response_nonempty": True,
+        "response_length": response_length,
+        "response_sha256": response_digest,
+        "source_bytes": source_bytes,
+        "source_sha256": source_digest,
+        **optional_tokens,
+        **counts,
+        "num_ctx": EXTRACTOR_NUM_CTX,
+        "num_predict": EXTRACTOR_NUM_PREDICT,
+        "max_chunk_source_bytes": EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+        "max_ollama_calls": EXTRACTOR_MAX_OLLAMA_CALLS,
+    }
+
+
+def probe_extractor_boundary(
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    token: str | None = None,
+) -> dict[str, object]:
+    start = monotonic()
+    resolved_token = _extractor_token(token)
+    if resolved_token is None:
+        return failed_probe(
+            provider="paper-dossier-extractor",
+            mode="extractor_boundary",
+            duration_seconds=_safe_duration(start, monotonic(), timeout),
+            phase="prerequisite",
+            category="prerequisite_failed",
+        )
+    phase = "transport"
+    category = "subprocess_failed"
+    try:
+        completed = runner(
+            [
+                "docker",
+                "exec",
+                "-i",
+                "docker-api-1",
+                "/app/api/.venv/bin/python",
+                "-c",
+                EXTRACTOR_CHILD_SOURCE,
+            ],
+            input=f"{resolved_token}\n{_synthetic_paper_json()}",
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            phase = "validation"
+            try:
+                child = json.loads(completed.stdout)
+                child_category = child.get("failure_category") if isinstance(child, dict) else None
+                if child_category in ALLOWED_FAILURE_CATEGORIES:
+                    category = child_category
+            except (TypeError, json.JSONDecodeError):
+                pass
+            raise RuntimeError("extractor child failed")
+        phase, category = "validation", "invalid_result"
+        document = json.loads(completed.stdout)
+        if not isinstance(document, dict) or document.get("ok") is not True:
+            raise ValueError("invalid extractor child result")
+        metadata = _extractor_probe_metadata(document)
+        duration = _safe_duration(start, monotonic(), timeout)
+        return _successful_probe(
+            provider="paper-dossier-extractor",
+            mode="extractor_boundary",
+            duration_seconds=duration,
+            response_metadata=metadata,
+        )
+    except _ProbeFailure as failure:
+        category = failure.category
+    except subprocess.TimeoutExpired:
+        phase, category = "transport", "timeout"
+    except json.JSONDecodeError:
+        phase, category = "validation", "invalid_result"
+    except Exception:
+        pass
+    duration = _safe_duration(start, monotonic(), timeout)
+    return failed_probe(
+        provider="paper-dossier-extractor",
+        mode="extractor_boundary",
+        duration_seconds=duration,
+        phase=phase,
+        category=category,
+    )
+
+
 def build_evidence(
-    local_probe: Mapping[str, object],
-    dify_probe: Mapping[str, object] | None,
+    direct_ollama_probe: Mapping[str, object],
+    extractor_probe: Mapping[str, object] | None,
     *,
     timestamp: str | None = None,
 ) -> dict[str, object]:
-    def sanitize(
+    def safe_duration(probe: Mapping[str, object]) -> float:
+        duration = probe.get("duration_seconds")
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+            return 0.0
+        return round(min(max(float(duration), 0.0), DEFAULT_TIMEOUT_SECONDS), 6)
+
+    def safe_failure(
         probe: Mapping[str, object],
         *,
+        status: str,
         provider: str,
         mode: str,
+        phase: str | None = None,
+        category: str | None = None,
     ) -> dict[str, object]:
-        status = probe.get("status")
-        if status not in {"ready", "failed", "not_run"}:
-            status = "failed"
-        duration = probe.get("duration_seconds")
-        safe_duration = (
-            round(min(max(float(duration), 0.0), DEFAULT_TIMEOUT_SECONDS), 6)
-            if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-            else 0.0
-        )
-        length = probe.get("response_length")
-        digest = probe.get("response_sha256")
-        response_valid = (
-            probe.get("response_nonempty") is True
-            and isinstance(length, int)
-            and not isinstance(length, bool)
-            and length > 0
-            and isinstance(digest, str)
-            and len(digest) == 64
-            and all(character in "0123456789abcdef" for character in digest)
-        )
-        input_bytes = probe.get("input_bytes")
-        input_digest = probe.get("input_sha256")
-        empty_prompt_tokens = probe.get("empty_prompt_tokens")
-        prompt_tokens = probe.get("prompt_tokens")
-        boundary_valid = (
-            isinstance(input_bytes, int)
-            and not isinstance(input_bytes, bool)
-            and input_bytes == OLLAMA_PRODUCTION_INPUT_BYTES
-            and isinstance(input_digest, str)
-            and len(input_digest) == 64
-            and all(character in "0123456789abcdef" for character in input_digest)
-            and isinstance(empty_prompt_tokens, int)
-            and not isinstance(empty_prompt_tokens, bool)
-            and 0 < empty_prompt_tokens <= OLLAMA_CHAT_OVERHEAD_TOKENS
-            and isinstance(prompt_tokens, int)
-            and not isinstance(prompt_tokens, bool)
-            and 0 < prompt_tokens <= OLLAMA_MAX_PROMPT_TOKENS
-            and probe.get("prompt_token_limit") == OLLAMA_MAX_PROMPT_TOKENS
-            and probe.get("num_ctx") == OLLAMA_CONTEXT_NUM_CTX
-            and probe.get("num_predict") == OLLAMA_CONTEXT_NUM_PREDICT
-            and probe.get("think") is False
-        )
-        response_valid = response_valid and boundary_valid
-        malformed_ready = status == "ready" and not response_valid
-        if malformed_ready:
-            status = "failed"
         safe: dict[str, object] = {
             "status": status,
             "provider": provider,
             "model": OLLAMA_MODEL,
             "mode": mode,
-            "duration_seconds": safe_duration,
-            **(
-                {
-                    "response_nonempty": True,
-                    "response_length": length,
-                    "response_sha256": digest,
-                    "input_bytes": input_bytes,
-                    "input_sha256": input_digest,
-                    "empty_prompt_tokens": empty_prompt_tokens,
-                    "prompt_tokens": prompt_tokens,
-                    "prompt_token_limit": probe["prompt_token_limit"],
-                    "num_ctx": probe["num_ctx"],
-                    "num_predict": probe["num_predict"],
-                    "think": False,
-                }
-                if response_valid
-                else _empty_response_metadata()
-            ),
+            "duration_seconds": safe_duration(probe),
+            **_empty_response_metadata(),
         }
-        if status != "ready":
-            phase = "validation" if malformed_ready else probe.get("failure_phase")
-            category = "invalid_result" if malformed_ready else probe.get("failure_category")
-            safe["failure_phase"] = (
-                phase if phase in ALLOWED_FAILURE_PHASES else "validation"
-            )
-            safe["failure_category"] = (
-                category if category in ALLOWED_FAILURE_CATEGORIES else "unexpected_error"
-            )
+        safe["failure_phase"] = (
+            phase if phase in ALLOWED_FAILURE_PHASES else "validation"
+        )
+        safe["failure_category"] = (
+            category
+            if category in ALLOWED_FAILURE_CATEGORIES
+            else "unexpected_error"
+        )
         return safe
 
-    local_safe = sanitize(local_probe, provider="ollama", mode="direct_http")
-    if dify_probe is None:
-        dify_probe = failed_probe(
-            provider=OLLAMA_PROVIDER,
-            mode="dify_model_boundary",
+    def sanitize_direct(probe: Mapping[str, object]) -> dict[str, object]:
+        status = probe.get("status")
+        if status not in {"ready", "failed", "not_run"}:
+            status = "failed"
+        length = probe.get("response_length")
+        digest = _safe_digest(probe.get("response_sha256"))
+        input_bytes = probe.get("input_bytes")
+        input_digest = _safe_digest(probe.get("input_sha256"))
+        empty_prompt_tokens = probe.get("empty_prompt_tokens")
+        empty_completion_tokens = probe.get("empty_completion_tokens")
+        prompt_tokens = probe.get("prompt_tokens")
+        completion_tokens = probe.get("completion_tokens")
+        response_valid = (
+            probe.get("response_nonempty") is True
+            and isinstance(length, int)
+            and not isinstance(length, bool)
+            and length > 0
+            and digest is not None
+            and input_bytes == OLLAMA_PRODUCTION_INPUT_BYTES
+            and input_digest is not None
+            and isinstance(empty_prompt_tokens, int)
+            and not isinstance(empty_prompt_tokens, bool)
+            and 0 < empty_prompt_tokens <= OLLAMA_CHAT_OVERHEAD_TOKENS
+            and isinstance(empty_completion_tokens, int)
+            and not isinstance(empty_completion_tokens, bool)
+            and 0 < empty_completion_tokens <= OLLAMA_CONTEXT_NUM_PREDICT
+            and isinstance(prompt_tokens, int)
+            and not isinstance(prompt_tokens, bool)
+            and 0 < prompt_tokens <= OLLAMA_MAX_PROMPT_TOKENS
+            and isinstance(completion_tokens, int)
+            and not isinstance(completion_tokens, bool)
+            and 0 < completion_tokens <= OLLAMA_CONTEXT_NUM_PREDICT
+            and probe.get("prompt_token_limit") == OLLAMA_MAX_PROMPT_TOKENS
+            and probe.get("num_ctx") == OLLAMA_CONTEXT_NUM_CTX
+            and probe.get("num_predict") == OLLAMA_CONTEXT_NUM_PREDICT
+            and probe.get("think") is False
+        )
+        malformed_ready = status == "ready" and not response_valid
+        if not response_valid:
+            if malformed_ready:
+                return safe_failure(
+                    probe,
+                    status="failed",
+                    provider="ollama",
+                    mode="direct_http",
+                    phase="validation",
+                    category="invalid_result",
+                )
+            return safe_failure(
+                probe,
+                status=status,
+                provider="ollama",
+                mode="direct_http",
+                phase=probe.get("failure_phase"),
+                category=probe.get("failure_category"),
+            )
+        return {
+            "status": "ready",
+            "provider": "ollama",
+            "model": OLLAMA_MODEL,
+            "mode": "direct_http",
+            "duration_seconds": safe_duration(probe),
+            "response_nonempty": True,
+            "response_length": length,
+            "response_sha256": digest,
+            "input_bytes": input_bytes,
+            "input_sha256": input_digest,
+            "empty_prompt_tokens": empty_prompt_tokens,
+            "empty_completion_tokens": empty_completion_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "prompt_token_limit": OLLAMA_MAX_PROMPT_TOKENS,
+            "num_ctx": OLLAMA_CONTEXT_NUM_CTX,
+            "num_predict": OLLAMA_CONTEXT_NUM_PREDICT,
+            "think": False,
+        }
+
+    def sanitize_extractor(probe: Mapping[str, object]) -> dict[str, object]:
+        status = probe.get("status")
+        if status not in {"ready", "failed", "not_run"}:
+            status = "failed"
+        length = probe.get("response_length")
+        response_digest = _safe_digest(probe.get("response_sha256"))
+        source_bytes = probe.get("source_bytes")
+        source_digest = _safe_digest(probe.get("source_sha256"))
+        counts: dict[str, int] = {}
+        counts_valid = True
+        for key in (
+            "page_count",
+            "candidate_page_count",
+            "initial_chunk_count",
+            "ollama_call_count",
+            "successful_chunk_count",
+            "split_retry_count",
+            "failed_chunk_count",
+        ):
+            value = probe.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                counts_valid = False
+            else:
+                counts[key] = value
+        counts_valid = counts_valid and counts.get("page_count", 0) > 0
+        counts_valid = counts_valid and counts.get("candidate_page_count", 0) > 0
+        counts_valid = counts_valid and counts.get("initial_chunk_count", 0) > 0
+        counts_valid = counts_valid and counts.get("ollama_call_count", 0) > 0
+        counts_valid = counts_valid and counts.get("ollama_call_count", 0) <= EXTRACTOR_MAX_OLLAMA_CALLS
+        counts_valid = counts_valid and counts.get("successful_chunk_count", 0) > 0
+        counts_valid = counts_valid and counts.get("failed_chunk_count") == 0
+        prompt_tokens = probe.get("prompt_tokens")
+        completion_tokens = probe.get("completion_tokens")
+        token_overflow = (
+            isinstance(prompt_tokens, int)
+            and not isinstance(prompt_tokens, bool)
+            and prompt_tokens > EXTRACTOR_MAX_PROMPT_TOKENS
+        )
+        tokens_valid = prompt_tokens is None and completion_tokens is None
+        if prompt_tokens is not None:
+            tokens_valid = (
+                isinstance(prompt_tokens, int)
+                and not isinstance(prompt_tokens, bool)
+                and 0 < prompt_tokens <= EXTRACTOR_MAX_PROMPT_TOKENS
+            )
+        if completion_tokens is not None:
+            tokens_valid = tokens_valid and (
+                isinstance(completion_tokens, int)
+                and not isinstance(completion_tokens, bool)
+                and 0 < completion_tokens <= EXTRACTOR_NUM_PREDICT
+            )
+        response_valid = (
+            probe.get("response_nonempty") is True
+            and isinstance(length, int)
+            and not isinstance(length, bool)
+            and length > 0
+            and response_digest is not None
+            and source_bytes == EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
+            and source_digest == EXTRACTOR_SYNTHETIC_SOURCE_SHA256
+            and probe.get("num_ctx") == EXTRACTOR_NUM_CTX
+            and probe.get("num_predict") == EXTRACTOR_NUM_PREDICT
+            and probe.get("max_chunk_source_bytes") == EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
+            and probe.get("max_ollama_calls") == EXTRACTOR_MAX_OLLAMA_CALLS
+            and counts_valid
+            and tokens_valid
+            and not token_overflow
+        )
+        if status == "ready" and not response_valid:
+            return safe_failure(
+                probe,
+                status="failed",
+                provider="paper-dossier-extractor",
+                mode="extractor_boundary",
+                phase="validation",
+                category="context_overflow" if token_overflow else "invalid_result",
+            )
+        if status != "ready" or not response_valid:
+            return safe_failure(
+                probe,
+                status=status,
+                provider="paper-dossier-extractor",
+                mode="extractor_boundary",
+                phase=probe.get("failure_phase"),
+                category=probe.get("failure_category"),
+            )
+        safe: dict[str, object] = {
+            "status": "ready",
+            "provider": "paper-dossier-extractor",
+            "model": OLLAMA_MODEL,
+            "mode": "extractor_boundary",
+            "duration_seconds": safe_duration(probe),
+            "response_nonempty": True,
+            "response_length": length,
+            "response_sha256": response_digest,
+            "source_bytes": source_bytes,
+            "source_sha256": source_digest,
+            **counts,
+            "num_ctx": EXTRACTOR_NUM_CTX,
+            "num_predict": EXTRACTOR_NUM_PREDICT,
+            "max_chunk_source_bytes": EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+            "max_ollama_calls": EXTRACTOR_MAX_OLLAMA_CALLS,
+        }
+        if prompt_tokens is not None:
+            safe["prompt_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            safe["completion_tokens"] = completion_tokens
+        return safe
+
+    direct_safe = sanitize_direct(direct_ollama_probe)
+    if extractor_probe is None:
+        extractor_probe = failed_probe(
+            provider="paper-dossier-extractor",
+            mode="extractor_boundary",
             duration_seconds=0.0,
             phase="prerequisite",
             category="prerequisite_failed",
         )
-        dify_probe["status"] = "not_run"
-    dify_safe = sanitize(
-        dify_probe,
-        provider=OLLAMA_PROVIDER,
-        mode="dify_model_boundary",
-    )
+        extractor_probe["status"] = "not_run"
+    extractor_safe = sanitize_extractor(extractor_probe)
     probes: dict[str, object] = {
-        "local_ollama": local_safe,
-        "dify_model_boundary": dify_safe,
+        "direct_ollama": direct_safe,
+        "extractor_boundary": extractor_safe,
     }
-    ready = dify_probe is not None and all(
-        probe.get("status") == "ready" for probe in (local_safe, dify_safe)
+    ready = all(
+        probe.get("status") == "ready" for probe in (direct_safe, extractor_safe)
     )
     return {
         "schema": SCHEMA,
@@ -672,17 +1197,18 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     local_probe_fn: Callable[[], dict[str, object]] = probe_local_ollama,
-    dify_probe_fn: Callable[[], dict[str, object]] = probe_dify_model_boundary,
+    extractor_probe_fn: Callable[[], dict[str, object]] = probe_extractor_boundary,
+    dify_probe_fn: Callable[[], dict[str, object]] | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(description="Run privacy-safe Ollama readiness probes.")
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
 
     local_probe = local_probe_fn()
-    dify_probe = None
+    extractor_probe = None
     if local_probe.get("status") == "ready":
-        dify_probe = dify_probe_fn()
-    evidence = build_evidence(local_probe, dify_probe)
+        extractor_probe = (dify_probe_fn or extractor_probe_fn)()
+    evidence = build_evidence(local_probe, extractor_probe)
     write_evidence_atomic(arguments.output, evidence)
     print(json.dumps(evidence, sort_keys=True))
     return 0 if evidence["status"] == "ready" else 1

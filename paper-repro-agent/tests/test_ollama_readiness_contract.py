@@ -7,6 +7,61 @@ import pytest
 from scripts import check_ollama_readiness as readiness
 
 
+def _ready_direct_probe() -> dict[str, object]:
+    response = "ready"
+    return {
+        "status": "ready",
+        "provider": "ollama",
+        "model": readiness.OLLAMA_MODEL,
+        "mode": "direct_http",
+        "duration_seconds": 0.1,
+        "response_nonempty": True,
+        "response_length": len(response),
+        "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
+        "input_bytes": readiness.OLLAMA_PRODUCTION_INPUT_BYTES,
+        "input_sha256": hashlib.sha256(
+            readiness.SYNTHETIC_PROMPT.encode("utf-8")
+        ).hexdigest(),
+        "empty_prompt_tokens": 7,
+        "empty_completion_tokens": 1,
+        "prompt_tokens": 9_000,
+        "completion_tokens": 1,
+        "prompt_token_limit": readiness.OLLAMA_MAX_PROMPT_TOKENS,
+        "num_ctx": readiness.OLLAMA_CONTEXT_NUM_CTX,
+        "num_predict": readiness.OLLAMA_CONTEXT_NUM_PREDICT,
+        "think": False,
+    }
+
+
+def _ready_extractor_probe(*, prompt_tokens: int = 1_000) -> dict[str, object]:
+    response = "{\"ok\":true}"
+    return {
+        "status": "ready",
+        "provider": "paper-dossier-extractor",
+        "model": readiness.OLLAMA_MODEL,
+        "mode": "extractor_boundary",
+        "duration_seconds": 0.2,
+        "response_nonempty": True,
+        "response_length": len(response),
+        "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
+        "source_bytes": readiness.EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+        "source_sha256": readiness.EXTRACTOR_SYNTHETIC_SOURCE_SHA256,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": 1,
+        "num_ctx": readiness.EXTRACTOR_NUM_CTX,
+        "num_predict": readiness.EXTRACTOR_NUM_PREDICT,
+        "max_chunk_source_bytes": readiness.EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+        "max_ollama_calls": readiness.EXTRACTOR_MAX_OLLAMA_CALLS,
+        "page_count": 4,
+        "candidate_page_count": 4,
+        "initial_chunk_count": 1,
+        "ollama_call_count": 1,
+        "successful_chunk_count": 1,
+        "split_retry_count": 0,
+        "failed_chunk_count": 0,
+    }
+
+
 def test_production_prompt_shape_and_budget_are_explicit() -> None:
     assert readiness.OLLAMA_CONTEXT_NUM_CTX == 16_384
     assert readiness.OLLAMA_CONTEXT_NUM_PREDICT == 3_072
@@ -21,6 +76,83 @@ def test_production_prompt_shape_and_budget_are_explicit() -> None:
     )
     assert len(rendered.encode("utf-8")) == 12_800
     assert readiness.render_production_prompt("", "")
+
+
+def test_readiness_document_includes_extractor_boundary_and_exact_configuration() -> None:
+    result = readiness.build_evidence(
+        _ready_direct_probe(),
+        _ready_extractor_probe(),
+        timestamp="2026-09-04T00:00:00Z",
+    )
+    serialized = json.dumps(result, sort_keys=True)
+
+    assert result["status"] == "ready"
+    assert set(result["probes"]) == {"direct_ollama", "extractor_boundary"}
+    assert result["probes"]["extractor_boundary"]["status"] == "ready"
+    assert result["probes"]["extractor_boundary"]["num_ctx"] == 16_384
+    assert result["probes"]["extractor_boundary"]["num_predict"] == 1_536
+    assert result["probes"]["extractor_boundary"]["max_chunk_source_bytes"] == 8_192
+    assert result["probes"]["extractor_boundary"]["max_ollama_calls"] == 12
+    assert "source_text" not in serialized
+
+
+def test_extractor_boundary_fails_when_prompt_plus_completion_exceeds_context() -> None:
+    result = readiness.build_evidence(
+        _ready_direct_probe(),
+        _ready_extractor_probe(prompt_tokens=16_384 - 1_536 + 1),
+    )
+
+    extractor = result["probes"]["extractor_boundary"]
+    assert result["status"] == "failed"
+    assert extractor["status"] == "failed"
+    assert extractor["failure_category"] == "context_overflow"
+    assert extractor["response_nonempty"] is False
+
+
+def test_extractor_boundary_rejects_a_ready_response_without_model_calls() -> None:
+    child = {
+        "ok": True,
+        **_ready_extractor_probe(),
+        "ollama_call_count": 0,
+        "successful_chunk_count": 0,
+    }
+
+    result = readiness.probe_extractor_boundary(
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(child),
+            stderr="",
+        ),
+        token="x" * 32,
+        monotonic=lambda: 1.0,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_category"] == "invalid_result"
+
+
+def test_extractor_boundary_rejects_mismatched_service_configuration() -> None:
+    child = {
+        "ok": True,
+        **_ready_extractor_probe(),
+        "num_ctx": 8_192,
+        "num_predict": 512,
+        "max_chunk_source_bytes": 4_096,
+        "max_ollama_calls": 4,
+    }
+
+    result = readiness.probe_extractor_boundary(
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(child),
+            stderr="",
+        ),
+        token="x" * 32,
+        monotonic=lambda: 1.0,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_category"] == "invalid_result"
 
 
 def test_local_probe_uses_chat_shape_and_validates_empty_and_full_token_budget() -> None:
@@ -59,7 +191,9 @@ def test_local_probe_uses_chat_shape_and_validates_empty_and_full_token_budget()
     assert result["status"] == "ready"
     assert result["input_bytes"] == 12_800
     assert result["empty_prompt_tokens"] == 7
+    assert result["empty_completion_tokens"] == 1
     assert result["prompt_tokens"] == 9_000
+    assert result["completion_tokens"] == 1
     assert result["prompt_token_limit"] == 13_312
     assert len(calls) == 2
     assert calls[0]["messages"] == [{"role": "system", "content": ""}]
@@ -89,6 +223,7 @@ def test_local_probe_fails_closed_when_full_prompt_exceeds_reserved_context() ->
                     "done": True,
                     "message": {"role": "assistant", "content": "ready"},
                     "prompt_eval_count": 7 if calls == 1 else 13_313,
+                    "eval_count": 1,
                 }
             ).encode("utf-8")
 

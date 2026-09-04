@@ -56,11 +56,24 @@ def assert_allowlisted_probe(probe: dict[str, object]) -> None:
         "input_bytes",
         "input_sha256",
         "empty_prompt_tokens",
+        "empty_completion_tokens",
         "prompt_tokens",
+        "completion_tokens",
         "prompt_token_limit",
         "num_ctx",
         "num_predict",
         "think",
+        "source_bytes",
+        "source_sha256",
+        "page_count",
+        "candidate_page_count",
+        "initial_chunk_count",
+        "ollama_call_count",
+        "successful_chunk_count",
+        "split_retry_count",
+        "failed_chunk_count",
+        "max_chunk_source_bytes",
+        "max_ollama_calls",
         "failure_phase",
         "failure_category",
     }
@@ -87,6 +100,7 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
                 "done": True,
                 "message": {"role": "assistant", "content": "ready"},
                 "prompt_eval_count": 7 if len(payloads) == 1 else 9_000,
+                "eval_count": 1,
                 "ignored": "PROVIDER_BODY_SENTINEL",
             }
         )
@@ -108,28 +122,34 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
                     "response_nonempty": True,
                     "response_length": len(completion),
                     "response_sha256": hashlib.sha256(completion.encode()).hexdigest(),
-                    "input_bytes": readiness.OLLAMA_PRODUCTION_INPUT_BYTES,
-                    "input_sha256": hashlib.sha256(
-                        readiness.SYNTHETIC_PROMPT.encode("utf-8")
-                    ).hexdigest(),
-                    "empty_prompt_tokens": 7,
+                    "source_bytes": readiness.EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+                    "source_sha256": readiness.EXTRACTOR_SYNTHETIC_SOURCE_SHA256,
                     "prompt_tokens": 9_000,
-                    "prompt_token_limit": readiness.OLLAMA_MAX_PROMPT_TOKENS,
-                    "num_ctx": readiness.OLLAMA_CONTEXT_NUM_CTX,
-                    "num_predict": readiness.OLLAMA_CONTEXT_NUM_PREDICT,
-                    "think": False,
+                    "completion_tokens": 1,
+                    "num_ctx": readiness.EXTRACTOR_NUM_CTX,
+                    "num_predict": readiness.EXTRACTOR_NUM_PREDICT,
+                    "max_chunk_source_bytes": readiness.EXTRACTOR_MAX_CHUNK_SOURCE_BYTES,
+                    "max_ollama_calls": readiness.EXTRACTOR_MAX_OLLAMA_CALLS,
+                    "page_count": 1,
+                    "candidate_page_count": 1,
+                    "initial_chunk_count": 1,
+                    "ollama_call_count": 1,
+                    "successful_chunk_count": 1,
+                    "split_retry_count": 0,
+                    "failed_chunk_count": 0,
                 }
             ),
             stderr="STDERR_SENTINEL",
         )
 
-    dify = readiness.probe_dify_model_boundary(
+    extractor = readiness.probe_extractor_boundary(
         runner=runner,
+        token="x" * 32,
         monotonic=ticking_clock(20.0, 20.25),
     )
     evidence = readiness.build_evidence(
         local,
-        dify,
+        extractor,
         timestamp="2026-08-29T00:00:00Z",
     )
 
@@ -153,9 +173,10 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     )
     assert payloads[1]["options"] == payloads[0]["options"]
     assert payloads[1]["think"] is False
-    assert recorded["argv"][:4] == [
+    assert recorded["argv"][:5] == [
         "docker",
         "exec",
+        "-i",
         "docker-api-1",
         "/app/api/.venv/bin/python",
     ]
@@ -163,31 +184,24 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     assert recorded["runner_kwargs"]["capture_output"] is True
     assert recorded["runner_kwargs"]["text"] is True
     child_source = recorded["argv"][-1]
-    assert readiness.CANDIDATE_APP_ID in child_source
-    assert readiness.OLLAMA_PROVIDER in child_source
+    assert readiness.EXTRACTOR_URL in child_source
+    assert readiness.EXTRACTOR_HEALTH_URL in child_source
     assert readiness.OLLAMA_MODEL in child_source
-    assert "from app import app as flask_app" in child_source
-    assert "from graphon.model_runtime.entities.message_entities import SystemPromptMessage" in child_source
-    assert "num_ctx" in child_source
-    assert "num_predict" in child_source
-    assert "from graphon.model_runtime.entities.model_entities import ModelType" in child_source
-    assert "ModelManager.for_tenant" in child_source
-    assert "ModelType.LLM" in child_source
-    assert "result.message.get_text_content()" in child_source
-    assert "stream=False" in child_source
-    assert "create_app" not in child_source
-    assert "user=" not in child_source
+    assert "X-Extractor-Token" in child_source
+    assert "EXPECTED_SOURCE_BYTES" in child_source
     assert evidence["status"] == "ready"
     assert set(evidence) == {"schema", "timestamp", "status", "probes"}
-    assert set(evidence["probes"]) == {"local_ollama", "dify_model_boundary"}
+    assert set(evidence["probes"]) == {"direct_ollama", "extractor_boundary"}
     for probe in evidence["probes"].values():
         assert_allowlisted_probe(probe)
         assert probe["status"] == "ready"
         assert probe["response_nonempty"] is True
         assert probe["response_length"] > 0
         assert len(probe["response_sha256"]) == 64
-        assert probe["input_bytes"] == readiness.OLLAMA_PRODUCTION_INPUT_BYTES
-        assert probe["prompt_tokens"] == 9_000
+    assert evidence["probes"]["direct_ollama"]["input_bytes"] == readiness.OLLAMA_PRODUCTION_INPUT_BYTES
+    assert evidence["probes"]["direct_ollama"]["prompt_tokens"] == 9_000
+    assert evidence["probes"]["extractor_boundary"]["source_bytes"] == readiness.EXTRACTOR_MAX_CHUNK_SOURCE_BYTES
+    assert evidence["probes"]["extractor_boundary"]["prompt_tokens"] == 9_000
     assert_private_text_absent(evidence)
 
 
@@ -358,8 +372,8 @@ def test_cli_stdout_and_evidence_are_privacy_safe_on_failure(tmp_path: Path, cap
     assert calls == ["local"]
     output_document = json.loads(stdout)
     assert output_document == json.loads(persisted)
-    assert output_document["probes"]["dify_model_boundary"]["status"] == "not_run"
-    assert output_document["probes"]["dify_model_boundary"]["failure_category"] == "prerequisite_failed"
+    assert output_document["probes"]["extractor_boundary"]["status"] == "not_run"
+    assert output_document["probes"]["extractor_boundary"]["failure_category"] == "prerequisite_failed"
     assert_private_text_absent(stdout)
     assert_private_text_absent(persisted)
 
@@ -396,7 +410,7 @@ def test_evidence_builder_downgrades_malformed_ready_probe() -> None:
         "status": "ready",
         "provider": readiness.OLLAMA_PROVIDER,
         "model": readiness.OLLAMA_MODEL,
-        "mode": "dify_model_boundary",
+        "mode": "extractor_boundary",
         "duration_seconds": 0.1,
         "response_nonempty": True,
         "response_length": True,
@@ -411,7 +425,7 @@ def test_evidence_builder_downgrades_malformed_ready_probe() -> None:
 
     evidence = readiness.build_evidence(local_ready, malformed_ready)
 
-    dify = evidence["probes"]["dify_model_boundary"]
+    dify = evidence["probes"]["extractor_boundary"]
     assert evidence["status"] == "failed"
     assert dify["status"] == "failed"
     assert dify["failure_phase"] == "validation"
