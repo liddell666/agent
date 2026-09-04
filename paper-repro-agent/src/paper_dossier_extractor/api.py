@@ -16,8 +16,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .config import Settings, get_settings
 from .ollama import OllamaClient, OllamaError
-from .schemas import ExtractionResponse, OllamaCompletion, PageChunk
-from .service import extract_dossier
+from .schemas import ExtractionResponse, ExtractorReadinessResponse, OllamaCompletion, PageChunk
+from .service import extract_dossier, extract_readiness_probe
 from paper_parser.schemas import ParsedPaper
 
 
@@ -90,6 +90,16 @@ def get_client(settings: Settings = Depends(get_settings)) -> OllamaClient:
     return OllamaClient(settings)
 
 
+def _require_valid_token(
+    request_id: str,
+    token: str | None,
+    settings: Settings,
+) -> None:
+    if token is None or not secrets.compare_digest(token, settings.api_token):
+        _log_terminal(request_id, "invalid_token")
+        raise _error(401, "invalid_token", request_id)
+
+
 class _ObservedClient:
     """Capture only a safe Ollama error code across the chunk boundary."""
 
@@ -139,9 +149,7 @@ async def extract_dossier_endpoint(
     client: OllamaClient = Depends(get_client),
 ) -> ExtractionResponse:
     request_id = _request_id()
-    if token is None or not secrets.compare_digest(token, settings.api_token):
-        _log_terminal(request_id, "invalid_token")
-        raise _error(401, "invalid_token", request_id)
+    _require_valid_token(request_id, token, settings)
 
     if _extraction_semaphore.locked():
         _log_terminal(request_id, "extraction_capacity_reached")
@@ -183,6 +191,61 @@ async def extract_dossier_endpoint(
 
         elapsed_seconds = time.monotonic() - started
         _log_response(request_id, response, elapsed_seconds)
+        return response
+    finally:
+        _extraction_semaphore.release()
+
+
+@app.get("/v1/readiness/extractor", response_model=ExtractorReadinessResponse)
+async def extractor_readiness_endpoint(
+    token: Annotated[str | None, Header(alias="X-Extractor-Token")] = None,
+    settings: Settings = Depends(get_settings),
+    client: OllamaClient = Depends(get_client),
+) -> ExtractorReadinessResponse:
+    request_id = _request_id()
+    _require_valid_token(request_id, token, settings)
+
+    if _extraction_semaphore.locked():
+        _log_terminal(request_id, "extraction_capacity_reached")
+        raise _error(429, "extraction_capacity_reached", request_id)
+
+    await _extraction_semaphore.acquire()
+    started = time.monotonic()
+    try:
+        try:
+            response = await run_in_threadpool(
+                extract_readiness_probe,
+                settings,
+                client,
+            )
+        except OllamaError as error:
+            elapsed_seconds = time.monotonic() - started
+            _log_terminal(request_id, error.code, elapsed_seconds=elapsed_seconds)
+            raise _error(502, error.code, request_id) from None
+        except (TimeoutError, asyncio.TimeoutError):
+            elapsed_seconds = time.monotonic() - started
+            _log_terminal(request_id, "ollama_timeout", elapsed_seconds=elapsed_seconds)
+            raise _error(502, "ollama_timeout", request_id) from None
+        except Exception:
+            elapsed_seconds = time.monotonic() - started
+            _log_terminal(
+                request_id,
+                "extraction_failed",
+                elapsed_seconds=elapsed_seconds,
+            )
+            raise _error(500, "extraction_failed", request_id) from None
+
+        _log_terminal(
+            request_id,
+            "ok",
+            elapsed_seconds=max(0.0, float(response.elapsed_seconds)),
+            candidate_page_count=response.candidate_page_count,
+            initial_chunk_count=response.initial_chunk_count,
+            ollama_call_count=response.ollama_call_count,
+            successful_chunk_count=response.successful_chunk_count,
+            split_retry_count=response.split_retry_count,
+            failed_chunk_count=response.failed_chunk_count,
+        )
         return response
     finally:
         _extraction_semaphore.release()

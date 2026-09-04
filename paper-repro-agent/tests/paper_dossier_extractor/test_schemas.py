@@ -40,10 +40,6 @@ def _diagnostics() -> ExtractionDiagnostics:
         split_retry_count=0,
         failed_chunk_count=0,
         elapsed_seconds=0.5,
-        num_ctx=16_384,
-        num_predict=1_536,
-        max_chunk_source_bytes=8_192,
-        max_ollama_calls=12,
     )
 
 
@@ -56,16 +52,19 @@ def test_source_page_requires_original_positive_page() -> None:
         SourcePage(page=0, text="Results: RMSE 2.0", kinds=["text"])
 
 
-def test_diagnostics_forbid_source_content() -> None:
+def test_diagnostics_preserve_task_1_exact_public_contract() -> None:
     fields = set(ExtractionDiagnostics.model_fields)
     assert fields == {
         "mode", "page_count", "candidate_page_count", "initial_chunk_count",
         "ollama_call_count", "successful_chunk_count", "split_retry_count",
         "failed_chunk_count", "elapsed_seconds", "warnings", "errors",
-        "failed_page_ranges", "source_bytes", "source_sha256",
-        "prompt_tokens", "completion_tokens", "num_ctx", "num_predict",
-        "max_chunk_source_bytes", "max_ollama_calls",
+        "failed_page_ranges",
     }
+
+
+def test_diagnostics_reject_readiness_only_fields() -> None:
+    with pytest.raises(ValidationError):
+        ExtractionDiagnostics(**_diagnostics().model_dump(), num_ctx=16_384)
 
 
 @pytest.mark.parametrize(
@@ -175,14 +174,6 @@ def test_extraction_error_and_diagnostics_preserve_only_bounded_metadata() -> No
         split_retry_count=1,
         failed_chunk_count=1,
         elapsed_seconds=12.25,
-        source_bytes=4_096,
-        source_sha256="a" * 64,
-        prompt_tokens=321,
-        completion_tokens=111,
-        num_ctx=16_384,
-        num_predict=1_536,
-        max_chunk_source_bytes=8_192,
-        max_ollama_calls=12,
         warnings=("candidate_pages_capped",),
         errors=(error,),
         failed_page_ranges=((2, 5),),

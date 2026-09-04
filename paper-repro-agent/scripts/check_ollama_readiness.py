@@ -37,6 +37,7 @@ OLLAMA_MODEL = "qwen3:8b"
 LOCAL_OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 EXTRACTOR_HEALTH_URL = "http://paper-dossier-extractor:8002/healthz"
 EXTRACTOR_URL = "http://paper-dossier-extractor:8002/v1/extract-dossier"
+EXTRACTOR_READINESS_URL = "http://paper-dossier-extractor:8002/v1/readiness/extractor"
 EXTRACTOR_TOKEN_ENV = "PAPER_DOSSIER_EXTRACTOR_API_TOKEN"
 EXTRACTOR_DIFY_TOKEN_ENV = "DIFY_EXTRACTOR_API_TOKEN"
 EXTRACTOR_NUM_CTX = 16_384
@@ -625,7 +626,7 @@ import urllib.error
 import urllib.request
 
 HEALTH_URL = {EXTRACTOR_HEALTH_URL!r}
-EXTRACTOR_URL = {EXTRACTOR_URL!r}
+READINESS_URL = {EXTRACTOR_READINESS_URL!r}
 MODEL = {OLLAMA_MODEL!r}
 TIMEOUT = {DEFAULT_TIMEOUT_SECONDS}
 
@@ -655,13 +656,9 @@ def _safe_digest(value):
 def main():
     safe_output = None
     try:
-        stdin = sys.stdin.read()
-        token, separator, paper_json = stdin.partition("\\n")
-        if not separator or not token or not paper_json:
+        token = sys.stdin.read().strip()
+        if not token:
             raise ValueError("missing input")
-        paper = json.loads(paper_json)
-        if not isinstance(paper, dict):
-            raise ValueError("invalid synthetic paper")
         sink = __import__("io").StringIO()
         with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             health_request = urllib.request.Request(HEALTH_URL, method="GET")
@@ -674,62 +671,54 @@ def main():
             }}:
                 raise ValueError("invalid extractor health")
 
-            body = json.dumps(
-                paper, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-            ).encode("utf-8")
-            extraction_request = urllib.request.Request(
-                EXTRACTOR_URL,
-                data=body,
+            readiness_request = urllib.request.Request(
+                READINESS_URL,
                 headers={{
-                    "Content-Type": "application/json",
                     "X-Extractor-Token": token,
                 }},
-                method="POST",
+                method="GET",
             )
             with urllib.request.urlopen(
-                extraction_request, timeout=TIMEOUT
+                readiness_request, timeout=TIMEOUT
             ) as response:
                 raw_body = response.read()
             document = json.loads(raw_body)
 
-        if not isinstance(document, dict) or document.get("ok") is not True:
+        if not isinstance(document, dict) or document.get("status") != "ready":
             raise ValueError("extractor did not return ready")
-        diagnostics = document.get("diagnostics")
-        if not isinstance(diagnostics, dict):
-            raise ValueError("missing extractor diagnostics")
         safe_output = {{
             "ok": True,
             "response_nonempty": bool(raw_body),
             "response_length": len(raw_body),
             "response_sha256": hashlib.sha256(raw_body).hexdigest(),
-            "source_bytes": _positive_count(diagnostics.get("source_bytes")),
-            "source_sha256": _safe_digest(diagnostics.get("source_sha256")),
-            "prompt_tokens": _positive_count(diagnostics.get("prompt_tokens")),
-            "completion_tokens": _positive_count(diagnostics.get("completion_tokens")),
-            "num_ctx": _positive_count(diagnostics.get("num_ctx")),
-            "num_predict": _positive_count(diagnostics.get("num_predict")),
+            "source_bytes": _positive_count(document.get("source_bytes")),
+            "source_sha256": _safe_digest(document.get("source_sha256")),
+            "prompt_tokens": _positive_count(document.get("prompt_tokens")),
+            "completion_tokens": _positive_count(document.get("completion_tokens")),
+            "num_ctx": _positive_count(document.get("num_ctx")),
+            "num_predict": _positive_count(document.get("num_predict")),
             "max_chunk_source_bytes": _positive_count(
-                diagnostics.get("max_chunk_source_bytes")
+                document.get("max_chunk_source_bytes")
             ),
-            "max_ollama_calls": _positive_count(diagnostics.get("max_ollama_calls")),
-            "page_count": _positive_count(diagnostics.get("page_count")),
+            "max_ollama_calls": _positive_count(document.get("max_ollama_calls")),
+            "page_count": _positive_count(document.get("page_count")),
             "candidate_page_count": _positive_count(
-                diagnostics.get("candidate_page_count"), allow_zero=True
+                document.get("candidate_page_count"), allow_zero=True
             ),
             "initial_chunk_count": _positive_count(
-                diagnostics.get("initial_chunk_count"), allow_zero=True
+                document.get("initial_chunk_count"), allow_zero=True
             ),
             "ollama_call_count": _positive_count(
-                diagnostics.get("ollama_call_count"), allow_zero=True
+                document.get("ollama_call_count"), allow_zero=True
             ),
             "successful_chunk_count": _positive_count(
-                diagnostics.get("successful_chunk_count"), allow_zero=True
+                document.get("successful_chunk_count"), allow_zero=True
             ),
             "split_retry_count": _positive_count(
-                diagnostics.get("split_retry_count"), allow_zero=True
+                document.get("split_retry_count"), allow_zero=True
             ),
             "failed_chunk_count": _positive_count(
-                diagnostics.get("failed_chunk_count"), allow_zero=True
+                document.get("failed_chunk_count"), allow_zero=True
             ),
         }}
         print(json.dumps(safe_output, sort_keys=True))
@@ -865,7 +854,7 @@ def probe_extractor_boundary(
                 "-c",
                 EXTRACTOR_CHILD_SOURCE,
             ],
-            input=f"{resolved_token}\n{_synthetic_paper_json()}",
+            input=resolved_token,
             timeout=timeout,
             capture_output=True,
             text=True,

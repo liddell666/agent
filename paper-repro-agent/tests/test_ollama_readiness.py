@@ -184,13 +184,14 @@ def test_successful_probes_emit_only_allowlisted_metadata_and_hashes() -> None:
     assert recorded["runner_kwargs"]["capture_output"] is True
     assert recorded["runner_kwargs"]["text"] is True
     child_source = recorded["argv"][-1]
-    assert readiness.EXTRACTOR_URL in child_source
+    assert readiness.EXTRACTOR_READINESS_URL in child_source
     assert readiness.EXTRACTOR_HEALTH_URL in child_source
     assert readiness.OLLAMA_MODEL in child_source
     assert "X-Extractor-Token" in child_source
-    assert 'diagnostics.get("source_bytes")' in child_source
-    assert 'diagnostics.get("prompt_tokens")' in child_source
-    assert 'diagnostics.get("completion_tokens")' in child_source
+    assert 'document.get("source_bytes")' in child_source
+    assert 'document.get("prompt_tokens")' in child_source
+    assert 'document.get("completion_tokens")' in child_source
+    assert 'document.get("diagnostics")' not in child_source
     assert evidence["status"] == "ready"
     assert set(evidence) == {"schema", "timestamp", "status", "probes"}
     assert set(evidence["probes"]) == {"direct_ollama", "extractor_boundary"}

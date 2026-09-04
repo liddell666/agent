@@ -14,6 +14,7 @@ from paper_dossier_extractor.schemas import (
     ExtractionDiagnostics,
     ExtractionResponse,
     FinalDossier,
+    ExtractorReadinessResponse,
     OllamaCompletion,
     PageChunk,
 )
@@ -51,10 +52,6 @@ def _diagnostics(*, failed: int = 0) -> ExtractionDiagnostics:
         split_retry_count=0,
         failed_chunk_count=failed,
         elapsed_seconds=0.1,
-        num_ctx=16_384,
-        num_predict=1_536,
-        max_chunk_source_bytes=8_192,
-        max_ollama_calls=12,
     )
 
 
@@ -71,6 +68,30 @@ def _semantic_failure_response() -> ExtractionResponse:
         ok=False,
         dossier=None,
         diagnostics=_diagnostics(failed=1),
+    )
+
+
+def _readiness_response() -> ExtractorReadinessResponse:
+    return ExtractorReadinessResponse(
+        status="ready",
+        service="paper-dossier-extractor",
+        model="qwen3:8b",
+        source_bytes=8_192,
+        source_sha256="a" * 64,
+        prompt_tokens=321,
+        completion_tokens=111,
+        num_ctx=16_384,
+        num_predict=1_536,
+        max_chunk_source_bytes=8_192,
+        max_ollama_calls=12,
+        page_count=1,
+        candidate_page_count=1,
+        initial_chunk_count=1,
+        ollama_call_count=1,
+        successful_chunk_count=1,
+        split_retry_count=0,
+        failed_chunk_count=0,
+        elapsed_seconds=0.1,
     )
 
 
@@ -101,6 +122,35 @@ def test_health_is_public_and_reports_fixed_service_identity(client: TestClient)
         "service": "paper-dossier-extractor",
         "model": "qwen3:8b",
     }
+
+
+def test_readiness_requires_a_valid_token(client: TestClient) -> None:
+    response = client.get("/v1/readiness/extractor")
+
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert detail["code"] == "invalid_token"
+    assert re.fullmatch(r"[0-9a-f]{32}", detail["request_id"])
+
+
+def test_readiness_returns_bounded_metadata_without_widening_extract_dossier(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "extract_readiness_probe", lambda *_args: _readiness_response())
+
+    response = client.get(
+        "/v1/readiness/extractor",
+        headers={"X-Extractor-Token": TOKEN},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["service"] == "paper-dossier-extractor"
+    assert payload["num_ctx"] == 16_384
+    assert payload["max_chunk_source_bytes"] == 8_192
+    assert "source_text" not in response.text
+    assert "prompt" not in payload
 
 
 @pytest.mark.parametrize("headers", [{}, {"X-Extractor-Token": "wrong-token"}])

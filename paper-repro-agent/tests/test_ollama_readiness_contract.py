@@ -93,6 +93,7 @@ def test_readiness_document_includes_extractor_boundary_and_exact_configuration(
     assert result["probes"]["extractor_boundary"]["num_predict"] == 1_536
     assert result["probes"]["extractor_boundary"]["max_chunk_source_bytes"] == 8_192
     assert result["probes"]["extractor_boundary"]["max_ollama_calls"] == 12
+    assert result["probes"]["extractor_boundary"]["source_bytes"] == 8_192
     assert "source_text" not in serialized
 
 
@@ -139,6 +140,28 @@ def test_extractor_boundary_rejects_mismatched_service_configuration() -> None:
         "num_predict": 512,
         "max_chunk_source_bytes": 4_096,
         "max_ollama_calls": 4,
+    }
+
+    result = readiness.probe_extractor_boundary(
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(child),
+            stderr="",
+        ),
+        token="x" * 32,
+        monotonic=lambda: 1.0,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_category"] == "invalid_result"
+
+
+def test_extractor_boundary_rejects_mismatched_service_owned_source_metadata() -> None:
+    child = {
+        "ok": True,
+        **_ready_extractor_probe(),
+        "source_bytes": 4_096,
+        "source_sha256": "b" * 64,
     }
 
     result = readiness.probe_extractor_boundary(

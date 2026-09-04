@@ -7,7 +7,7 @@ from paper_dossier_extractor.chunking import serialize_pages
 from paper_dossier_extractor.config import Settings
 from paper_dossier_extractor.ollama import OllamaError
 from paper_dossier_extractor.schemas import OllamaCompletion, PageChunk
-from paper_dossier_extractor.service import extract_dossier
+from paper_dossier_extractor.service import extract_dossier, extract_readiness_probe
 
 
 SOURCE_SENTINEL = "SOURCE_SENTINEL"
@@ -90,7 +90,30 @@ def test_short_paper_uses_single_mode_and_returns_a_dossier() -> None:
     assert response.diagnostics.failed_chunk_count == 0
 
 
-def test_service_diagnostics_include_safe_effective_config_and_actual_call_evidence() -> None:
+def test_normal_service_diagnostics_keep_the_exact_public_contract() -> None:
+    paper = _paper("Results: RMSE was 2.0.")
+    client = ScriptedClient(_completion(_successful_partial()))
+
+    response = extract_dossier(paper, _settings(), client, clock=lambda: 15.0)
+
+    assert response.ok is True
+    assert set(response.diagnostics.model_dump(mode="json")) == {
+        "mode",
+        "page_count",
+        "candidate_page_count",
+        "initial_chunk_count",
+        "ollama_call_count",
+        "successful_chunk_count",
+        "split_retry_count",
+        "failed_chunk_count",
+        "elapsed_seconds",
+        "warnings",
+        "errors",
+        "failed_page_ranges",
+    }
+
+
+def test_readiness_probe_returns_extractor_owned_metadata_and_effective_config() -> None:
     paper = _paper("Results: RMSE was 2.0.")
     settings = _settings(
         num_ctx=12_288,
@@ -107,19 +130,21 @@ def test_service_diagnostics_include_safe_effective_config_and_actual_call_evide
         )
     )
 
-    response = extract_dossier(paper, settings, client, clock=lambda: 15.0)
+    response = extract_readiness_probe(settings, client, clock=lambda: 15.0)
     chunk = client.calls[0]
     expected_source = serialize_pages(chunk.pages).encode("utf-8")
 
-    assert response.ok is True
-    assert response.diagnostics.num_ctx == 12_288
-    assert response.diagnostics.num_predict == 1_024
-    assert response.diagnostics.max_chunk_source_bytes == 4_096
-    assert response.diagnostics.max_ollama_calls == 6
-    assert response.diagnostics.source_bytes == chunk.source_bytes
-    assert response.diagnostics.source_sha256 == hashlib.sha256(expected_source).hexdigest()
-    assert response.diagnostics.prompt_tokens == 321
-    assert response.diagnostics.completion_tokens == 111
+    assert response.status == "ready"
+    assert response.service == "paper-dossier-extractor"
+    assert response.model == settings.ollama_model
+    assert response.source_bytes == chunk.source_bytes
+    assert response.source_sha256 == hashlib.sha256(expected_source).hexdigest()
+    assert response.prompt_tokens == 321
+    assert response.completion_tokens == 111
+    assert response.num_ctx == 12_288
+    assert response.num_predict == 1_024
+    assert response.max_chunk_source_bytes == 4_096
+    assert response.max_ollama_calls == 6
 
 
 def test_long_paper_uses_chunked_mode_and_preserves_chunk_order() -> None:

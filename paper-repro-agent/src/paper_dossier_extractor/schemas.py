@@ -144,17 +144,33 @@ class ExtractionDiagnostics(BaseModel):
     split_retry_count: int = Field(ge=0)
     failed_chunk_count: int = Field(ge=0)
     elapsed_seconds: float = Field(ge=0.0)
-    source_bytes: int | None = Field(default=None, ge=1, le=8_192)
-    source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    prompt_tokens: int | None = Field(default=None, ge=0)
-    completion_tokens: int | None = Field(default=None, ge=0)
+    warnings: tuple[str, ...] = ()
+    errors: tuple[ExtractionError, ...] = ()
+    failed_page_ranges: tuple[tuple[int, int], ...] = ()
+
+
+class ExtractorReadinessResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["ready"]
+    service: Literal["paper-dossier-extractor"]
+    model: str
+    source_bytes: int = Field(ge=1, le=8_192)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    prompt_tokens: int = Field(ge=1)
+    completion_tokens: int = Field(ge=1)
     num_ctx: int = Field(ge=1)
     num_predict: int = Field(ge=1)
     max_chunk_source_bytes: int = Field(ge=1, le=8_192)
     max_ollama_calls: int = Field(ge=1)
-    warnings: tuple[str, ...] = ()
-    errors: tuple[ExtractionError, ...] = ()
-    failed_page_ranges: tuple[tuple[int, int], ...] = ()
+    page_count: int = Field(ge=1)
+    candidate_page_count: int = Field(ge=1)
+    initial_chunk_count: int = Field(ge=1)
+    ollama_call_count: int = Field(ge=1)
+    successful_chunk_count: int = Field(ge=1)
+    split_retry_count: int = Field(ge=0)
+    failed_chunk_count: int = Field(ge=0)
+    elapsed_seconds: float = Field(ge=0.0)
 
 
 class ExtractionResponse(BaseModel):
