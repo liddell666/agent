@@ -13,10 +13,10 @@ merges `paper-parser`, `repro-runner`, and `paper-dossier-extractor` into existi
 comma-separated SSRF domains. Repeated runs retain other domains and settings.
 Recreate affected Dify containers after deliberately applying configuration.
 
-The parser accepts one active parse per process. Concurrent parsing receives
-HTTP 429 with `parser_capacity_reached`. Its worker holds the reservation until
-parsing completes or raises, even if the caller disconnects. Keep the deployed
-single-worker configuration; the lock does not coordinate multiple processes.
+The parser accepts one active parse per process and queues concurrent parsing
+requests. Its worker holds the reservation until parsing completes or raises,
+even if the caller disconnects. Keep the deployed single-worker configuration;
+the lock does not coordinate multiple processes.
 
 Each extraction transport timeout is the smaller of the configured per-call
 timeout and the remaining extraction budget. Expired budgets prevent further

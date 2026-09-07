@@ -12,7 +12,7 @@ from paper_parser.service import InvalidPdfError
 TOKEN = "test-token-that-is-at-least-32-chars"
 
 
-def test_parser_capacity_recovers_after_worker_failure(client, monkeypatch):
+def test_parser_capacity_queues_concurrent_parse_until_capacity_is_free(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
@@ -33,12 +33,12 @@ def test_parser_capacity_recovers_after_worker_failure(client, monkeypatch):
         first = pool.submit(submit)
         try:
             assert entered.wait(5)
-            rejected = submit()
-            assert rejected.status_code == 429
-            assert rejected.json()['detail']['code'] == 'parser_capacity_reached'
+            second = pool.submit(submit)
+            assert not second.done()
         finally:
             release.set()
         assert first.result(5).status_code == 422
+        assert second.result(5).status_code == 422
     monkeypatch.setattr(api, 'parse_pdf', lambda *args: _parsed_paper())
     assert submit().status_code == 200
 

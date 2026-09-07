@@ -24,8 +24,7 @@ _parse_lock = Lock()
 
 def _parse_with_capacity(content, file_name, settings):
     # The worker owns the reservation, including when its caller disconnects.
-    if not _parse_lock.acquire(blocking=False):
-        raise _error(429, "parser_capacity_reached")
+    _parse_lock.acquire()
     try:
         return parse_pdf(content, file_name, settings)
     finally:
