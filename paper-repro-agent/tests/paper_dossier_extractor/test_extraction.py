@@ -2,6 +2,24 @@ import json
 
 import pytest
 
+
+def test_extraction_passes_remaining_budget_to_transport():
+    from paper_dossier_extractor.ollama import OllamaClient
+    from tests.paper_dossier_extractor.test_ollama import FakeResponse, _response_payload
+    timeouts = []
+
+    def opener(request, timeout):
+        timeouts.append(timeout)
+        payload = _response_payload()
+        payload['message']['content'] = '{"task_type":"uncertain"}'
+        return FakeResponse(json.dumps(payload).encode())
+
+    settings = _settings(request_timeout_seconds=10)
+    result = extract_chunks((_chunk(page_count=1),), OllamaClient(settings, opener),
+                            settings, SequenceClock(0, 9.5, 10))
+    assert timeouts == [0.5]
+    assert result.call_count == 1
+
 from paper_dossier_extractor.chunking import serialize_pages
 from paper_dossier_extractor.config import Settings
 from paper_dossier_extractor.extraction import extract_chunks, parse_partial

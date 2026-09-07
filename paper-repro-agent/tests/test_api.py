@@ -12,6 +12,37 @@ from paper_parser.service import InvalidPdfError
 TOKEN = "test-token-that-is-at-least-32-chars"
 
 
+def test_parser_capacity_recovers_after_worker_failure(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, release = Event(), Event()
+
+    def blocked(*args):
+        entered.set()
+        assert release.wait(5)
+        raise InvalidPdfError("synthetic")
+
+    monkeypatch.setattr(api, "parse_pdf", blocked)
+
+    def submit():
+        return client.post('/v1/parse', headers={'X-Parser-Token': TOKEN},
+                           files={'file': ('paper.pdf', b'%PDF-test', 'application/pdf')})
+
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(submit)
+        try:
+            assert entered.wait(5)
+            rejected = submit()
+            assert rejected.status_code == 429
+            assert rejected.json()['detail']['code'] == 'parser_capacity_reached'
+        finally:
+            release.set()
+        assert first.result(5).status_code == 422
+    monkeypatch.setattr(api, 'parse_pdf', lambda *args: _parsed_paper())
+    assert submit().status_code == 200
+
+
 @pytest.fixture
 def client(tmp_path: Path):
     settings = Settings(

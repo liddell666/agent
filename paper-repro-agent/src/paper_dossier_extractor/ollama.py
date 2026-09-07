@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import json
 import socket
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections.abc import Callable
 from typing import Any
 from urllib.request import Request, urlopen
 
 from .config import Settings
 from .schemas import OllamaCompletion, PageChunk
+
+_call_budget: ContextVar[float | None] = ContextVar("ollama_call_budget", default=None)
+
+
+@contextmanager
+def call_budget(seconds: float):
+    """Pass a request-local remaining budget through client decorators."""
+    token = _call_budget.set(seconds)
+    try:
+        yield
+    finally:
+        _call_budget.reset(token)
 
 SYSTEM_PROMPT = (
     "Return exactly one compact JSON object and no Markdown or analysis.\n"
@@ -123,11 +137,17 @@ class OllamaClient:
             method="POST",
         )
 
+        timeout = self.settings.ollama_call_timeout_seconds
+        remaining = _call_budget.get()
+        if remaining is not None:
+            timeout = min(timeout, remaining)
+        if timeout <= 0:
+            raise OllamaError("ollama_timeout")
         try:
             opener = self._opener or urlopen
             with opener(
                 request,
-                timeout=self.settings.ollama_call_timeout_seconds,
+                timeout=timeout,
             ) as response:
                 raw_body = response.read()
         except Exception as error:

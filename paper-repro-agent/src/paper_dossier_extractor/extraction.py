@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from .chunking import serialize_pages
 from .config import Settings
-from .ollama import OllamaClient, OllamaError
+from .ollama import OllamaClient, OllamaError, call_budget
 from .schemas import OllamaCompletion, PageChunk, PartialDossier
 
 MAX_OLLAMA_CALLS = 12
@@ -194,7 +194,8 @@ def extract_chunks(
         observe_call(chunk)
         error: ChunkError | None = None
         try:
-            completion = client.complete(chunk)
+            with call_budget(deadline_seconds - elapsed):
+                completion = client.complete(chunk)
             observe_tokens(completion)
             partial = parse_partial(completion)
         except OllamaError as caught:

@@ -1,5 +1,6 @@
 import logging
 import secrets
+from threading import Lock
 from typing import Annotated
 from uuid import uuid4
 
@@ -18,6 +19,17 @@ from paper_parser.service import (
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Paper Parser", version="0.1.0")
+_parse_lock = Lock()
+
+
+def _parse_with_capacity(content, file_name, settings):
+    # The worker owns the reservation, including when its caller disconnects.
+    if not _parse_lock.acquire(blocking=False):
+        raise _error(429, "parser_capacity_reached")
+    try:
+        return parse_pdf(content, file_name, settings)
+    finally:
+        _parse_lock.release()
 
 
 def _error(status_code: int, code: str) -> HTTPException:
@@ -45,11 +57,13 @@ async def parse_endpoint(
 
     try:
         return await run_in_threadpool(
-            parse_pdf,
+            _parse_with_capacity,
             content,
             file.filename or "paper.pdf",
             settings,
         )
+    except HTTPException:
+        raise
     except UploadTooLargeError:
         raise _error(413, "upload_too_large") from None
     except InvalidPdfError:

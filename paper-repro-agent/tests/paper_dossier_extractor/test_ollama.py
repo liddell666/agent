@@ -5,6 +5,25 @@ from urllib.error import HTTPError
 
 import pytest
 
+
+def test_remaining_budget_bounds_transport_and_is_reset():
+    from paper_dossier_extractor.ollama import call_budget
+    timeouts = []
+
+    def opener(request, timeout):
+        timeouts.append(timeout)
+        return FakeResponse(json.dumps(_response_payload()).encode())
+
+    client = OllamaClient(_settings(), opener=opener)
+    with call_budget(0.25):
+        client.complete(_chunk())
+    client.complete(_chunk())
+    assert timeouts == [0.25, 360]
+    with call_budget(0):
+        with pytest.raises(OllamaError, match='ollama_timeout'):
+            client.complete(_chunk())
+    assert len(timeouts) == 2
+
 from paper_dossier_extractor.config import Settings
 from paper_dossier_extractor.ollama import OllamaClient, OllamaError, build_messages
 from paper_dossier_extractor.schemas import OllamaCompletion, PageChunk, SourcePage
