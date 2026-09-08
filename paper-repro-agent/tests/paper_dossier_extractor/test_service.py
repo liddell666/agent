@@ -237,6 +237,60 @@ def test_candidate_warnings_survive_in_content_free_diagnostics() -> None:
     assert "source_text" not in serialized
 
 
+def test_empty_model_metrics_use_a_verified_structural_table_fallback() -> None:
+    paper = ParsedPaper(
+        document_id="document-id",
+        file_name="paper.pdf",
+        page_count=1,
+        markdown="",
+        elements=[
+            PaperElement(
+                kind="text",
+                page=1,
+                text="Synthetic paper; regression task.",
+            ),
+            PaperElement(
+                kind="table",
+                page=1,
+                text=(
+                    "Table 9. Mean MAE/MAE(lm) on the training dataset. "
+                    "Dataset n p Model 1 Model 2 abalone 4177 8 1.079 0.992"
+                ),
+            ),
+        ],
+        warnings=[],
+    )
+    client = ScriptedClient(
+        _completion(
+            {
+                "title": "Synthetic paper",
+                "title_evidence": [
+                    {"page": 1, "source_text": "Synthetic paper"}
+                ],
+                "task_type": "regression",
+                "task_evidence": [
+                    {"page": 1, "source_text": "regression task"}
+                ],
+                "metrics": [],
+            }
+        )
+    )
+
+    response = extract_dossier(paper, _settings(), client, clock=lambda: 45.0)
+
+    assert response.ok is True
+    assert response.dossier is not None
+    assert len(response.dossier.metrics) == 1
+    metric = response.dossier.metrics[0]
+    assert metric.name == "mae"
+    assert metric.reported_value == 1.079
+    assert metric.dataset == "abalone"
+    assert metric.split == "training"
+    assert metric.model is None
+    assert metric.evidence[0].source_text == "abalone 4177 8 1.079"
+    assert "deterministic_metric_table_fallback" in response.diagnostics.warnings
+
+
 def test_service_logs_and_diagnostics_never_contain_source_or_model_output(
     caplog,
 ) -> None:

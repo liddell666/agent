@@ -63,7 +63,12 @@ def _serialized_bytes(pages: tuple[SourcePage, ...] | list[SourcePage]) -> int:
 
 
 def _as_source_page(page: SourcePage) -> SourcePage:
-    return SourcePage(page=page.page, text=page.text, kinds=page.kinds)
+    return SourcePage(
+        page=page.page,
+        text=page.text,
+        kinds=page.kinds,
+        table_text=page.table_text,
+    )
 
 
 def _fit_page(page: SourcePage, limit: int) -> SourcePage:
@@ -72,7 +77,14 @@ def _fit_page(page: SourcePage, limit: int) -> SourcePage:
 
     marker_bytes = len(TRUNCATION_MARKER.encode("utf-8"))
     if _serialized_bytes(
-        [SourcePage(page=page.page, text=TRUNCATION_MARKER, kinds=page.kinds)]
+        [
+            SourcePage(
+                page=page.page,
+                text=TRUNCATION_MARKER,
+                kinds=page.kinds,
+                table_text=page.table_text,
+            )
+        ]
     ) > limit:
         raise ValueError("max_source_bytes is too small for a serialized page")
 
@@ -84,7 +96,12 @@ def _fit_page(page: SourcePage, limit: int) -> SourcePage:
     while low <= high:
         text_limit = (low + high) // 2
         clipped = clip_utf8(page.text, text_limit)
-        candidate = SourcePage(page=page.page, text=clipped, kinds=page.kinds)
+        candidate = SourcePage(
+            page=page.page,
+            text=clipped,
+            kinds=page.kinds,
+            table_text=page.table_text,
+        )
         if _serialized_bytes([candidate]) <= limit:
             best = candidate
             low = text_limit + 1
@@ -93,7 +110,12 @@ def _fit_page(page: SourcePage, limit: int) -> SourcePage:
 
     if best is None:
         clipped = clip_utf8(page.text, marker_bytes)
-        best = SourcePage(page=page.page, text=clipped, kinds=page.kinds)
+        best = SourcePage(
+            page=page.page,
+            text=clipped,
+            kinds=page.kinds,
+            table_text=page.table_text,
+        )
 
     return best
 

@@ -48,6 +48,7 @@ def test_normalize_pages_prioritizes_metric_tables_before_general_prose() -> Non
     page = normalize_pages(paper)[0]
 
     assert page.text.startswith("Table 4. Test MAE/MAE(lm): 0.42 0.57")
+    assert page.table_text == "Table 4. Test MAE/MAE(lm): 0.42 0.57 Comparison results"
 
 
 def test_selection_keeps_context_metrics_tables_captions_neighbors_and_unique_pages() -> None:

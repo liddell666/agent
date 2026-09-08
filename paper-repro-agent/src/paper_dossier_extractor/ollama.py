@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -49,6 +50,41 @@ SYSTEM_PROMPT = (
     "as MAE result columns only when numeric cells and row labels are present."
 )
 
+_METRIC_TABLE_PATTERN = re.compile(
+    r"(?i)(?<![a-z0-9])(?:mae|mean absolute error|mean absolute deviation|"
+    r"rmse|root mean squared error|root mean square error|r²|r2|r-squared|"
+    r"coefficient of determination|平均绝对误差|均方根误差|决定系数)(?![a-z0-9])"
+)
+
+TABLE_SYSTEM_PROMPT = (
+    "Return one compact JSON object only. Keys: title,title_evidence,"
+    "research_problem,task_type,task_evidence,datasets,methods,metrics,gaps. "
+    "Evidence is {page,source_text}; every evidence excerpt must be copied "
+    "exactly from the supplied page. Metric is "
+    "{name,reported_value,dataset,split,model,evidence}; name is MAE, RMSE, "
+    "or R2. Use null or [] when unsupported. For a large result table, if any "
+    "supported metric label and numeric cells are visible, emit at most ONE "
+    "unambiguous metric from the first complete labeled row; use the table "
+    "caption for dataset and split, and use model=null when the model label is "
+    "not one of linear_regression, random_forest, gradient_boosting, or xgboost. "
+    "A header written as MAE/MAE(lm) is a supported MAE result: use name=MAE "
+    "and take a numeric cell from the first dataset row. "
+    "If the user envelope includes table_hint, use that row label when selecting "
+    "the one metric. "
+    "Do not emit an empty metrics array when a supported metric table is visible. "
+    "Do not list every table row."
+)
+
+_TABLE_FOCUS_BYTES = 2_048
+_TABLE_ROW_HINT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]{1,63})\s+"
+    r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?\s+"
+    r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+)
+_TABLE_SPLIT_PATTERN = re.compile(
+    r"(?i)\b(training|test|validation|development)\s+dataset\b"
+)
+
 _OLLAMA_ERROR_CODES = frozenset(
     {"ollama_unavailable", "ollama_timeout", "ollama_invalid_response"}
 )
@@ -67,16 +103,103 @@ class OllamaError(RuntimeError):
         return self.code
 
 
+def _is_metric_table_chunk(chunk: PageChunk) -> bool:
+    return any(
+        any(kind in {"table", "caption"} for kind in page.kinds)
+        and _METRIC_TABLE_PATTERN.search(page.text)
+        for page in chunk.pages
+    )
+
+
+def _head_utf8(value: str, limit: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= limit:
+        return value
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
+def _table_row_hint(chunk: PageChunk) -> str | None:
+    for page in chunk.pages:
+        source = page.table_text or page.text
+        match = _TABLE_ROW_HINT_PATTERN.search(source)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def _table_split_hint(chunk: PageChunk) -> str | None:
+    for page in chunk.pages:
+        source = page.table_text or page.text
+        match = _TABLE_SPLIT_PATTERN.search(source)
+        if match is not None:
+            return match.group(1).casefold()
+    return None
+
+
+def _table_metric_hint(chunk: PageChunk) -> str | None:
+    for page in chunk.pages:
+        source = page.table_text or page.text
+        match = _METRIC_TABLE_PATTERN.search(source)
+        if match is None:
+            continue
+        value = match.group(0).casefold()
+        if value in {"mae", "mean absolute error", "mean absolute deviation"}:
+            return "MAE"
+        if value in {"rmse", "root mean squared error", "root mean square error"}:
+            return "RMSE"
+        if value in {"r²", "r2", "r-squared", "coefficient of determination"}:
+            return "R2"
+    return None
+
+
+def _table_metric_page(chunk: PageChunk) -> int | None:
+    for page in chunk.pages:
+        source = page.table_text or page.text
+        if _METRIC_TABLE_PATTERN.search(source):
+            return page.page
+    return None
+
+
+def _table_system_prompt(chunk: PageChunk) -> str:
+    hint = _table_row_hint(chunk)
+    if hint is None:
+        return TABLE_SYSTEM_PROMPT
+    split = _table_split_hint(chunk)
+    metric = _table_metric_hint(chunk) or "the metric indicated by the table header"
+    split_instruction = f"split={split}" if split is not None else "split=the caption's split"
+    page = _table_metric_page(chunk)
+    page_instruction = f"page {page}" if page is not None else "the supplied page"
+    return (
+        f"{TABLE_SYSTEM_PROMPT} The first structural data-row label is {hint}; "
+        f"the required dataset row is {hint}. Extract exactly one {metric} metric "
+        f"from that row: name={metric}, dataset={hint}, {split_instruction}, "
+        "model=null, reported_value=the first decimal value after the row label, "
+        f"and one exact evidence excerpt from {page_instruction}. Do not use an "
+        "empty metrics array."
+    )
+
+
 def build_messages(chunk: PageChunk) -> list[dict[str, str]]:
     """Build the fixed instruction and compact, page-addressable user payload."""
 
+    table_mode = _is_metric_table_chunk(chunk)
     payload = {
         "chunk_id": chunk.chunk_id,
         "pages": [
-            {"page": page.page, "text": page.text, "kinds": list(page.kinds)}
+            {
+                "page": page.page,
+                "text": _head_utf8(page.table_text or page.text, _TABLE_FOCUS_BYTES)
+                if table_mode
+                else page.text,
+                "kinds": list(page.kinds),
+            }
             for page in chunk.pages
         ],
     }
+    if table_mode:
+        table_hint = _table_row_hint(chunk)
+        if table_hint is not None:
+            payload["table_hint"] = table_hint
     user_content = json.dumps(
         payload,
         ensure_ascii=False,
@@ -84,7 +207,10 @@ def build_messages(chunk: PageChunk) -> list[dict[str, str]]:
         sort_keys=True,
     )
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "system",
+            "content": _table_system_prompt(chunk) if table_mode else SYSTEM_PROMPT,
+        },
         {"role": "user", "content": user_content},
     ]
 

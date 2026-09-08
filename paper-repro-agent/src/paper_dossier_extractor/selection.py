@@ -16,6 +16,7 @@ PRIORITY_DATASET = 300
 PRIORITY_METHOD = 200
 PRIORITY_CONTEXT = 100
 MAX_CANDIDATE_PAGES = 32
+MAX_TABLE_TEXT_BYTES = 8_192
 
 METRIC_TERMS = (
     "mae",
@@ -103,6 +104,15 @@ def _normalize_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).split())
 
 
+def _bounded_table_text(value: str) -> str | None:
+    encoded = value.encode("utf-8")
+    if not encoded:
+        return None
+    if len(encoded) <= MAX_TABLE_TEXT_BYTES:
+        return value
+    return encoded[:MAX_TABLE_TEXT_BYTES].decode("utf-8", errors="ignore") or None
+
+
 def _compile_terms(terms: Iterable[str]) -> re.Pattern[str]:
     normalized_terms = {
         _normalize_text(term).casefold() for term in terms if _normalize_text(term)
@@ -140,6 +150,7 @@ def normalize_pages(paper: ParsedPaper) -> tuple[SourcePage, ...]:
     """Build one normalized, page-addressable source page per valid PDF page."""
 
     texts: dict[int, list[tuple[int, int, str]]] = {}
+    table_texts: dict[int, list[tuple[int, int, str]]] = {}
     kinds: dict[int, list[str]] = {}
 
     for index, element in enumerate(paper.elements):
@@ -161,6 +172,8 @@ def normalize_pages(paper: ParsedPaper) -> tuple[SourcePage, ...]:
             else 3
         )
         texts.setdefault(page_number, []).append((priority, index, text))
+        if element.kind in {"table", "caption"}:
+            table_texts.setdefault(page_number, []).append((priority, index, text))
         page_kinds = kinds.setdefault(page_number, [])
         if element.kind not in page_kinds:
             page_kinds.append(element.kind)
@@ -172,6 +185,14 @@ def normalize_pages(paper: ParsedPaper) -> tuple[SourcePage, ...]:
                 text for _priority, _index, text in sorted(texts[page_number])
             ),
             kinds=tuple(kinds[page_number]),
+            table_text=_bounded_table_text(
+                " ".join(
+                    text
+                    for _priority, _index, text in sorted(
+                        table_texts.get(page_number, ())
+                    )
+                )
+            ),
         )
         for page_number in sorted(texts)
     )
@@ -290,6 +311,7 @@ def select_candidate_pages(
                     page=page.page,
                     text=page.text,
                     kinds=page.kinds,
+                    table_text=page.table_text,
                     priority=priority,
                     reasons=_ordered_reasons(reasons),
                 )
@@ -329,6 +351,7 @@ def select_candidate_pages(
             page=page.page,
             text=page.text,
             kinds=page.kinds,
+            table_text=page.table_text,
             priority=priorities_by_page.get(page.page, 0),
             reasons=_ordered_reasons(reasons_by_page.get(page.page, ())),
         )

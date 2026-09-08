@@ -60,6 +60,14 @@ def _chunk() -> PageChunk:
     return PageChunk(chunk_id="chunk-001", pages=pages, source_bytes=128)
 
 
+def _narrative_chunk() -> PageChunk:
+    pages = (
+        SourcePage(page=2, text="Methods use a fixed split.", kinds=("text",)),
+        SourcePage(page=7, text="RMSE = 2.0", kinds=("text",)),
+    )
+    return PageChunk(chunk_id="chunk-001", pages=pages, source_bytes=128)
+
+
 def _response_payload() -> dict[str, object]:
     return {
         "message": {"role": "assistant", "content": '{"title":"A paper"}'},
@@ -71,7 +79,7 @@ def _response_payload() -> dict[str, object]:
 
 
 def test_build_messages_uses_only_the_compact_chunk_page_envelope() -> None:
-    messages = build_messages(_chunk())
+    messages = build_messages(_narrative_chunk())
 
     required_system_prompt = (
         "Return exactly one compact JSON object and no Markdown or analysis.\n"
@@ -103,7 +111,7 @@ def test_build_messages_uses_only_the_compact_chunk_page_envelope() -> None:
         "chunk_id": "chunk-001",
         "pages": [
             {"page": 2, "text": "Methods use a fixed split.", "kinds": ["text"]},
-            {"page": 7, "text": "RMSE = 2.0", "kinds": ["table", "text"]},
+            {"page": 7, "text": "RMSE = 2.0", "kinds": ["text"]},
         ],
     }
     user_content = messages[1]["content"]
@@ -118,6 +126,49 @@ def test_build_messages_uses_only_the_compact_chunk_page_envelope() -> None:
     assert "protocol" not in user_content.lower()
     assert "csv" not in user_content.lower()
     assert "prior" not in user_content.lower()
+
+
+def test_metric_table_chunks_use_bounded_table_prompt() -> None:
+    messages = build_messages(_chunk())
+
+    system_prompt = messages[0]["content"]
+    assert "at most ONE unambiguous metric" in system_prompt
+    assert "use model=null when the model label is" in system_prompt
+    assert "supported metric table" in system_prompt
+    assert "MAE/MAE(lm)" in system_prompt
+
+
+def test_metric_table_message_focus_keeps_the_page_head() -> None:
+    long_page = SourcePage(
+        page=13,
+        text="MAE table header and first row. " + "x" * 8_000,
+        kinds=("table",),
+    )
+    chunk = PageChunk(chunk_id="chunk-013", pages=(long_page,), source_bytes=128)
+
+    payload = json.loads(build_messages(chunk)[1]["content"])
+    message_text = payload["pages"][0]["text"]
+
+    assert message_text.startswith("MAE table header and first row.")
+    assert len(message_text.encode("utf-8")) == 2_048
+
+
+def test_metric_table_prompt_adds_a_bounded_structural_row_hint() -> None:
+    page = SourcePage(
+        page=13,
+        text="MAE training dataset Dataset n p Model value alpha 10 2 0.42 beta 11 3 0.51",
+        kinds=("table",),
+        table_text="MAE training dataset Dataset n p Model value alpha 10 2 0.42 beta 11 3 0.51",
+    )
+    chunk = PageChunk(chunk_id="chunk-013", pages=(page,), source_bytes=128)
+
+    messages = build_messages(chunk)
+    payload = json.loads(messages[1]["content"])
+
+    assert "first structural data-row label is alpha" in messages[0]["content"]
+    assert "split=training" in messages[0]["content"]
+    assert "name=MAE, dataset=alpha, split=training, model=null" in messages[0]["content"]
+    assert payload["table_hint"] == "alpha"
 
 
 def test_complete_posts_exact_bounded_request_and_returns_safe_metadata(caplog) -> None:

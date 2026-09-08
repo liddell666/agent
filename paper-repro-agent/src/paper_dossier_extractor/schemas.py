@@ -9,6 +9,7 @@ class SourcePage(BaseModel):
     page: int = Field(ge=1)
     text: str = Field(min_length=1)
     kinds: tuple[str, ...] = ()
+    table_text: str | None = Field(default=None, max_length=8_192)
 
 
 class CandidatePage(SourcePage):

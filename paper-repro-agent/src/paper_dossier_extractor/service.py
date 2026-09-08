@@ -21,6 +21,7 @@ from .schemas import (
     PageChunk,
 )
 from .selection import normalize_pages, select_candidate_pages
+from .table_metrics import metric_table_fallbacks
 
 _READINESS_PAGE_TEXT = (
     "Synthetic readiness results for a regression dataset and method. "
@@ -102,9 +103,22 @@ def _execute_pipeline(
     elapsed_seconds = clock() - started
     if extracted.failures:
         return selection, chunks, extracted, None, elapsed_seconds
-    merged = merge_partials(
-        tuple(item.partial for item in extracted.successes), source_pages
-    )
+    partials = tuple(item.partial for item in extracted.successes)
+    merged = merge_partials(partials, source_pages)
+    if not merged.dossier.metrics:
+        fallback_partials = metric_table_fallbacks(chunks)
+        if fallback_partials:
+            fallback_merged = merge_partials(partials + fallback_partials, source_pages)
+            if fallback_merged.dossier.metrics:
+                merged = MergeResult(
+                    dossier=fallback_merged.dossier,
+                    warnings=_stable_warnings(
+                        fallback_merged.warnings,
+                        ("deterministic_metric_table_fallback",),
+                    ),
+                    rejected_citation_count=fallback_merged.rejected_citation_count,
+                    canonical_json=fallback_merged.canonical_json,
+                )
     return selection, chunks, extracted, merged, elapsed_seconds
 
 
