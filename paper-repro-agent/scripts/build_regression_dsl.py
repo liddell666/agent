@@ -2131,15 +2131,7 @@ def _validate_regression_graph(document: dict) -> None:
 def build_regression_dsl(profile: str = DEFAULT_LLM_PROFILE) -> dict:
     """Return a deterministic regression-only clone without writing files."""
 
-    context_budget = (
-        OLLAMA_PARSER_PAYLOAD_BYTES if profile == "ollama" else None
-    )
-    document = deepcopy(
-        build_merged_dsl(
-            profile,
-            parser_context_budget_bytes=context_budget,
-        )
-    )
+    document = deepcopy(build_merged_dsl(profile))
     _set_regression_metadata(document, profile)
     _set_explicit_regression_inputs(document)
     _replace_regression_code_nodes(document)

@@ -36,6 +36,20 @@ def test_normalize_pages_nfkc_collapses_whitespace_and_duplicate_elements() -> N
     assert pages[0].kinds == ("text",)
 
 
+def test_normalize_pages_prioritizes_metric_tables_before_general_prose() -> None:
+    paper = _paper(
+        [
+            _page(13, "General discussion " * 500),
+            _page(13, "Table 4. Test MAE/MAE(lm): 0.42 0.57", "table"),
+            _page(13, "Comparison results", "caption"),
+        ]
+    )
+
+    page = normalize_pages(paper)[0]
+
+    assert page.text.startswith("Table 4. Test MAE/MAE(lm): 0.42 0.57")
+
+
 def test_selection_keeps_context_metrics_tables_captions_neighbors_and_unique_pages() -> None:
     elements = [
         _page(1, "Paper title"),

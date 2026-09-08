@@ -11,7 +11,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from .config import Settings
-from .schemas import OllamaCompletion, PageChunk
+from .schemas import OllamaCompletion, PageChunk, PartialDossier
 
 _call_budget: ContextVar[float | None] = ContextVar("ollama_call_budget", default=None)
 
@@ -44,7 +44,9 @@ SYSTEM_PROMPT = (
     "methods, MAE, RMSE, and R2. Copy a short exact source_text from its page.\n"
     "Put title support in title_evidence and task-type support in task_evidence.\n"
     "Do not infer a value, dataset, split, model, quotation, or page number.\n"
-    "If evidence is absent, omit the fact and add a short gap."
+    "If evidence is absent, omit the fact and add a short gap.\n"
+    "Inspect compact table text carefully. Treat labels such as MAE/MAE(lm) "
+    "as MAE result columns only when numeric cells and row labels are present."
 )
 
 _OLLAMA_ERROR_CODES = frozenset(
@@ -118,6 +120,7 @@ class OllamaClient:
             "messages": build_messages(chunk),
             "stream": False,
             "think": False,
+            "format": PartialDossier.model_json_schema(),
             "options": {
                 "num_ctx": self.settings.num_ctx,
                 "num_predict": self.settings.num_predict,

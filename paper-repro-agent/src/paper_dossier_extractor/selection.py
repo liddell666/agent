@@ -139,10 +139,10 @@ _REASON_ORDER = {
 def normalize_pages(paper: ParsedPaper) -> tuple[SourcePage, ...]:
     """Build one normalized, page-addressable source page per valid PDF page."""
 
-    texts: dict[int, list[str]] = {}
+    texts: dict[int, list[tuple[int, int, str]]] = {}
     kinds: dict[int, list[str]] = {}
 
-    for element in paper.elements:
+    for index, element in enumerate(paper.elements):
         page_number = element.page
         if page_number is None or page_number > paper.page_count:
             continue
@@ -151,7 +151,16 @@ def normalize_pages(paper: ParsedPaper) -> tuple[SourcePage, ...]:
         if not text:
             continue
 
-        texts.setdefault(page_number, []).append(text)
+        priority = (
+            0
+            if METRIC_PATTERN.search(text)
+            else 1
+            if element.kind == "table"
+            else 2
+            if element.kind == "caption"
+            else 3
+        )
+        texts.setdefault(page_number, []).append((priority, index, text))
         page_kinds = kinds.setdefault(page_number, [])
         if element.kind not in page_kinds:
             page_kinds.append(element.kind)
@@ -159,7 +168,9 @@ def normalize_pages(paper: ParsedPaper) -> tuple[SourcePage, ...]:
     return tuple(
         SourcePage(
             page=page_number,
-            text=" ".join(texts[page_number]),
+            text=" ".join(
+                text for _priority, _index, text in sorted(texts[page_number])
+            ),
             kinds=tuple(kinds[page_number]),
         )
         for page_number in sorted(texts)

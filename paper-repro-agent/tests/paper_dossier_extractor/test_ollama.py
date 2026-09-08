@@ -26,7 +26,12 @@ def test_remaining_budget_bounds_transport_and_is_reset():
 
 from paper_dossier_extractor.config import Settings
 from paper_dossier_extractor.ollama import OllamaClient, OllamaError, build_messages
-from paper_dossier_extractor.schemas import OllamaCompletion, PageChunk, SourcePage
+from paper_dossier_extractor.schemas import (
+    OllamaCompletion,
+    PageChunk,
+    PartialDossier,
+    SourcePage,
+)
 
 
 class FakeResponse:
@@ -87,7 +92,9 @@ def test_build_messages_uses_only_the_compact_chunk_page_envelope() -> None:
         "methods, MAE, RMSE, and R2. Copy a short exact source_text from its page.\n"
         "Put title support in title_evidence and task-type support in task_evidence.\n"
         "Do not infer a value, dataset, split, model, quotation, or page number.\n"
-        "If evidence is absent, omit the fact and add a short gap."
+        "If evidence is absent, omit the fact and add a short gap.\n"
+        "Inspect compact table text carefully. Treat labels such as MAE/MAE(lm) "
+        "as MAE result columns only when numeric cells and row labels are present."
     )
     assert messages[0] == {"role": "system", "content": required_system_prompt}
     assert messages[1]["role"] == "user"
@@ -131,6 +138,7 @@ def test_complete_posts_exact_bounded_request_and_returns_safe_metadata(caplog) 
     assert payload["model"] == "qwen3:8b"
     assert payload["stream"] is False
     assert payload["think"] is False
+    assert payload["format"] == PartialDossier.model_json_schema()
     assert payload["options"] == {
         "num_ctx": 16_384,
         "num_predict": 1_536,

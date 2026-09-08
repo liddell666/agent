@@ -64,7 +64,7 @@ def test_protected_profile_builders_use_the_legacy_parser_snapshot() -> None:
         assert parser["data"]["code"] == legacy
 
 
-def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> None:
+def test_regression_ollama_external_extractor_uses_workflow_size_compaction() -> None:
     ollama = build_regression_dsl("ollama")
     nodes = {
         node["data"]["title"]: node for node in ollama["workflow"]["graph"]["nodes"]
@@ -73,7 +73,7 @@ def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> No
 
     assert "extract_paper_dossier" not in nodes
     assert nodes["extract_paper_dossier_chunks"]["data"]["type"] == "http-request"
-    assert "DEFAULT_CONTEXT_BUDGET_BYTES: int | None = 6277" in parser
+    assert "DEFAULT_CONTEXT_BUDGET_BYTES" not in parser
 
     deepseek = build_regression_dsl("deepseek")
     deepseek_llm = _node(deepseek, "extract_paper_dossier")["data"]
@@ -84,7 +84,7 @@ def test_only_regression_ollama_pins_context_and_activates_parser_budget() -> No
     assert "DEFAULT_CONTEXT_BUDGET_BYTES" not in deepseek_parser
 
 
-def test_regression_ollama_parser_code_compiles_and_uses_budgeted_main() -> None:
+def test_regression_ollama_parser_code_compiles_and_uses_workflow_sized_main() -> None:
     parser_code = _node(
         build_regression_dsl("ollama"), "validate_parser_response"
     )["data"]["code"]
