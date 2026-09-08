@@ -85,7 +85,14 @@ def _execute_pipeline(
 ) -> tuple[CandidateSelection, tuple[PageChunk, ...], ChunkExtractionResult, MergeResult | None, float]:
     started = clock()
     source_pages = normalize_pages(paper)
-    selection = select_candidate_pages(paper, settings.max_candidate_pages)
+    selection = select_candidate_pages(
+        paper,
+        min(
+            settings.max_candidate_pages,
+            settings.max_ollama_calls,
+            MAX_OLLAMA_CALLS,
+        ),
+    )
     chunks = build_chunks(
         selection,
         settings.max_pages_per_chunk,

@@ -189,6 +189,27 @@ def test_long_paper_uses_chunked_mode_and_preserves_chunk_order() -> None:
     ] == [(1, 2), (2, 3), (3, 4), (4, 5)]
 
 
+def test_candidate_page_limit_reserves_one_model_call_per_initial_chunk() -> None:
+    paper = _paper(
+        *(f"Results: RMSE was {page}.0. " + "x" * 5_000 for page in range(1, 14))
+    )
+    client = ScriptedClient(*(_completion({}) for _ in range(12)))
+
+    response = extract_dossier(
+        paper,
+        _settings(max_candidate_pages=32, max_ollama_calls=12),
+        client,
+        clock=lambda: 25.0,
+    )
+
+    assert response.ok is True
+    assert response.diagnostics.candidate_page_count == 12
+    assert response.diagnostics.initial_chunk_count == 12
+    assert response.diagnostics.ollama_call_count == 12
+    assert response.diagnostics.failed_chunk_count == 0
+    assert "candidate_pages_capped" in response.diagnostics.warnings
+
+
 def test_any_required_failed_chunk_fails_closed_without_a_dossier() -> None:
     paper = _paper("Results: RMSE was 2.0.")
     client = ScriptedClient(_completion({"not": "a valid partial"}))
