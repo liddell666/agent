@@ -25,11 +25,16 @@ def test_remaining_budget_bounds_transport_and_is_reset():
     assert len(timeouts) == 2
 
 from paper_dossier_extractor.config import Settings
-from paper_dossier_extractor.ollama import OllamaClient, OllamaError, build_messages
+from paper_dossier_extractor.ollama import (
+    PARTIAL_SCHEMA,
+    TABLE_PARTIAL_SCHEMA,
+    OllamaClient,
+    OllamaError,
+    build_messages,
+)
 from paper_dossier_extractor.schemas import (
     OllamaCompletion,
     PageChunk,
-    PartialDossier,
     SourcePage,
 )
 
@@ -189,7 +194,8 @@ def test_complete_posts_exact_bounded_request_and_returns_safe_metadata(caplog) 
     assert payload["model"] == "qwen3:8b"
     assert payload["stream"] is False
     assert payload["think"] is False
-    assert payload["format"] == PartialDossier.model_json_schema()
+    assert payload["keep_alive"] == "1s"
+    assert payload["format"] == TABLE_PARTIAL_SCHEMA
     assert payload["options"] == {
         "num_ctx": 16_384,
         "num_predict": 1_536,
@@ -206,6 +212,67 @@ def test_complete_posts_exact_bounded_request_and_returns_safe_metadata(caplog) 
         completion_tokens=5,
     )
     assert "RMSE = 2.0" not in caplog.text
+
+
+def test_complete_preserves_ollama_request_field_order_for_structured_output() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout: float):
+        captured["body"] = request.data.decode("utf-8")
+        return FakeResponse(
+            json.dumps(_response_payload(), ensure_ascii=False).encode("utf-8")
+        )
+
+    OllamaClient(_settings(), opener=fake_urlopen).complete(_chunk())
+
+    body = captured["body"]
+    assert isinstance(body, str)
+    assert body.startswith('{"model":')
+    assert body.index('"messages"') < body.index('"format"')
+    assert body.index('"format"') < body.index('"options"')
+
+
+def test_complete_caps_structured_output_schema_for_table_chunks() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout: float):
+        captured["payload"] = json.loads(request.data)
+        return FakeResponse(
+            json.dumps(_response_payload(), ensure_ascii=False).encode("utf-8")
+        )
+
+    OllamaClient(_settings(), opener=fake_urlopen).complete(_chunk())
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    schema = payload["format"]
+    assert isinstance(schema, dict)
+    assert schema["properties"]["metrics"]["maxItems"] == 1
+    assert schema["properties"]["datasets"]["maxItems"] == 1
+    assert schema["properties"]["methods"]["maxItems"] == 1
+    assert schema["$defs"]["PartialMetric"]["properties"]["evidence"]["maxItems"] == 1
+
+
+def test_complete_caps_structured_output_schema_for_narrative_chunks() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(request, timeout: float):
+        captured["payload"] = json.loads(request.data)
+        return FakeResponse(
+            json.dumps(_response_payload(), ensure_ascii=False).encode("utf-8")
+        )
+
+    OllamaClient(_settings(), opener=fake_urlopen).complete(_narrative_chunk())
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    schema = payload["format"]
+    assert schema == PARTIAL_SCHEMA
+    assert schema["properties"]["metrics"]["maxItems"] == 2
+    assert schema["properties"]["datasets"]["maxItems"] == 1
+    assert schema["properties"]["methods"]["maxItems"] == 2
+    assert schema["properties"]["gaps"]["maxItems"] == 2
+    assert schema["$defs"]["PartialEvidence"]["properties"]["source_text"]["maxLength"] == 240
 
 
 @pytest.mark.parametrize(

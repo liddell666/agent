@@ -444,3 +444,52 @@ the service counters, model statuses, comparison counts, digests, and boolean
 privacy gates only. Roll back only to
 `233c5ef4-a36f-4ccd-93f2-de2e0605894c`; never select a rollback version by
 recency.
+
+## Five-case real regression gate (2026-09-09)
+
+The isolated regression candidate completed the digest-pinned real-paper gate
+with all five cases successful: `energy-efficiency`, `concrete-strength`,
+`wine-quality-red`, `appliances-energy`, and `real-estate-valuation`. The gate
+reported `completed_count=5`, no categorized failures, no false strict result,
+and no gate error. Every case retained `strict_status=not_comparable` because
+paper-side dataset or held-out split identity was not proven; every approximate
+assessment was `materially_different`.
+
+Current candidate release identity:
+
+- App UUID: `17fe51d4-091f-4729-87ee-3c0a2e920918`.
+- Draft workflow UUID: `912d4e05-494c-4302-a189-788a59c6c0c2`.
+- Published workflow UUID: `3124869e-880d-419c-bb69-659e46c14127`.
+- Explicit rollback backup UUID: `3d64a301-70d7-4345-ab69-75b7f55dc2dd`.
+- Draft and published graph digest:
+  `sha256:1d1fd33c179f6ff4b19ef63948598ecb69e9d8cbe10e70b34ca434af17fc1c9b`.
+- Draft and published metadata digest:
+  `sha256:3459bcaeebe74852636b1d43d12cafeff203d9bbcb8402549bbf89ba25a09ff4`.
+
+The generalized fixes preserve table/caption semantics through Dify parser
+compaction, prioritize spaced `R 2` and MSE-bearing result pages under the
+12-page extraction budget, and use a source-verifiable table fallback only
+when the model did not produce a comparison-qualified metric. Ollama requests
+use a one-second keep-alive so the model is unloaded before the next paper is
+parsed; this prevents the parser and model peaks from exhausting the 7.35 GiB
+Docker VM and taking PostgreSQL down. It does not change the fixed model,
+context, completion, chunk, or call-count limits.
+
+The privacy-safe result is stored in ignored
+`.live-artifacts/verification-20260909-memory-bounded/real-regression-acceptance.json`.
+It parsed as JSON, passed the built-in evaluator, and had no match for the
+authorization, cookie, protocol-token, API-key, paper-text, or CSV-row leak
+patterns. Rerun with the candidate API key present only in the child process
+environment:
+
+```powershell
+python scripts/run_real_regression_acceptance.py run `
+  --registry real_world/regression_cases.yml `
+  --cache .real-world-cache `
+  --output .live-artifacts/verification-20260909-memory-bounded/real-regression-acceptance.json `
+  --base-url http://localhost
+```
+
+Final verification completed with `873 passed`, the existing Starlette/httpx
+deprecation warning only, a clean Compose configuration, an empty runner queue,
+and identical draft/published behavioral digests.

@@ -89,6 +89,7 @@ def _clip_text_utf8(value: str, limit: int) -> str:
 
 def _compact_elements(elements: list[Any], per_page_limit: int) -> list[dict[str, Any]]:
     page_text: dict[int, list[str]] = {}
+    page_kinds: dict[int, set[str]] = {}
     for element in elements:
         if not isinstance(element, dict):
             continue
@@ -101,10 +102,16 @@ def _compact_elements(elements: list[Any], per_page_limit: int) -> list[dict[str
         kind = element.get("kind")
         prefix = f"[{kind}] " if isinstance(kind, str) and kind else ""
         page_text.setdefault(page, []).append(prefix + text.strip())
+        if isinstance(kind, str):
+            page_kinds.setdefault(page, set()).add(kind.casefold())
 
     return [
         {
-            "kind": "text",
+            "kind": (
+                "table"
+                if page_kinds.get(page, set()) & {"table", "caption"}
+                else "text"
+            ),
             "page": page,
             "text": _clip_text("\n".join(page_text[page]), per_page_limit),
         }
@@ -125,8 +132,9 @@ def _context_warnings(payload: dict[str, Any]) -> list[str]:
     return [item for item in warnings if item != CONTEXT_WARNING] + [CONTEXT_WARNING]
 
 
-def _context_pages(elements: Any) -> dict[int, str]:
+def _context_pages(elements: Any) -> dict[int, tuple[str, str]]:
     page_text: dict[int, list[str]] = {}
+    page_kinds: dict[int, set[str]] = {}
     if not isinstance(elements, list):
         return {}
 
@@ -144,8 +152,19 @@ def _context_pages(elements: Any) -> dict[int, str]:
         ):
             continue
         page_text.setdefault(page, []).append(text.strip())
+        kind = element.get("kind")
+        if isinstance(kind, str):
+            page_kinds.setdefault(page, set()).add(kind.casefold())
 
-    return {page: "\n".join(page_text[page]) for page in sorted(page_text)}
+    return {
+        page: (
+            "table"
+            if page_kinds.get(page, set()) & {"table", "caption"}
+            else "text",
+            "\n".join(page_text[page]),
+        )
+        for page in sorted(page_text)
+    }
 
 
 def _sample_context_pages(pages: list[int], count: int) -> list[int]:
@@ -157,7 +176,7 @@ def _sample_context_pages(pages: list[int], count: int) -> list[int]:
 
 def _context_object(
     payload: dict[str, Any],
-    page_text: dict[int, str],
+    page_context: dict[int, tuple[str, str]],
     pages: list[int],
     per_page_limit: int,
 ) -> dict[str, Any]:
@@ -168,9 +187,9 @@ def _context_object(
         "markdown": "",
         "elements": [
             {
-                "kind": "text",
+                "kind": page_context[page][0],
                 "page": page,
-                "text": _clip_text_utf8(page_text[page], per_page_limit),
+                "text": _clip_text_utf8(page_context[page][1], per_page_limit),
             }
             for page in pages
         ],
@@ -186,11 +205,11 @@ def _compact_payload_for_context(
     if len(serialized.encode("utf-8")) <= context_budget_bytes:
         return serialized
 
-    page_text = _context_pages(payload.get("elements"))
-    if not page_text:
+    page_context = _context_pages(payload.get("elements"))
+    if not page_context:
         return None
 
-    all_pages = list(page_text)
+    all_pages = list(page_context)
     candidate_pages = all_pages
     if len(candidate_pages) > MAX_CONTEXT_PAGES:
         candidate_pages = _sample_context_pages(
@@ -201,7 +220,7 @@ def _compact_payload_for_context(
     for count in range(len(candidate_pages), 0, -1):
         pages = _sample_context_pages(candidate_pages, count)
         compact = _context_object(
-            payload, page_text, pages, MIN_CONTEXT_PAGE_BYTES
+            payload, page_context, pages, MIN_CONTEXT_PAGE_BYTES
         )
         compact_serialized = _serialized(compact)
         if len(compact_serialized.encode("utf-8")) <= context_budget_bytes:
@@ -215,7 +234,7 @@ def _compact_payload_for_context(
         MAX_CONTEXT_PAGE_BYTES, MIN_CONTEXT_PAGE_BYTES - 1, -1
     ):
         compact = _context_object(
-            payload, page_text, selected_pages, per_page_limit
+            payload, page_context, selected_pages, per_page_limit
         )
         compact_serialized = _serialized(compact)
         if len(compact_serialized.encode("utf-8")) <= context_budget_bytes:

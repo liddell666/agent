@@ -75,6 +75,57 @@ TABLE_SYSTEM_PROMPT = (
     "Do not list every table row."
 )
 
+
+def _bounded_partial_schema(*, metrics: int, datasets: int, methods: int) -> dict[str, object]:
+    """Bound every chunk response below the fixed Ollama completion budget."""
+
+    schema = PartialDossier.model_json_schema()
+    properties = schema.get("properties")
+    definitions = schema.get("$defs")
+    if not isinstance(properties, dict) or not isinstance(definitions, dict):
+        raise RuntimeError("partial dossier schema shape is invalid")
+
+    for name, maximum in (
+        ("metrics", metrics),
+        ("datasets", datasets),
+        ("methods", methods),
+        ("gaps", 2),
+        ("title_evidence", 1),
+        ("task_evidence", 1),
+    ):
+        value = properties.get(name)
+        if not isinstance(value, dict):
+            raise RuntimeError("partial dossier schema property is invalid")
+        value["maxItems"] = maximum
+
+    for name in ("PartialMetric", "PartialFact"):
+        definition = definitions.get(name)
+        if not isinstance(definition, dict):
+            raise RuntimeError("partial dossier schema definition is invalid")
+        definition_properties = definition.get("properties")
+        if not isinstance(definition_properties, dict):
+            raise RuntimeError("partial dossier schema definition properties are invalid")
+        evidence = definition_properties.get("evidence")
+        if not isinstance(evidence, dict):
+            raise RuntimeError("partial dossier schema evidence property is invalid")
+        evidence["maxItems"] = 1
+
+    partial_evidence = definitions.get("PartialEvidence")
+    if not isinstance(partial_evidence, dict):
+        raise RuntimeError("partial dossier evidence definition is invalid")
+    evidence_properties = partial_evidence.get("properties")
+    if not isinstance(evidence_properties, dict):
+        raise RuntimeError("partial dossier evidence properties are invalid")
+    source_text = evidence_properties.get("source_text")
+    if not isinstance(source_text, dict):
+        raise RuntimeError("partial dossier source text property is invalid")
+    source_text["maxLength"] = 240
+    return schema
+
+
+PARTIAL_SCHEMA = _bounded_partial_schema(metrics=2, datasets=1, methods=2)
+TABLE_PARTIAL_SCHEMA = _bounded_partial_schema(metrics=1, datasets=1, methods=1)
+
 _TABLE_FOCUS_BYTES = 2_048
 _TABLE_ROW_HINT_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]{1,63})\s+"
@@ -246,7 +297,12 @@ class OllamaClient:
             "messages": build_messages(chunk),
             "stream": False,
             "think": False,
-            "format": PartialDossier.model_json_schema(),
+            "keep_alive": self.settings.ollama_keep_alive,
+            "format": (
+                TABLE_PARTIAL_SCHEMA
+                if _is_metric_table_chunk(chunk)
+                else PARTIAL_SCHEMA
+            ),
             "options": {
                 "num_ctx": self.settings.num_ctx,
                 "num_predict": self.settings.num_predict,
@@ -257,7 +313,6 @@ class OllamaClient:
             request_payload,
             ensure_ascii=False,
             separators=(",", ":"),
-            sort_keys=True,
         ).encode("utf-8")
         request = Request(
             f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",

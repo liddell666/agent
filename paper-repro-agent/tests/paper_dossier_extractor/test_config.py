@@ -8,6 +8,7 @@ def test_settings_pin_approved_limits() -> None:
     settings = Settings(api_token="x" * 32)
     assert settings.ollama_base_url == "http://ollama:11434"
     assert settings.ollama_model == "qwen3:8b"
+    assert settings.ollama_keep_alive == "1s"
     assert settings.num_ctx == 16_384
     assert settings.num_predict == 1_536
     assert settings.max_chunk_source_bytes == 8_192

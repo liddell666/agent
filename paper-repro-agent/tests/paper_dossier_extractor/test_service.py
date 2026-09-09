@@ -271,7 +271,18 @@ def test_empty_model_metrics_use_a_verified_structural_table_fallback() -> None:
                 "task_evidence": [
                     {"page": 1, "source_text": "regression task"}
                 ],
-                "metrics": [],
+                "metrics": [
+                    {
+                        "name": "RMSE",
+                        "reported_value": None,
+                        "evidence": [
+                            {
+                                "page": 1,
+                                "source_text": "R RMSE (U) MAE (U)",
+                            }
+                        ],
+                    }
+                ],
             }
         )
     )
@@ -288,6 +299,139 @@ def test_empty_model_metrics_use_a_verified_structural_table_fallback() -> None:
     assert metric.split == "training"
     assert metric.model is None
     assert metric.evidence[0].source_text == "abalone 4177 8 1.079"
+    assert "deterministic_metric_table_fallback" in response.diagnostics.warnings
+
+
+def test_empty_model_metrics_use_a_flattened_performance_table_fallback() -> None:
+    paper = ParsedPaper(
+        document_id="document-id",
+        file_name="paper.pdf",
+        page_count=1,
+        markdown="",
+        elements=[
+            PaperElement(
+                kind="text",
+                page=1,
+                text="Synthetic paper; regression task.",
+            ),
+            PaperElement(
+                kind="table",
+                page=1,
+                text=(
+                    "Table 5. Test results by WEKA and iML on real estate dataset "
+                    "via hold-out validation. Model WEKA SI (Ranking) iML SI "
+                    "(Ranking) R RMSE (U) MAE (U) MAPE (%) R RMSE (U) MAE (U) "
+                    "MAPE (%) I. Single CART ANN 0.740 10.762 5.882 13.210 "
+                    "0.321 (6) 0.871 6.630 4.912 13.591 0.049 (3)"
+                ),
+            ),
+        ],
+        warnings=[],
+    )
+    client = ScriptedClient(
+        _completion(
+            {
+                "title": "Synthetic paper",
+                "title_evidence": [{"page": 1, "source_text": "Synthetic paper"}],
+                "task_type": "regression",
+                "task_evidence": [{"page": 1, "source_text": "regression task"}],
+                "metrics": [
+                    {
+                        "name": "RMSE",
+                        "reported_value": None,
+                        "evidence": [
+                            {
+                                "page": 1,
+                                "source_text": "R RMSE (U) MAE (U)",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+
+    response = extract_dossier(paper, _settings(), client, clock=lambda: 45.0)
+
+    assert response.ok is True
+    assert response.dossier is not None
+    assert len(response.dossier.metrics) == 1
+    metric = response.dossier.metrics[0]
+    assert metric.name == "rmse"
+    assert metric.reported_value == 10.762
+    assert metric.dataset == "real estate"
+    assert metric.split == "hold-out validation"
+    assert metric.model is None
+    assert metric.evidence[0].source_text == "I. Single CART ANN 0.740 10.762"
+
+
+def test_unqualified_model_metric_uses_a_model_performance_table_fallback() -> None:
+    paper = ParsedPaper(
+        document_id="document-id",
+        file_name="paper.pdf",
+        page_count=1,
+        markdown="",
+        elements=[
+            PaperElement(
+                kind="text",
+                page=1,
+                text=(
+                    "Synthetic paper; regression task. The final models were evaluated "
+                    "on the test set. The gradient boosting regressor achieved R 2 0.94."
+                ),
+            ),
+            PaperElement(
+                kind="table",
+                page=1,
+                text=(
+                    "Table 6. Performance of regression models. Model MSE R 2 "
+                    "gradient boosting regressor 15.79 0.94 RF regressor 21.61 0.91"
+                ),
+            ),
+        ],
+        warnings=[],
+    )
+    client = ScriptedClient(
+        _completion(
+            {
+                "title": "Synthetic paper",
+                "title_evidence": [{"page": 1, "source_text": "Synthetic paper"}],
+                "task_type": "regression",
+                "task_evidence": [{"page": 1, "source_text": "regression task"}],
+                "metrics": [
+                    {
+                        "name": "R2",
+                        "reported_value": 0.94,
+                        "evidence": [
+                            {
+                                "page": 1,
+                                "source_text": (
+                                    "The gradient boosting regressor achieved R 2 0.94."
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+
+    response = extract_dossier(paper, _settings(), client, clock=lambda: 45.0)
+
+    assert response.ok is True
+    assert response.dossier is not None
+    qualified = [
+        metric
+        for metric in response.dossier.metrics
+        if metric.model == "gradient_boosting" and metric.split == "test"
+    ]
+    assert len(qualified) == 1
+    assert qualified[0].name == "r2"
+    assert qualified[0].reported_value == 0.94
+    assert (
+        qualified[0].evidence[0].source_text
+        == "gradient boosting regressor 15.79 0.94"
+    )
     assert "deterministic_metric_table_fallback" in response.diagnostics.warnings
 
 

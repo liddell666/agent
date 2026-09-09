@@ -105,10 +105,32 @@ def _execute_pipeline(
         return selection, chunks, extracted, None, elapsed_seconds
     partials = tuple(item.partial for item in extracted.successes)
     merged = merge_partials(partials, source_pages)
-    if not merged.dossier.metrics:
+    if not any(
+        metric.reported_value is not None
+        and any(
+            isinstance(qualifier, str) and qualifier.strip()
+            for qualifier in (metric.dataset, metric.split)
+        )
+        for metric in merged.dossier.metrics
+    ):
         fallback_partials = metric_table_fallbacks(chunks)
         if fallback_partials:
-            fallback_merged = merge_partials(partials + fallback_partials, source_pages)
+            usable_partials = tuple(
+                partial.model_copy(
+                    update={
+                        "metrics": tuple(
+                            metric
+                            for metric in partial.metrics
+                            if metric.reported_value is not None
+                        )
+                    }
+                )
+                for partial in partials
+            )
+            fallback_merged = merge_partials(
+                usable_partials + fallback_partials,
+                source_pages,
+            )
             if fallback_merged.dossier.metrics:
                 merged = MergeResult(
                     dossier=fallback_merged.dossier,

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     api_token: str = Field(min_length=32)
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "qwen3:8b"
+    ollama_keep_alive: str = "1s"
     num_ctx: int = 16_384
     num_predict: int = 1_536
     max_chunk_source_bytes: int = 8_192

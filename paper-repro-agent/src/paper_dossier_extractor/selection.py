@@ -22,11 +22,16 @@ METRIC_TERMS = (
     "mae",
     "mean absolute error",
     "mean absolute deviation",
+    # MSE is not emitted as a supported comparison metric, but it is a
+    # reliable signal for locating regression performance tables whose R²
+    # values should still be retained as source evidence.
+    "mse",
     "rmse",
     "root mean squared error",
     "root mean square error",
     "r²",
     "r2",
+    "r 2",
     "r-squared",
     "coefficient of determination",
     "平均绝对误差",

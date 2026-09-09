@@ -4,6 +4,7 @@ import json
 import pytest
 
 import dify.code.validate_parser as parser_validator
+import dify.code.validate_parser_legacy as legacy_parser_validator
 
 
 CONTEXT_WARNING = "parser_output_compacted_for_llm_context"
@@ -180,6 +181,58 @@ def test_context_compaction_groups_orders_and_filters_positive_pages() -> None:
         "string-page",
     ):
         assert forbidden not in serialized
+
+
+def test_context_compaction_preserves_result_table_kind_and_numeric_head() -> None:
+    payload = _valid_payload(
+        markdown="source markdown " * 2_000,
+        elements=[
+            {"kind": "text", "page": 1, "text": "intro " + "x" * 2_000},
+            {
+                "kind": "table",
+                "page": 2,
+                "text": (
+                    "Table 5. Results on real estate dataset via hold-out validation. "
+                    "R RMSE MAE I. Single CART ANN 0.740 10.762 5.882 "
+                    + "y" * 2_000
+                ),
+            },
+            {"kind": "caption", "page": 2, "text": "Table 5. Results."},
+            {"kind": "text", "page": 3, "text": "conclusion " + "z" * 2_000},
+        ],
+    )
+
+    compacted = json.loads(
+        parser_validator._compact_payload(payload, context_budget_bytes=2_000)
+    )
+    table_page = next(item for item in compacted["elements"] if item["page"] == 2)
+
+    assert table_page["kind"] == "table"
+    assert "R RMSE MAE I. Single CART ANN 0.740 10.762 5.882" in table_page["text"]
+
+
+def test_legacy_workflow_compaction_preserves_result_table_kind() -> None:
+    payload = _valid_payload(
+        markdown="source markdown " * 30_000,
+        elements=[
+            {"kind": "text", "page": 1, "text": "intro"},
+            {
+                "kind": "table",
+                "page": 2,
+                "text": (
+                    "Table 5. Results on real estate dataset via hold-out validation. "
+                    "R RMSE MAE I. Single CART ANN 0.740 10.762 5.882"
+                ),
+            },
+            {"kind": "caption", "page": 2, "text": "Table 5. Results."},
+        ],
+    )
+
+    compacted = json.loads(legacy_parser_validator._compact_payload(payload))
+    table_page = next(item for item in compacted["elements"] if item["page"] == 2)
+
+    assert table_page["kind"] == "table"
+    assert "R RMSE MAE I. Single CART ANN 0.740 10.762 5.882" in table_page["text"]
 
 
 def test_context_compaction_caps_at_32_and_uses_evenly_spaced_pages() -> None:

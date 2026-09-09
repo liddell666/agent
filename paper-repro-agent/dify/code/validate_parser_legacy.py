@@ -41,6 +41,7 @@ def _clip_text(value: str, limit: int) -> str:
 
 def _compact_elements(elements: list[Any], per_page_limit: int) -> list[dict[str, Any]]:
     page_text: dict[int, list[str]] = {}
+    page_kinds: dict[int, set[str]] = {}
     for element in elements:
         if not isinstance(element, dict):
             continue
@@ -53,10 +54,16 @@ def _compact_elements(elements: list[Any], per_page_limit: int) -> list[dict[str
         kind = element.get("kind")
         prefix = f"[{kind}] " if isinstance(kind, str) and kind else ""
         page_text.setdefault(page, []).append(prefix + text.strip())
+        if isinstance(kind, str):
+            page_kinds.setdefault(page, set()).add(kind.casefold())
 
     return [
         {
-            "kind": "text",
+            "kind": (
+                "table"
+                if page_kinds.get(page, set()) & {"table", "caption"}
+                else "text"
+            ),
             "page": page,
             "text": _clip_text("\n".join(page_text[page]), per_page_limit),
         }

@@ -100,6 +100,25 @@ def test_selection_caps_thirty_three_uncapped_pages_by_priority_then_page() -> N
     assert [item.page for item in selection.pages] == list(range(1, 33))
 
 
+def test_selection_prioritizes_mse_r2_performance_table_under_page_cap() -> None:
+    elements = [_page(page, f"Results discussion on page {page}") for page in range(1, 27)]
+    elements.append(
+        _page(
+            15,
+            "Table 6. Performance of regression models. Model MSE R 2 "
+            "gradient boosting regressor 15.79 0.94",
+            "table",
+        )
+    )
+
+    selection = select_candidate_pages(_paper(elements), limit=12)
+    by_page = {item.page: item for item in selection.pages}
+
+    assert 15 in by_page
+    assert "supported_metric" in by_page[15].reasons
+    assert by_page[15].priority > by_page[1].priority
+
+
 def test_no_match_fallback_keeps_required_and_evenly_spaced_pages() -> None:
     paper = _paper([_page(page, f"Unrelated prose on page {page}") for page in range(1, 41)])
 
